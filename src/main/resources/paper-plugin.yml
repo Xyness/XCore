@@ -1,0 +1,17 @@
+name: XCore
+version: '1.0.0'
+author: 'Xyness'
+main: fr.xyness.XCore.XCore
+loader: fr.xyness.XCore.XCoreLibraryLoader
+description: Core framework for X plugins
+api-version: '1.21.1'
+folia-supported: true
+load: STARTUP
+dependencies:
+  server:
+    Vault:
+      required: false
+      load: BEFORE
+    PlaceholderAPI:
+      required: false
+      load: BEFORE

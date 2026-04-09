@@ -1,0 +1,41 @@
+# XCore Language File
+# Supports MiniMessage formatting: https://docs.advntr.dev/minimessage/format.html
+# Placeholders: {key} will be replaced with the appropriate value.
+
+no-permission: "<red>You don't have permission to use this command."
+
+# /xcore stats
+stats-title: "<red>XCore Stats"
+stats-database: "  <white>Database <gray>- {type} - Reads: {reads} - Writes: {writes}"
+stats-l1-cache: "  <white>L1 Cache <gray>- Hit rate: <green>{hit_rate} <gray>- Size: {size} entries"
+stats-redis: "  <white>Redis <gray>- {status}"
+stats-mojang-api: "  <white>Mojang API <gray>- Calls: {calls} - Failures: <red>{failures} <gray>- Rate limits: <gold>{rate_limits}"
+stats-mojang-cache: "  <white>Mojang Cache <gray>- <green>{hits} <gray>hits / <red>{misses} <gray>misses"
+stats-skin-cache: "  <white>Skin Cache <gray>- <green>{hits} <gray>hits / <red>{misses} <gray>misses"
+stats-cross-server: "  <white>Cross-Server Sync <gray>- {status}"
+stats-circuit-breaker: "  <white>Circuit Breaker <gray>- {state}"
+stats-end: ""
+
+# /xcore clear-cache
+clear-cache-success: "<green>All caches cleared."
+
+# /xcore reload
+reload-success: "<green>Configuration and language file reloaded."
+
+# /xcore player <name>
+player-title: "<red>Player Info"
+player-loading: "<gray>Loading player data for <white>{name}<gray>..."
+player-not-found: "<red>Player <white>{name} <red>not found."
+player-name: "  <white>Name <gray>- {value}"
+player-status: "  <white>Status <gray>- {value}"
+player-server-uuid: "  <white>Server UUID <gray>- {value}"
+player-mojang-uuid: "  <white>Mojang UUID <gray>- {value}"
+player-texture: "  <white>Texture <gray>- {value}"
+player-last-login: "  <white>Last Login <gray>- {value}"
+player-last-logout: "  <white>Last Logout <gray>- {value}"
+player-data-header: "  <white>Custom Data"
+player-data-entry: "    <gray>- {key}: <white>{value}"
+player-end: ""
+
+# /xcore (no args)
+usage: "<red>Usage: /xcore <stats|clear-cache|reload|player <name>>"

@@ -1,0 +1,59 @@
+# XCore Economy Language File (MiniMessage format)
+
+no-permission: "<red>You don't have permission to use this command."
+player-only: "<red>This command can only be used by players."
+player-not-found: "<red>Player <white>{name} <red>not found."
+invalid-amount: "<red>Invalid amount. Must be a positive number."
+invalid-currency: "<red>Unknown currency <white>{currency}<red>. Available: {currencies}"
+insufficient-funds: "<red>Insufficient funds. You have <white>{balance}<red>."
+error: "<red>An error occurred. Please try again."
+balance-capped: "<yellow>Balance was capped at <gold>{max} <yellow>for <white>{currency}<yellow>."
+
+balance-title: "<red>Balances"
+balance-self-single: "<gray>Your balance: <gold>{balance} <gray>({currency})"
+balance-other-single: "<gray>{name}'s balance: <gold>{balance} <gray>({currency})"
+balance-entry: "  <gold>{balance} <gray>({currency})"
+balance-end: ""
+
+pay-sent: "<green>Sent <gold>{amount} <gray>({currency}) <green>to <white>{target}<green>."
+pay-received: "<green>Received <gold>{amount} <gray>({currency}) <green>from <white>{sender}<green>."
+pay-self: "<red>You cannot pay yourself."
+
+set-success: "<green>Set <white>{name}<green>'s <gray>({currency}) <green>balance to <gold>{amount}<green>."
+add-success: "<green>Added <gold>{amount} <gray>({currency}) <green>to <white>{name}<green>. New: <gold>{balance}<green>."
+remove-success: "<green>Removed <gold>{amount} <gray>({currency}) <green>from <white>{name}<green>. New: <gold>{balance}<green>."
+
+exchange-success: "<green>Exchanged <gold>{from_amount} <gray>({from_currency}) <green>for <gold>{to_amount} <gray>({to_currency})<green>."
+exchange-no-rate: "<red>No exchange rate available for this currency pair."
+exchange-disabled: "<red>Currency exchange is currently disabled."
+
+history-title: "<red>{name}'s History <gray>(Page {page}/{max_page})"
+history-entry: "  <gray>{date} <gray>| <yellow>{type} <gray>| <gold>{amount} <gray>{currency} <gray>| <white>{target}"
+history-empty: "  <gray>No transactions found."
+history-end: ""
+
+top-title: "<red>{currency} Top"
+top-entry: "  <white>#{rank} <gray>- <gold>{name} <gray>- <yellow>{balance}"
+top-empty: "  <gray>No data available."
+top-end: ""
+
+reload-success: "<green>Economy configuration reloaded."
+
+payout-received: "<green>You received <gold>{amount} <gray>({currency}) <green>as a scheduled payout."
+interest-received: "<green>You earned <gold>{amount} <gray>({currency}) <green>in interest."
+
+help-message: |
+  <red>Economy Help
+  <gray>
+  <white>/coins <gray>- View all your balances
+  <white>/coins balance [player] [currency] <gray>- View balance
+  <white>/coins pay <player> <amount> [currency] <gray>- Send money
+  <white>/coins set <player> <amount> [currency] <gray>- Set balance (admin)
+  <white>/coins add <player> <amount> [currency] <gray>- Add balance (admin)
+  <white>/coins remove <player> <amount> [currency] <gray>- Remove balance (admin)
+  <white>/coins exchange <from> <to> <amount> <gray>- Exchange currencies
+  <white>/coins history [player] [currency] [page] <gray>- Transaction history
+  <white>/coins top [currency] <gray>- Top balances
+  <white>/coins reload <gray>- Reload config (admin)
+
+usage: "<red>Usage: /coins <balance|pay|set|add|remove|exchange|history|top|reload>"

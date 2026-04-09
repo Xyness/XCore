@@ -1,0 +1,126 @@
+# XCore Configuration
+
+# Enable debug logging (verbose cache/database/API messages)
+debug: false
+
+# Database type: sqlite, mysql, postgresql
+database-type: sqlite
+
+# MySQL / PostgreSQL settings (ignored for sqlite)
+database:
+  host: localhost
+  port: 3306
+  name: xcore
+  username: root
+  password: ""
+  ssl: false
+  pool-size: 10
+
+# Redis cache (optional, shared cache for multi-server networks)
+redis:
+  enabled: false
+  host: localhost
+  port: 6379
+  password: ""
+  database: 0
+  # TTL in seconds for cached player data
+  ttl: 3600
+
+# Cross-server sync
+# Uses Redis Pub/Sub (if Redis enabled) or database polling as fallback.
+# Requires MySQL or PostgreSQL (not compatible with SQLite).
+cross-server-sync:
+  enabled: false
+  server-name: "default"
+  # Poll interval in seconds (fallback if Redis unavailable)
+  poll-interval-seconds: 3
+  # How long to keep invalidation entries before cleanup (in seconds)
+  retention-seconds: 300
+  # Per-addon sync toggle (entries are added automatically when addons load)
+  # Set to true to enable real-time sync for a specific addon
+  addons: {}
+
+# Cache settings
+cache:
+  # Maximum number of player entries in the L1 cache
+  max-size: 100000
+  # Time-to-live in minutes for player cache entries
+  ttl-minutes: 60
+  # Maximum number of entries in the Mojang UUID/skin cache
+  mojang-max-size: 5000
+  # Maximum concurrent Mojang API requests
+  max-api-concurrency: 10
+  # Timeout in milliseconds for Mojang API HTTP connections
+  api-timeout-ms: 2000
+  # Circuit breaker: number of consecutive Mojang API failures before disabling calls
+  circuit-breaker-threshold: 5
+  # Circuit breaker: minutes to wait before retrying after opening
+  circuit-breaker-open-minutes: 5
+
+# Web dashboard
+web-dashboard:
+  enabled: false
+  port: 8085
+  token: "CHANGE_ME_TO_A_SECURE_TOKEN"
+  # Whether the /api/metrics endpoint is publicly accessible (no auth required)
+  metrics-public: true
+
+# Economy system (built-in, requires Vault)
+# Automatically enabled if Vault is installed, disabled otherwise.
+economy:
+  enabled: true
+
+  # Cross-server support (per-server balances)
+  cross-server:
+    enabled: false
+    server-name: "default"
+
+  # Define currencies
+  currencies:
+    coins:
+      symbol: "$"
+      symbol-position: BEFORE
+      decimals: 2
+      starting-balance: 0.00
+      max-balance: 1000000000
+      vault: true
+    gems:
+      symbol: "\u2726"
+      symbol-position: AFTER
+      decimals: 0
+      starting-balance: 0
+      max-balance: 0
+      vault: false
+    tokens:
+      symbol: "\u26C3"
+      symbol-position: BEFORE
+      decimals: 0
+      starting-balance: 0
+      max-balance: 0
+      vault: false
+
+  # Currency exchange
+  exchange:
+    enabled: true
+    rates:
+      coins-to-gems: 100
+      coins-to-tokens: 50
+      gems-to-coins: 80
+      gems-to-tokens: 2
+      tokens-to-coins: 40
+      tokens-to-gems: 0.5
+
+  # Scheduled payouts
+  scheduled-payouts:
+    enabled: false
+    interval-minutes: 60
+    amount: 10.0
+    currency: "coins"
+
+  # Interest on balances
+  interest:
+    enabled: false
+    rate: 0.01
+    interval-minutes: 1440
+    currency: "coins"
+
