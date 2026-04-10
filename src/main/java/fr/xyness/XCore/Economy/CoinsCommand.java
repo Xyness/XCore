@@ -68,7 +68,7 @@ public class CoinsCommand {
                     .then(Commands.literal("balance")
                         .executes(ctx -> { handleBalanceSelf(ctx.getSource().getSender(), null); return Command.SINGLE_SUCCESS; })
                         .then(Commands.argument("player", StringArgumentType.word())
-                            .requires(src -> src.getSender().hasPermission("xcoins.balance.others"))
+                            .requires(src -> src.getSender().hasPermission("xcore.economy.balance.others"))
                             .suggests(playerSuggestions)
                             .executes(ctx -> {
                                 handleBalanceOther(ctx.getSource().getSender(),
@@ -115,7 +115,7 @@ public class CoinsCommand {
 
                     // /coins set <player> <amount> [currency]
                     .then(Commands.literal("set")
-                        .requires(src -> src.getSender().hasPermission("xcoins.admin") || src.getSender().hasPermission("xcoins.admin.set"))
+                        .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.set"))
                         .then(Commands.argument("player", StringArgumentType.word())
                             .suggests(playerSuggestions)
                             .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0))
@@ -141,7 +141,7 @@ public class CoinsCommand {
 
                     // /coins add <player> <amount> [currency]
                     .then(Commands.literal("add")
-                        .requires(src -> src.getSender().hasPermission("xcoins.admin") || src.getSender().hasPermission("xcoins.admin.add"))
+                        .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.add"))
                         .then(Commands.argument("player", StringArgumentType.word())
                             .suggests(playerSuggestions)
                             .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0.01))
@@ -167,7 +167,7 @@ public class CoinsCommand {
 
                     // /coins remove <player> <amount> [currency]
                     .then(Commands.literal("remove")
-                        .requires(src -> src.getSender().hasPermission("xcoins.admin") || src.getSender().hasPermission("xcoins.admin.remove"))
+                        .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.remove"))
                         .then(Commands.argument("player", StringArgumentType.word())
                             .suggests(playerSuggestions)
                             .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0.01))
@@ -262,7 +262,7 @@ public class CoinsCommand {
 
                     // /coins reload
                     .then(Commands.literal("reload")
-                        .requires(src -> src.getSender().hasPermission("xcoins.admin") || src.getSender().hasPermission("xcoins.admin.reload"))
+                        .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.reload"))
                         .executes(ctx -> { handleReload(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
                     )
 
@@ -607,7 +607,7 @@ public class CoinsCommand {
         } else {
             // Check if looking at someone else's history
             boolean isSelf = sender instanceof Player p && p.getName().equalsIgnoreCase(playerName);
-            if (!isSelf && !sender.hasPermission("xcoins.admin")) {
+            if (!isSelf && !sender.hasPermission("xcore.economy.admin")) {
                 sender.sendMessage(lang().getComponent("no-permission"));
                 return;
             }

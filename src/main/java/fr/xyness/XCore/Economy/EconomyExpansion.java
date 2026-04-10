@@ -10,10 +10,10 @@ import me.clip.placeholderapi.expansion.PlaceholderExpansion;
  * <p>
  * Available placeholders:
  * <ul>
- *   <li>{@code %xcoins_balance%} -- Formatted balance of vault primary currency</li>
- *   <li>{@code %xcoins_balance_raw%} -- Raw balance of vault primary currency</li>
- *   <li>{@code %xcoins_balance_<currencyId>%} -- Formatted balance of specific currency</li>
- *   <li>{@code %xcoins_balance_<currencyId>_raw%} -- Raw balance of specific currency</li>
+ *   <li>{@code %xcore_balance%} -- Formatted balance of vault primary currency</li>
+ *   <li>{@code %xcore_balance_raw%} -- Raw balance of vault primary currency</li>
+ *   <li>{@code %xcore_balance_<currencyId>%} -- Formatted balance of specific currency</li>
+ *   <li>{@code %xcore_balance_<currencyId>_raw%} -- Raw balance of specific currency</li>
  * </ul>
  * </p>
  */
@@ -25,7 +25,7 @@ public class EconomyExpansion extends PlaceholderExpansion {
         this.coinsManager = coinsManager;
     }
 
-    @Override public @NotNull String getIdentifier() { return "xcoins"; }
+    @Override public @NotNull String getIdentifier() { return "xcore"; }
     @Override public @NotNull String getAuthor() { return "Xyness"; }
     @Override public @NotNull String getVersion() { return "2.0.0"; }
     @Override public boolean persist() { return true; }
@@ -36,17 +36,17 @@ public class EconomyExpansion extends PlaceholderExpansion {
 
         String lower = params.toLowerCase();
 
-        // %xcoins_balance% -> vault primary formatted
+        // %xcore_balance% -> vault primary formatted
         if (lower.equals("balance")) {
             return coinsManager.format(coinsManager.getBalance(player.getUniqueId()));
         }
 
-        // %xcoins_balance_raw% -> vault primary raw
+        // %xcore_balance_raw% -> vault primary raw
         if (lower.equals("balance_raw")) {
             return String.valueOf(coinsManager.getBalance(player.getUniqueId()));
         }
 
-        // %xcoins_balance_<currencyId>_raw% -> specific currency raw
+        // %xcore_balance_<currencyId>_raw% -> specific currency raw
         if (lower.startsWith("balance_") && lower.endsWith("_raw")) {
             String currencyId = lower.substring("balance_".length(), lower.length() - "_raw".length());
             Currency currency = coinsManager.getCurrency(currencyId);
@@ -56,7 +56,7 @@ public class EconomyExpansion extends PlaceholderExpansion {
             return null;
         }
 
-        // %xcoins_balance_<currencyId>% -> specific currency formatted
+        // %xcore_balance_<currencyId>% -> specific currency formatted
         if (lower.startsWith("balance_")) {
             String currencyId = lower.substring("balance_".length());
             Currency currency = coinsManager.getCurrency(currencyId);

@@ -76,7 +76,7 @@ public class EconomyWebModule implements WebModule {
     // **************************************************************************
 
     /**
-     * Handles {@code GET /api/xcoins/balances?currency=<id>} -- returns the top 100 players by balance.
+     * Handles {@code GET /api/economy/balances?currency=<id>} -- returns the top 100 players by balance.
      */
     private void handleBalances(HttpExchange exchange) throws IOException {
         webPanel.addCorsHeaders(exchange);
@@ -125,7 +125,7 @@ public class EconomyWebModule implements WebModule {
     }
 
     /**
-     * Handles {@code GET /api/xcoins/currencies} -- returns all configured currencies with their settings.
+     * Handles {@code GET /api/economy/currencies} -- returns all configured currencies with their settings.
      */
     private void handleCurrencies(HttpExchange exchange) throws IOException {
         webPanel.addCorsHeaders(exchange);
@@ -149,7 +149,7 @@ public class EconomyWebModule implements WebModule {
     }
 
     /**
-     * Handles {@code GET /api/xcoins/transactions?player=<name>&page=1&limit=20} -- returns transaction history.
+     * Handles {@code GET /api/economy/transactions?player=<name>&page=1&limit=20} -- returns transaction history.
      */
     private void handleTransactions(HttpExchange exchange) throws IOException {
         webPanel.addCorsHeaders(exchange);

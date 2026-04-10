@@ -163,10 +163,10 @@ All endpoints require `Authorization: Bearer <token>` (except `/api/metrics` if 
 | `%xcore_uuid%` | Player server UUID |
 | `%xcore_last_login%` | Last login timestamp |
 | `%xcore_last_logout%` | Last logout timestamp |
-| `%xcoins_balance%` | Formatted Vault currency balance |
-| `%xcoins_balance_raw%` | Raw balance (no formatting) |
-| `%xcoins_balance_<id>%` | Formatted balance for specific currency |
-| `%xcoins_balance_<id>_raw%` | Raw balance for specific currency |
+| `%xcore_balance%` | Formatted Vault currency balance |
+| `%xcore_balance_raw%` | Raw balance (no formatting) |
+| `%xcore_balance_<id>%` | Formatted balance for specific currency |
+| `%xcore_balance_<id>_raw%` | Raw balance for specific currency |
 
 ## Addon Development
 
