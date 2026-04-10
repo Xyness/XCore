@@ -78,8 +78,7 @@ public class XCore extends JavaPlugin {
     private final Logger logger = new Logger("Main");
     private final Methods methods = new Methods(this);
     private final Gson gson = new Gson();
-    private final ExecutorService executor = Executors.newFixedThreadPool(
-            Runtime.getRuntime().availableProcessors(),
+    private final ExecutorService executor = Executors.newCachedThreadPool(
             r -> { Thread t = new Thread(r, "XCore-Thread"); t.setDaemon(true); return t; });
 
     private SchedulerAdapter schedulerAdapter;
