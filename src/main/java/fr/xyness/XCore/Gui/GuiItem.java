@@ -123,6 +123,9 @@ public class GuiItem {
     /** @return The item model key string. */
     public String getItemModelKey() { return itemModelKey; }
 
+    /** @return {@code true} if an item model key is present. */
+    public boolean isItemModel() { return itemModelKey != null && !itemModelKey.isBlank(); }
+
     /** @return The title language key. */
     public String getTitleKey() { return titleKey; }
 
