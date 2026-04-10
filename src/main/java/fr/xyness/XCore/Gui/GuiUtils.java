@@ -1,5 +1,6 @@
 package fr.xyness.XCore.Gui;
 
+import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -9,6 +10,9 @@ import java.util.UUID;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
+import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemFlag;
@@ -33,6 +37,82 @@ import net.kyori.adventure.text.format.TextDecoration;
 @SuppressWarnings("deprecation")
 public class GuiUtils {
 
+    /** Cached reflection reference for the 1.20.5+ setItemModel method. */
+    private static final Method setItemModelMethod;
+
+    static {
+        Method m = null;
+        try {
+            m = ItemMeta.class.getMethod("setItemModel", NamespacedKey.class);
+        } catch (Throwable ignored) {}
+        setItemModelMethod = m;
+    }
+
+    // -------------------------------------------------------------------------
+    // Custom model / item model helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Sets custom model data on an {@link ItemMeta}, trying the 1.21.5+ API first
+     * and falling back to the legacy {@code setCustomModelData} method.
+     *
+     * @param meta  The item meta to modify.
+     * @param value The custom model data value.
+     */
+    public static void setCustomModelDataSafe(ItemMeta meta, int value) {
+        if (meta == null) return;
+        try {
+            Class<?> componentClass = Class.forName("org.bukkit.inventory.meta.components.CustomModelDataComponent");
+            Method customModelDataMethod = componentClass.getMethod("customModelData", List.class);
+            Object componentInstance = customModelDataMethod.invoke(null, List.of((float) value));
+            Method setComponentMethod = meta.getClass().getMethod("setCustomModelDataComponent", componentClass);
+            setComponentMethod.invoke(meta, componentInstance);
+        } catch (Throwable ignored) {
+            try {
+                meta.setCustomModelData(value);
+            } catch (Throwable ignored2) {}
+        }
+    }
+
+    /**
+     * Sets an item model key on an {@link ItemMeta} (1.20.5+).
+     *
+     * @param meta     The item meta to modify.
+     * @param modelKey The namespaced key string (e.g. {@code "my_pack:flame_sword"}).
+     */
+    public static void setItemModelSafe(ItemMeta meta, String modelKey) {
+        if (meta == null || modelKey == null || setItemModelMethod == null) return;
+        try {
+            NamespacedKey key = NamespacedKey.fromString(modelKey);
+            setItemModelMethod.invoke(meta, key);
+        } catch (Throwable ignored) {}
+    }
+
+    // -------------------------------------------------------------------------
+    // Sound helper
+    // -------------------------------------------------------------------------
+
+    /**
+     * Plays a sound for a player from a namespaced key string (e.g. {@code "minecraft:ui.button.click"}).
+     * Uses {@link Registry#SOUNDS} for version-safe sound resolution.
+     *
+     * @param player   The player to play the sound for.
+     * @param soundStr The namespaced sound key, or {@code null} to do nothing.
+     */
+    public static void playSound(Player player, String soundStr) {
+        if (player == null || soundStr == null || soundStr.isBlank()) return;
+        try {
+            NamespacedKey key = NamespacedKey.fromString(soundStr);
+            if (key == null) return;
+            Sound sound = Registry.SOUNDS.get(key);
+            if (sound != null) player.playSound(player.getLocation(), sound, 0.5f, 1f);
+        } catch (Throwable ignored) {}
+    }
+
+    // -------------------------------------------------------------------------
+    // Component helpers
+    // -------------------------------------------------------------------------
+
     /**
      * Removes italic decoration from a component.
      *
@@ -54,6 +134,10 @@ public class GuiUtils {
         if (components == null) return null;
         return components.stream().map(GuiUtils::noItalic).toList();
     }
+
+    // -------------------------------------------------------------------------
+    // Item creation
+    // -------------------------------------------------------------------------
 
     /**
      * Creates an {@link ItemStack} with a display name and lore.
@@ -87,6 +171,53 @@ public class GuiUtils {
     }
 
     /**
+     * Creates an {@link ItemStack} from a {@link GuiItem} definition, applying all features:
+     * custom head textures, custom model data, item model, and item flags.
+     *
+     * @param itemDef The GUI item definition.
+     * @param name    The display name component.
+     * @param lore    The lore lines, or {@code null} for no lore.
+     * @return The constructed item stack with all features applied.
+     */
+    public ItemStack createItemFromDef(GuiItem itemDef, Component name, List<Component> lore) {
+        return createItemFromDef(itemDef, name, lore, null);
+    }
+
+    /**
+     * Creates an {@link ItemStack} from a {@link GuiItem} definition, applying all features:
+     * custom head textures (with Bedrock check), custom model data, item model, and item flags.
+     *
+     * @param itemDef The GUI item definition.
+     * @param name    The display name component.
+     * @param lore    The lore lines, or {@code null} for no lore.
+     * @param viewer  The player viewing the item, or {@code null} to skip the Bedrock check.
+     * @return The constructed item stack with all features applied.
+     */
+    public ItemStack createItemFromDef(GuiItem itemDef, Component name, List<Component> lore, Player viewer) {
+        ItemStack item;
+        if (itemDef.isCustomHead()) {
+            item = createPlayerHeadWithTexture(itemDef.getTextures(), name, lore, viewer);
+        } else {
+            item = createItem(Material.valueOf(itemDef.getMaterial()), name, lore);
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            if (itemDef.isCustomModel()) {
+                setCustomModelDataSafe(meta, itemDef.getCustomModelValue());
+            }
+            if (itemDef.isItemModel()) {
+                setItemModelSafe(meta, itemDef.getItemModelKey());
+            }
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    // -------------------------------------------------------------------------
+    // Item update
+    // -------------------------------------------------------------------------
+
+    /**
      * Updates the display name and/or lore of an existing item in an inventory.
      *
      * @param inv   The inventory containing the item.
@@ -106,6 +237,10 @@ public class GuiUtils {
             }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Navigation lore builder
+    // -------------------------------------------------------------------------
 
     /**
      * Builds the lore for a navigation button (back, previous, next).
@@ -132,6 +267,10 @@ public class GuiUtils {
         loreStr = loreStr.replace("%button%", button);
         return lang.getLore(loreStr);
     }
+
+    // -------------------------------------------------------------------------
+    // Player head creation
+    // -------------------------------------------------------------------------
 
     /**
      * Creates a player head {@link ItemStack} with a custom skin texture.
