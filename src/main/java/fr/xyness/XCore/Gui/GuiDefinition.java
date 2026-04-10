@@ -90,6 +90,19 @@ public class GuiDefinition {
     }
 
     /**
+     * Returns the item with the given key name, regardless of its slot.
+     *
+     * @param key The item key (e.g. "BackPage", "TimeSort").
+     * @return The {@link GuiItem} with that key, or {@code null} if not found.
+     */
+    public GuiItem itemByKey(String key) {
+        for (GuiItem item : items.values()) {
+            if (item.getKey().equals(key)) return item;
+        }
+        return null;
+    }
+
+    /**
      * Returns all configured items in this GUI.
      *
      * @return An unmodifiable collection of all {@link GuiItem} instances.
