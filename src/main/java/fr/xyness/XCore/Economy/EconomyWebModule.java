@@ -191,7 +191,7 @@ public class EconomyWebModule implements WebModule {
         try (Connection conn = plugin.getDataSource().getConnection()) {
             // Get total count
             try (PreparedStatement countPs = conn.prepareStatement(
-                    "SELECT COUNT(*) FROM xcoins_transactions WHERE player_name = ?")) {
+                    "SELECT COUNT(*) FROM xcore_transactions WHERE player_name = ?")) {
                 countPs.setString(1, playerName);
                 try (ResultSet rs = countPs.executeQuery()) {
                     if (rs.next()) {
@@ -202,7 +202,7 @@ public class EconomyWebModule implements WebModule {
 
             // Get transactions
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT * FROM xcoins_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                    "SELECT * FROM xcore_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
                 ps.setString(1, playerName);
                 ps.setInt(2, limit);
                 ps.setInt(3, offset);
