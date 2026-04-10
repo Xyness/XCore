@@ -131,13 +131,13 @@ public class CoinsManager {
     }
 
     /**
-     * Creates the xcoins_transactions table if it doesn't exist.
+     * Creates the xcore_transactions table if it doesn't exist.
      */
     private void initTransactionsTable() {
         CompletableFuture.runAsync(() -> {
             try (Connection conn = api().getDataSource().getConnection()) {
                 conn.createStatement().executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS xcoins_transactions (" +
+                    "CREATE TABLE IF NOT EXISTS xcore_transactions (" +
                     "id INT AUTO_INCREMENT PRIMARY KEY, " +
                     "player_uuid VARCHAR(36) NOT NULL, " +
                     "player_name VARCHAR(17) NOT NULL, " +
@@ -150,7 +150,7 @@ public class CoinsManager {
                     ")"
                 );
                 conn.createStatement().executeUpdate(
-                    "CREATE INDEX IF NOT EXISTS idx_xcoins_transactions_uuid ON xcoins_transactions (player_uuid)"
+                    "CREATE INDEX IF NOT EXISTS idx_xcore_transactions_uuid ON xcore_transactions (player_uuid)"
                 );
             } catch (SQLException e) {
                 logger().sendWarning("Failed to create transactions table: " + e.getMessage());
@@ -169,7 +169,7 @@ public class CoinsManager {
         CompletableFuture.runAsync(() -> {
             try (Connection conn = api().getDataSource().getConnection();
                  PreparedStatement ps = conn.prepareStatement(
-                     "INSERT INTO xcoins_transactions (player_uuid, player_name, currency, amount, type, target_name, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+                     "INSERT INTO xcore_transactions (player_uuid, player_name, currency, amount, type, target_name, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
                 ps.setString(1, playerId.toString());
                 ps.setString(2, playerName);
                 ps.setString(3, currency);
@@ -199,7 +199,7 @@ public class CoinsManager {
             int offset = (page - 1) * limit;
             try (Connection conn = api().getDataSource().getConnection();
                  PreparedStatement ps = conn.prepareStatement(
-                     "SELECT * FROM xcoins_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                     "SELECT * FROM xcore_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
                 ps.setString(1, playerName);
                 ps.setInt(2, limit);
                 ps.setInt(3, offset);
@@ -238,8 +238,8 @@ public class CoinsManager {
     public CompletableFuture<Integer> getTransactionCount(String playerName, String currency) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = currency != null
-                ? "SELECT COUNT(*) FROM xcoins_transactions WHERE player_name = ? AND currency = ?"
-                : "SELECT COUNT(*) FROM xcoins_transactions WHERE player_name = ?";
+                ? "SELECT COUNT(*) FROM xcore_transactions WHERE player_name = ? AND currency = ?"
+                : "SELECT COUNT(*) FROM xcore_transactions WHERE player_name = ?";
             try (Connection conn = api().getDataSource().getConnection();
                  PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setString(1, playerName);
@@ -262,8 +262,8 @@ public class CoinsManager {
             List<TransactionRecord> records = new ArrayList<>();
             int offset = (page - 1) * limit;
             String sql = currency != null
-                ? "SELECT * FROM xcoins_transactions WHERE player_name = ? AND currency = ? ORDER BY id DESC LIMIT ? OFFSET ?"
-                : "SELECT * FROM xcoins_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?";
+                ? "SELECT * FROM xcore_transactions WHERE player_name = ? AND currency = ? ORDER BY id DESC LIMIT ? OFFSET ?"
+                : "SELECT * FROM xcore_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?";
             try (Connection conn = api().getDataSource().getConnection();
                  PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setString(1, playerName);
