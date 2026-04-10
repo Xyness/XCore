@@ -113,13 +113,13 @@ public class GuiLoader {
         }
 
         int customModelData = section.getInt("custom_model_data_value", 0);
-        String itemModelKey = section.getString("item_model_key", "");
+        String itemModelKey = section.getString("item_model_key", null);
 
         // Parse language keys
         String targetTitle = section.getString("target-title", "");
         String targetLore = section.getString("target-lore", "");
-        String targetButtonOn = section.getString("target-button-on", "");
-        String targetButtonOff = section.getString("target-button-off", "");
+        String targetButtonOn = section.getString("target-button-on", null);
+        String targetButtonOff = section.getString("target-button-off", null);
 
         // Parse permission and sound
         String permission = section.getString("permission", null);
