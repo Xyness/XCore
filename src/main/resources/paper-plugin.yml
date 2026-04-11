@@ -4,6 +4,7 @@ author: 'Xyness'
 main: fr.xyness.XCore.XCore
 loader: fr.xyness.XCore.XCoreLibraryLoader
 description: Core framework for X plugins
+website: https://celestis.dev/
 api-version: '1.21.1'
 folia-supported: true
 load: STARTUP
