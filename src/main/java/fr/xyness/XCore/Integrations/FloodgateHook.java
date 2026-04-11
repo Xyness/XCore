@@ -15,7 +15,7 @@ import org.bukkit.entity.Player;
  */
 public class FloodgateHook {
 
-    private static boolean available = false;
+    private static volatile boolean available = false;
 
     /**
      * Initializes the Floodgate hook by checking if the Floodgate plugin is loaded.
