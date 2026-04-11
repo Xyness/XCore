@@ -1,8 +1,8 @@
 package fr.xyness.XCore.Gui;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Registry for storing and retrieving GUI definitions by name.
@@ -15,7 +15,7 @@ import java.util.Map;
 public class GuiRegistry {
 
     /** Internal map of GUI definitions keyed by name. */
-    private final Map<String, GuiDefinition> definitions = new HashMap<>();
+    private final Map<String, GuiDefinition> definitions = new ConcurrentHashMap<>();
 
     /**
      * Retrieves a GUI definition by its name.

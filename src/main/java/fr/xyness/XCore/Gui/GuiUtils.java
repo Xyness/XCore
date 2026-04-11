@@ -84,6 +84,7 @@ public class GuiUtils {
         if (meta == null || modelKey == null || setItemModelMethod == null) return;
         try {
             NamespacedKey key = NamespacedKey.fromString(modelKey);
+            if (key == null) return;
             setItemModelMethod.invoke(meta, key);
         } catch (Throwable ignored) {}
     }
