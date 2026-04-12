@@ -108,6 +108,11 @@ public class XCore extends JavaPlugin {
     @Override
     public void onLoad() {
         XCoreApiProvider.register(new XCoreApiService(this));
+
+        // Load addons early so their onLoad() runs during server load phase
+        // (allows addons to hook into Netty, register protocol handlers, etc.)
+        this.addonManager = new AddonManager(this);
+        addonManager.loadAddons();
     }
 
     @Override
@@ -485,8 +490,6 @@ public class XCore extends JavaPlugin {
         }
 
         // ---- Addons ----
-        this.addonManager = new AddonManager(this);
-        addonManager.loadAddons();
         addonManager.enableAddons();
 
         // ---- Prefetch online players ----
