@@ -434,7 +434,7 @@ public class XCore extends JavaPlugin {
                 }
 
                 // Commands
-                new CoinsCommand(this, coinsManager, economyLang);
+                new CoinsCommand(this, coinsManager, economyLang).register();
 
                 // PlaceholderAPI
                 if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
