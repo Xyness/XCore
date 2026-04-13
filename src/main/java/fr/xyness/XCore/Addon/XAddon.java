@@ -12,11 +12,14 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.event.Listener;
 
+import org.bukkit.entity.Player;
+
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Gui.GuiRegistry;
 import fr.xyness.XCore.Lang.LangNamespace;
 import fr.xyness.XCore.Utils.Logger;
 import fr.xyness.XCore.Utils.SchedulerAdapter;
+import fr.xyness.XCore.Utils.Updater;
 
 /**
  * Base class for all XCore addons.
@@ -48,6 +51,7 @@ public abstract class XAddon {
     private GuiRegistry guiRegistry;
     private FileConfiguration config;
     private File configFile;
+    private Updater updater;
 
     // -------------------------------------------------------------------------
     // Lifecycle methods (override in subclasses)
@@ -250,6 +254,54 @@ public abstract class XAddon {
         } catch (IOException e) {
             logger.sendWarning("Failed to save config.yml: " + e.getMessage());
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Update checker
+    // -------------------------------------------------------------------------
+
+    /**
+     * Initializes the update checker for this addon.
+     * Call this in {@link #onEnable()} to enable update checking and join notifications.
+     * <p>
+     * The updater fetches version info from GitHub at
+     * {@code https://raw.githubusercontent.com/Xyness/<addonName>/refs/heads/main/version.yml}.
+     * </p>
+     *
+     * @param addonName The addon name matching the GitHub repository name.
+     */
+    public final void initUpdater(String addonName) {
+        this.updater = new Updater(addonName, getDescriptor().getVersion(), logger);
+    }
+
+    /**
+     * Returns the updater instance, or {@code null} if not initialized.
+     *
+     * @return The {@link Updater} instance.
+     */
+    public final Updater updater() { return updater; }
+
+    /**
+     * Checks for updates and notifies the player if one is available.
+     * Call this in your PlayerJoinEvent handler for players with the update notification permission.
+     *
+     * @param player         The player to notify.
+     * @param permissionNode The permission required to receive update notifications (e.g. {@code "ah.update"}).
+     */
+    public final void notifyUpdateOnJoin(Player player, String permissionNode) {
+        if (updater == null || !updater.isUpdateAvailable()) return;
+        if (!player.hasPermission(permissionNode)) return;
+        boolean notifications = getConfig().getBoolean("update.notifications", true);
+        if (!notifications) return;
+        String addonName = descriptor.getName();
+        String newVersion = updater.getNewVersionAvailable();
+        String date = updater.getDate();
+        core.schedulerAdapter().runEntityTaskLater(player, () -> {
+            if (player.isOnline()) {
+                player.sendMessage(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(
+                    "<red>[" + addonName + "] An update is available: <aqua>" + newVersion + " <red>(" + date + ")"));
+            }
+        }, 60L);
     }
 
     /**
