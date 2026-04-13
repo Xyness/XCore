@@ -7,8 +7,10 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.bukkit.configuration.file.YamlConfiguration;
 
@@ -149,15 +151,28 @@ public class LangNamespace {
                 }
             }
 
-            // Save back merged keys if defaults added new ones
+            // Save back merged keys and remove obsolete keys
             if (defaults != null) {
                 boolean changed = false;
+
+                // Add missing keys
                 for (Map.Entry<String, String> entry : messages.entrySet()) {
                     if (!yaml.contains(entry.getKey())) {
                         yaml.set(entry.getKey(), entry.getValue());
                         changed = true;
                     }
                 }
+
+                // Remove obsolete keys (present on disk but not in defaults)
+                Set<String> defaultKeys = messages.keySet();
+                Set<String> diskKeys = new HashSet<>(yaml.getKeys(true));
+                for (String key : diskKeys) {
+                    if (!yaml.isConfigurationSection(key) && !defaultKeys.contains(key)) {
+                        yaml.set(key, null);
+                        changed = true;
+                    }
+                }
+
                 if (changed) {
                     try {
                         yaml.save(langFile);

@@ -1,6 +1,10 @@
 package fr.xyness.XCore;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -13,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -162,7 +167,7 @@ public class XCore extends JavaPlugin {
         this.schedulerAdapter = new SchedulerAdapter(this);
 
         // ---- Config ----
-        saveDefaultConfig();
+        updateConfigWithDefaults();
         FileConfiguration config = getConfig();
         databaseType = DatabaseType.valueOf(config.getString("database-type", "sqlite").toUpperCase());
         this.dialect = SqlDialect.of(databaseType);
@@ -552,6 +557,42 @@ public class XCore extends JavaPlugin {
 
         logger.sendInfo("Plugin disabled successfully.");
         logger.sendRawBar();
+    }
+
+    // -------------------------------------------------------------------------
+    // Config update
+    // -------------------------------------------------------------------------
+
+    /**
+     * Updates the configuration file by adding missing keys from the default config in the JAR.
+     * Existing values are preserved; only new keys are added.
+     */
+    private void updateConfigWithDefaults() {
+        saveDefaultConfig();
+        File configFile = new File(getDataFolder(), "config.yml");
+        if (!configFile.exists()) return;
+
+        FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
+        try (InputStream defStream = getResource("config.yml")) {
+            if (defStream == null) return;
+            YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
+                new InputStreamReader(defStream, StandardCharsets.UTF_8));
+
+            boolean changed = false;
+            for (String key : defConfig.getKeys(true)) {
+                if (!defConfig.isConfigurationSection(key) && !diskConfig.contains(key)) {
+                    diskConfig.set(key, defConfig.get(key));
+                    changed = true;
+                }
+            }
+
+            if (changed) {
+                diskConfig.save(configFile);
+            }
+        } catch (IOException e) {
+            logger.sendError("Error updating config with defaults: " + e.getMessage());
+        }
+        reloadConfig();
     }
 
     // -------------------------------------------------------------------------
