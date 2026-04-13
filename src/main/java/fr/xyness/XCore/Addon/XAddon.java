@@ -3,7 +3,9 @@ package fr.xyness.XCore.Addon;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 import org.bukkit.configuration.file.FileConfiguration;
@@ -248,6 +250,42 @@ public abstract class XAddon {
         } catch (IOException e) {
             logger.sendWarning("Failed to save config.yml: " + e.getMessage());
         }
+    }
+
+    /**
+     * Updates the configuration file by adding missing keys from the default config in the JAR.
+     * Existing values are preserved; only new keys are added.
+     */
+    public final void updateConfigWithDefaults() {
+        if (configFile == null) {
+            configFile = new File(dataFolder, "config.yml");
+        }
+        if (!configFile.exists()) {
+            saveDefaultConfig();
+            return;
+        }
+
+        FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
+        try (InputStream defStream = getClass().getClassLoader().getResourceAsStream("config.yml")) {
+            if (defStream == null) return;
+            YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
+                new InputStreamReader(defStream, StandardCharsets.UTF_8));
+
+            boolean changed = false;
+            for (String key : defConfig.getKeys(true)) {
+                if (!defConfig.isConfigurationSection(key) && !diskConfig.contains(key)) {
+                    diskConfig.set(key, defConfig.get(key));
+                    changed = true;
+                }
+            }
+
+            if (changed) {
+                diskConfig.save(configFile);
+            }
+        } catch (IOException e) {
+            logger.sendError("Error updating config with defaults: " + e.getMessage());
+        }
+        reloadConfig();
     }
 
     // -------------------------------------------------------------------------
