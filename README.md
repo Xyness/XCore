@@ -29,27 +29,9 @@ Core framework for the X ecosystem of Minecraft plugins. Provides centralized da
 
 | Addon | Description |
 |-------|-------------|
-| XBans | Sanctions, IP security, alt detection, AI moderation, warden |
-| XLogin | Login/register authentication, sessions, player protection |
-| XEssentials | Utility commands, private messaging, ignore system |
-| XChat | Chat channels, formatting, mentions, filters, anti-spam |
-| XStats | Player statistics (21+ gameplay metrics) |
-| XLevels | Level/XP progression system with prestige |
-| XFriends | Friend system with messaging and blocking |
-| XCosmetics | Cosmetics: particles, pets, capes, hats, balloons |
-| XCrates | Loot crates with physical animations |
-| XAuctionHouse | Auction house with search and tax system |
-| XKits | Item kits with cooldowns |
-| XWarps | Public teleportation points |
-| XHomes | Player homes |
-| XMailbox | Messaging and item sending |
-| XMissions | Daily/weekly missions |
-| XShops | Player shops |
-| XGuis | Custom YAML-based menus |
-| XRanks | Hierarchical rank system |
-| XQuests | Quest system |
-| XBackpack | Virtual backpack |
-| XEnderchest | Enhanced ender chest with pages |
+| [XBans](https://builtbybit.com/resources/xbans.102982/) | Sanctions, IP security, alt detection, AI moderation, warden |
+| [XLogin](https://builtbybit.com/resources/xlogin.103391/) | Login/register authentication, auto-premium login, sessions, player protection, proxy & Bedrock support |
+| [XAuctionHouse](https://builtbybit.com/resources/xauctionhouse.103084/) | Advanced auction house system with bid system, search, favorites, filters |
 
 ## Installation
 
