@@ -74,6 +74,7 @@ public interface SqlDialect {
         @Override
         public String toSqlType(ColumnType type) {
             return switch (type) {
+                case DOUBLE   -> "DOUBLE PRECISION";
                 case DATETIME -> "TIMESTAMP";
                 default       -> type.name();
             };

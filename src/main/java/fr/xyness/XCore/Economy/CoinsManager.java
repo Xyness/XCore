@@ -21,6 +21,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
 
 import fr.xyness.XCore.XCore;
+import fr.xyness.XCore.API.DatabaseType;
 import fr.xyness.XCore.API.XCoreApi;
 import fr.xyness.XCore.API.XCoreApiProvider;
 import fr.xyness.XCore.Models.PlayerData;
@@ -136,18 +137,24 @@ public class CoinsManager {
     private void initTransactionsTable() {
         CompletableFuture.runAsync(() -> {
             try (Connection conn = api().getDataSource().getConnection()) {
+                String autoInc = switch (api().getDatabaseType()) {
+                    case MYSQL -> "INT AUTO_INCREMENT PRIMARY KEY";
+                    case POSTGRESQL -> "SERIAL PRIMARY KEY";
+                    case SQLITE -> "INTEGER PRIMARY KEY AUTOINCREMENT";
+                };
+                String engine = api().getDatabaseType() == DatabaseType.MYSQL ? " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" : "";
                 conn.createStatement().executeUpdate(
                     "CREATE TABLE IF NOT EXISTS xcore_transactions (" +
-                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "id " + autoInc + ", " +
                     "player_uuid VARCHAR(36) NOT NULL, " +
                     "player_name VARCHAR(17) NOT NULL, " +
                     "currency VARCHAR(32) NOT NULL, " +
-                    "amount DOUBLE NOT NULL, " +
+                    "amount DOUBLE PRECISION NOT NULL, " +
                     "type VARCHAR(20) NOT NULL, " +
                     "target_name VARCHAR(17), " +
                     "details TEXT, " +
                     "created_at TEXT NOT NULL" +
-                    ")"
+                    ")" + engine
                 );
                 conn.createStatement().executeUpdate(
                     "CREATE INDEX IF NOT EXISTS idx_xcore_transactions_uuid ON xcore_transactions (player_uuid)"
