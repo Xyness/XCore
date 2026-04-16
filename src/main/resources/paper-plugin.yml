@@ -1,5 +1,5 @@
 name: XCore
-version: '1.0.1'
+version: '1.0.0'
 author: 'Xyness'
 main: fr.xyness.XCore.XCore
 loader: fr.xyness.XCore.XCoreLibraryLoader
