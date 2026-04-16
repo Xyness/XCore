@@ -83,6 +83,17 @@ public class AddonManager {
                     continue;
                 }
 
+                // Register toggle in config (default: true)
+                core.registerAddonToggle(desc.getName());
+
+                // Check if addon is disabled in config
+                if (!core.isAddonEnabled(desc.getName())) {
+                    logger.sendInfo("Addon '" + desc.getName() + "' is disabled in config, skipping.");
+                    states.put(desc.getName(), AddonState.DISABLED);
+                    loader.close();
+                    continue;
+                }
+
                 pendingLoaders.put(desc.getName(), loader);
                 descriptors.put(desc.getName(), desc);
             } catch (IOException e) {

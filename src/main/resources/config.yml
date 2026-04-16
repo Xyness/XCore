@@ -16,29 +16,30 @@ database:
   ssl: false
   pool-size: 10
 
-# Redis cache (optional, shared cache for multi-server networks)
-redis:
-  enabled: false
-  host: localhost
-  port: 6379
-  password: ""
-  database: 0
-  # TTL in seconds for cached player data
-  ttl: 3600
-
-# Cross-server sync
-# Uses Redis Pub/Sub (if Redis enabled) or database polling as fallback.
+# Cross-server (multi-server network)
 # Requires MySQL or PostgreSQL (not compatible with SQLite).
-cross-server-sync:
+cross-server:
   enabled: false
   server-name: "default"
-  # Poll interval in seconds (fallback if Redis unavailable)
-  poll-interval-seconds: 3
-  # How long to keep invalidation entries before cleanup (in seconds)
-  retention-seconds: 300
-  # Per-addon sync toggle (entries are added automatically when addons load)
-  # Set to true to enable real-time sync for a specific addon
-  addons: {}
+
+  # Redis (optional, used for L2 cache and Pub/Sub sync)
+  # If disabled, sync falls back to database polling.
+  redis:
+    enabled: false
+    host: localhost
+    port: 6379
+    password: ""
+    database: 0
+    # TTL in seconds for cached player data
+    ttl: 3600
+
+  # Sync settings
+  sync:
+    # Poll interval in seconds (fallback if Redis unavailable)
+    poll-interval-seconds: 3
+    # How long to keep invalidation entries before cleanup (in seconds)
+    retention-seconds: 300
+
 
 # Cache settings
 cache:
@@ -68,12 +69,11 @@ web-dashboard:
 # Economy system (built-in, requires Vault)
 # Automatically enabled if Vault is installed, disabled otherwise.
 economy:
-  enabled: true
+  enabled: false
 
   # Cross-server support (per-server balances)
-  cross-server:
-    enabled: false
-    server-name: "default"
+  # Uses the cross-server.server-name above for isolation
+  per-server-balances: false
 
   # Define currencies
   currencies:
@@ -123,4 +123,3 @@ economy:
     rate: 0.01
     interval-minutes: 1440
     currency: "coins"
-
