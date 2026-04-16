@@ -114,6 +114,7 @@ public class XCore extends JavaPlugin {
 
     @Override
     public void onLoad() {
+        logger.sendRawBar();
         XCoreApiProvider.register(new XCoreApiService(this));
 
         // Init addons.yml (needed before loadAddons for addon toggles)
@@ -128,6 +129,7 @@ public class XCore extends JavaPlugin {
         // (allows addons to hook into Netty, register protocol handlers, etc.)
         this.addonManager = new AddonManager(this);
         addonManager.loadAddons();
+        logger.sendRawBar();
     }
 
     @Override
