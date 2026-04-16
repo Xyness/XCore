@@ -30,7 +30,7 @@ public class Methods {
 
 	/** Whitelist regex for SQL column definitions. Only allows safe SQL types with optional size, DEFAULT and NOT NULL. */
     private static final java.util.regex.Pattern SAFE_DEFINITION = java.util.regex.Pattern.compile(
-	    "^(INT|INTEGER|BIGINT|SMALLINT|TINYINT|FLOAT|DOUBLE|DECIMAL|NUMERIC|BOOLEAN|BOOL" +
+	    "^(INT|INTEGER|BIGINT|SMALLINT|TINYINT|FLOAT|DOUBLE PRECISION|DOUBLE|DECIMAL|NUMERIC|BOOLEAN|BOOL|SERIAL|REAL" +
 	    "|VARCHAR|CHAR|TEXT|TINYTEXT|MEDIUMTEXT|LONGTEXT" +
 	    "|DATE|TIME|DATETIME|TIMESTAMP)" +
 	    "(\\(\\d+(?:,\\s*\\d+)?\\))?" +
