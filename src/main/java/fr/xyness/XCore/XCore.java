@@ -105,6 +105,8 @@ public class XCore extends JavaPlugin {
     private CoinsManager coinsManager;
     private LangNamespace economyLang;
     private long startTimeMillis;
+    private FileConfiguration addonsConfig;
+    private File addonsFile;
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -170,6 +172,13 @@ public class XCore extends JavaPlugin {
         updateConfigWithDefaults();
         FileConfiguration config = getConfig();
         databaseType = DatabaseType.valueOf(config.getString("database-type", "sqlite").toUpperCase());
+
+        // ---- Data file (dynamic toggles, never touch config.yml comments) ----
+        this.addonsFile = new File(getDataFolder(), "addons.yml");
+        if (!addonsFile.exists()) {
+            try { addonsFile.createNewFile(); } catch (IOException e) { logger.sendError("Failed to create addons.yml: " + e.getMessage()); }
+        }
+        this.addonsConfig = YamlConfiguration.loadConfiguration(addonsFile);
         this.dialect = SqlDialect.of(databaseType);
 
         // ---- Lang ----
@@ -185,6 +194,7 @@ public class XCore extends JavaPlugin {
                     int port = clamp(config.getInt("database.port", 3306), 1, 65535, "database.port");
                     String dbName = config.getString("database.name", "xcore");
                     int poolSize = clamp(config.getInt("database.pool-size", 10), 1, 100, "database.pool-size");
+                    hikaConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
                     hikaConfig.setJdbcUrl("jdbc:mysql://" + host + ":" + port + "/" + dbName + "?useSSL=" + config.getBoolean("database.ssl", false) + "&allowPublicKeyRetrieval=true&characterEncoding=utf8");
                     hikaConfig.setUsername(config.getString("database.username", "root"));
                     hikaConfig.setPassword(config.getString("database.password", ""));
@@ -201,6 +211,7 @@ public class XCore extends JavaPlugin {
                     int port = clamp(config.getInt("database.port", 5432), 1, 65535, "database.port");
                     String dbName = config.getString("database.name", "xcore");
                     int poolSize = clamp(config.getInt("database.pool-size", 10), 1, 100, "database.pool-size");
+                    hikaConfig.setDriverClassName("org.postgresql.Driver");
                     hikaConfig.setJdbcUrl("jdbc:postgresql://" + host + ":" + port + "/" + dbName + "?ssl=" + config.getBoolean("database.ssl", false));
                     hikaConfig.setUsername(config.getString("database.username", "root"));
                     hikaConfig.setPassword(config.getString("database.password", ""));
@@ -279,13 +290,14 @@ public class XCore extends JavaPlugin {
             .apply();
 
         // ---- Redis ----
-        if (config.getBoolean("redis.enabled", false)) {
+        boolean crossServerEnabled = config.getBoolean("cross-server.enabled", false);
+        if (crossServerEnabled && config.getBoolean("cross-server.redis.enabled", false)) {
             try {
-                String redisHost = config.getString("redis.host", "localhost");
-                int redisPort = clamp(config.getInt("redis.port", 6379), 1, 65535, "redis.port");
-                String redisPassword = config.getString("redis.password", "");
-                int redisDb = config.getInt("redis.database", 0);
-                redisTTL = clamp(config.getInt("redis.ttl", 3600), 60, 86400, "redis.ttl");
+                String redisHost = config.getString("cross-server.redis.host", "localhost");
+                int redisPort = clamp(config.getInt("cross-server.redis.port", 6379), 1, 65535, "cross-server.redis.port");
+                String redisPassword = config.getString("cross-server.redis.password", "");
+                int redisDb = config.getInt("cross-server.redis.database", 0);
+                redisTTL = clamp(config.getInt("cross-server.redis.ttl", 3600), 60, 86400, "cross-server.redis.ttl");
 
                 JedisPoolConfig poolConfig = new JedisPoolConfig();
                 poolConfig.setMaxTotal(16); poolConfig.setMaxIdle(8); poolConfig.setMinIdle(2);
@@ -347,8 +359,8 @@ public class XCore extends JavaPlugin {
             .build();
 
         // ---- SyncManager ----
-        int pollSeconds = clamp(config.getInt("cross-server-sync.poll-interval-seconds", 3), 1, 60, "cross-server-sync.poll-interval-seconds");
-        int retentionSeconds = clamp(config.getInt("cross-server-sync.retention-seconds", 300), 30, 3600, "cross-server-sync.retention-seconds");
+        int pollSeconds = clamp(config.getInt("cross-server.sync.poll-interval-seconds", 3), 1, 60, "cross-server.sync.poll-interval-seconds");
+        int retentionSeconds = clamp(config.getInt("cross-server.sync.retention-seconds", 300), 30, 3600, "cross-server.sync.retention-seconds");
 
         this.syncManager = new SyncManager(
             jedisPool, dataSource, databaseType, executor,
@@ -356,8 +368,7 @@ public class XCore extends JavaPlugin {
             logger::sendDebug, logger::sendWarning, logger::sendError
         );
 
-        boolean syncEnabled = config.getBoolean("cross-server-sync.enabled", false) || config.getBoolean("redis.enabled", false);
-        if (syncEnabled) {
+        if (crossServerEnabled) {
             syncManager.start();
             logger.sendInfo("Cross-server sync started.");
         }
@@ -496,6 +507,7 @@ public class XCore extends JavaPlugin {
 
         // ---- Addons ----
         addonManager.enableAddons();
+        saveDataConfig();
 
         // ---- Prefetch online players ----
         List<UUID> onlineUuids = Bukkit.getOnlinePlayers().stream().map(Player::getUniqueId).toList();
@@ -664,27 +676,48 @@ public class XCore extends JavaPlugin {
      * Returns true only if global sync is enabled AND the addon is toggled on.
      */
     public boolean isSyncEnabledFor(String addonName) {
-        FileConfiguration cfg = getConfig();
-        return cfg.getBoolean("cross-server-sync.enabled", false)
-            && cfg.getBoolean("cross-server-sync.addons." + addonName, false);
+        return getConfig().getBoolean("cross-server.enabled", false)
+            && addonsConfig.getBoolean("sync-addons." + addonName, false);
     }
 
     /**
-     * Registers an addon in the cross-server sync config (default: false).
-     * Called automatically when an addon loads. Saves config if a new entry was added.
+     * Registers an addon in the data file (default: true).
+     * Called automatically when an addon is detected.
+     */
+    public void registerAddonToggle(String addonName) {
+        String path = "addons." + addonName;
+        if (!addonsConfig.contains(path)) {
+            addonsConfig.set(path, true);
+        }
+    }
+
+    /**
+     * @return Whether the given addon is enabled.
+     */
+    public boolean isAddonEnabled(String addonName) {
+        return addonsConfig.getBoolean("addons." + addonName, true);
+    }
+
+    /**
+     * Registers an addon in the sync section of data file (default: false).
+     * Called automatically when an addon loads.
      */
     public void registerSyncAddon(String addonName) {
-        FileConfiguration cfg = getConfig();
-        String path = "cross-server-sync.addons." + addonName;
-        if (!cfg.contains(path)) {
-            cfg.set(path, false);
-            saveConfig();
+        String path = "sync-addons." + addonName;
+        if (!addonsConfig.contains(path)) {
+            addonsConfig.set(path, false);
         }
+    }
+
+    /** Saves the addons.yml file (called once after all addons are loaded). */
+    public void saveDataConfig() {
+        try { addonsConfig.save(addonsFile); }
+        catch (IOException e) { logger.sendError("Failed to save addons.yml: " + e.getMessage()); }
     }
 
     /** @return The configured server name for cross-server tagging. */
     public String getServerName() {
-        return getConfig().getString("cross-server-sync.server-name", "default");
+        return getConfig().getString("cross-server.server-name", "default");
     }
 
     /** @return The plugin start time in milliseconds. */

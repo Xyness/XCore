@@ -49,9 +49,9 @@ public class CoinsManager {
     public CoinsManager(XCore plugin) {
         this.plugin = plugin;
         // Cross-server suffix
-        boolean crossServer = plugin.getConfig().getBoolean("economy.cross-server.enabled", false);
-        String serverName = plugin.getConfig().getString("economy.cross-server.server-name", "default");
-        this.columnSuffix = crossServer ? "" : "_" + serverName;
+        boolean perServer = plugin.getConfig().getBoolean("economy.per-server-balances", false);
+        String serverName = plugin.getConfig().getString("cross-server.server-name", "default");
+        this.columnSuffix = perServer ? "_" + serverName : "";
         loadCurrencies();
         loadExchangeRates();
         initTransactionsTable();
@@ -481,9 +481,9 @@ public class CoinsManager {
      */
     public void reload() {
         // Re-read cross-server suffix
-        boolean crossServer = plugin.getConfig().getBoolean("economy.cross-server.enabled", false);
-        String serverName = plugin.getConfig().getString("economy.cross-server.server-name", "default");
-        this.columnSuffix = crossServer ? "" : "_" + serverName;
+        boolean perServer = plugin.getConfig().getBoolean("economy.per-server-balances", false);
+        String serverName = plugin.getConfig().getString("cross-server.server-name", "default");
+        this.columnSuffix = perServer ? "_" + serverName : "";
         loadCurrencies();
         loadExchangeRates();
     }
