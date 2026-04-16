@@ -101,17 +101,17 @@ database:
   password: ""
   pool-size: 10
 
-# Redis (optional, enables L2 cache + fast cross-server sync)
-redis:
+# Cross-server (multi-server network)
+cross-server:
   enabled: false
-  host: localhost
-  port: 6379
-
-# Cross-server sync (database polling fallback if Redis unavailable)
-cross-server-sync:
-  enabled: false
-  poll-interval-seconds: 3
-  retention-seconds: 300
+  server-name: "default"
+  redis:
+    enabled: false
+    host: localhost
+    port: 6379
+  sync:
+    poll-interval-seconds: 3
+    retention-seconds: 300
 
 # Web dashboard
 web-dashboard:
