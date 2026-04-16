@@ -116,6 +116,14 @@ public class XCore extends JavaPlugin {
     public void onLoad() {
         XCoreApiProvider.register(new XCoreApiService(this));
 
+        // Init addons.yml (needed before loadAddons for addon toggles)
+        this.addonsFile = new File(getDataFolder(), "addons.yml");
+        if (!addonsFile.exists()) {
+            getDataFolder().mkdirs();
+            try { addonsFile.createNewFile(); } catch (IOException e) { getLogger().warning("Failed to create addons.yml: " + e.getMessage()); }
+        }
+        this.addonsConfig = YamlConfiguration.loadConfiguration(addonsFile);
+
         // Load addons early so their onLoad() runs during server load phase
         // (allows addons to hook into Netty, register protocol handlers, etc.)
         this.addonManager = new AddonManager(this);
@@ -172,13 +180,6 @@ public class XCore extends JavaPlugin {
         updateConfigWithDefaults();
         FileConfiguration config = getConfig();
         databaseType = DatabaseType.valueOf(config.getString("database-type", "sqlite").toUpperCase());
-
-        // ---- Data file (dynamic toggles, never touch config.yml comments) ----
-        this.addonsFile = new File(getDataFolder(), "addons.yml");
-        if (!addonsFile.exists()) {
-            try { addonsFile.createNewFile(); } catch (IOException e) { logger.sendError("Failed to create addons.yml: " + e.getMessage()); }
-        }
-        this.addonsConfig = YamlConfiguration.loadConfiguration(addonsFile);
         this.dialect = SqlDialect.of(databaseType);
 
         // ---- Lang ----
