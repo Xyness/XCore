@@ -84,20 +84,6 @@ economy:
       starting-balance: 0.00
       max-balance: 1000000000
       vault: true
-    gems:
-      symbol: "\u2726"
-      symbol-position: AFTER
-      decimals: 0
-      starting-balance: 0
-      max-balance: 0
-      vault: false
-    tokens:
-      symbol: "\u26C3"
-      symbol-position: BEFORE
-      decimals: 0
-      starting-balance: 0
-      max-balance: 0
-      vault: false
 
   # Currency exchange
   exchange:

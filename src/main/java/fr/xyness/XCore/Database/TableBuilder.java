@@ -156,9 +156,8 @@ public class TableBuilder {
             // For PostgreSQL and SQLite, create indexes separately
             if (databaseType != DatabaseType.MYSQL) {
                 for (IndexDef idx : indexes) {
-                    String idxSql = "CREATE INDEX IF NOT EXISTS " + idx.indexName(tableName) +
-                                    " ON " + tableName + " (" + String.join(", ", idx.columns) + ")";
-                    stmt.executeUpdate(idxSql);
+                    SqlUtils.createIndexIfNotExists(c, databaseType, idx.indexName(tableName),
+                            tableName, String.join(", ", idx.columns));
                 }
             }
         } catch (SQLException e) {

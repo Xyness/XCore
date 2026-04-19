@@ -24,6 +24,7 @@ import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.API.DatabaseType;
 import fr.xyness.XCore.API.XCoreApi;
 import fr.xyness.XCore.API.XCoreApiProvider;
+import fr.xyness.XCore.Database.SqlUtils;
 import fr.xyness.XCore.Models.PlayerData;
 import fr.xyness.XCore.Utils.Logger;
 
@@ -156,9 +157,8 @@ public class CoinsManager {
                     "created_at TEXT NOT NULL" +
                     ")" + engine
                 );
-                conn.createStatement().executeUpdate(
-                    "CREATE INDEX IF NOT EXISTS idx_xcore_transactions_uuid ON xcore_transactions (player_uuid)"
-                );
+                SqlUtils.createIndexIfNotExists(conn, api().getDatabaseType(),
+                    "idx_xcore_transactions_uuid", "xcore_transactions", "player_uuid");
             } catch (SQLException e) {
                 logger().sendWarning("Failed to create transactions table: " + e.getMessage());
             }
