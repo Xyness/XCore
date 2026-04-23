@@ -9,6 +9,7 @@ import java.util.function.Consumer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
@@ -39,6 +40,7 @@ public class SchedulerAdapter {
     // Cached Folia reflection methods (null on non-Folia servers)
     private Method playerTeleportAsyncMethod;
     private Method playerGetSchedulerMethod;
+    private Method entityGetSchedulerMethod;
     private Method entitySchedulerRunMethod;
     private Method entitySchedulerRunDelayedMethod;
     private Method bukkitGetGlobalRegionSchedulerMethod;
@@ -69,6 +71,8 @@ public class SchedulerAdapter {
                 Class<?> playerClass = Player.class;
                 playerTeleportAsyncMethod = playerClass.getMethod("teleportAsync", Location.class);
                 playerGetSchedulerMethod = playerClass.getMethod("getScheduler");
+                // All entities share the same #getScheduler signature on Folia/Paper 1.21+.
+                entityGetSchedulerMethod = Entity.class.getMethod("getScheduler");
 
                 Class<?> entitySchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.EntityScheduler");
                 entitySchedulerRunMethod = entitySchedulerClass.getMethod("run", Plugin.class, Consumer.class, Runnable.class);
@@ -167,6 +171,49 @@ public class SchedulerAdapter {
 	            entitySchedulerRunDelayedMethod.invoke(scheduler, main, wrapConsumer(task), null, delayTicks);
 	        } catch (Exception e) {
 	            main.logger().sendError("Failed to schedule delayed entity task: " + e.getMessage());
+	        }
+	    } else {
+	        Bukkit.getScheduler().runTaskLater(main, task, delayTicks);
+	    }
+	}
+
+	/**
+	 * Runs a task on the owning region thread of any {@link Entity}.
+	 * Works for armor stands, item displays, non-player entities too — the
+	 * Folia entity scheduler signature is shared across all entity types.
+	 *
+	 * @param entity The entity whose region thread should execute the task.
+	 * @param task   The task to run.
+	 */
+	public void runEntityTask(Entity entity, Runnable task) {
+	    if (entity == null) { runGlobalTask(task); return; }
+	    if (isFolia) {
+	        try {
+	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
+	            entitySchedulerRunMethod.invoke(scheduler, main, wrapConsumer(task), null);
+	        } catch (Exception e) {
+	            main.logger().sendError("Failed to schedule Folia entity task : " + e.getMessage());
+	        }
+	    } else {
+	        Bukkit.getScheduler().runTask(main, task);
+	    }
+	}
+
+	/**
+	 * Runs a task on the owning region thread of any {@link Entity} after a delay.
+	 *
+	 * @param entity     The entity whose region thread should execute the task.
+	 * @param task       The task to run.
+	 * @param delayTicks The delay in server ticks before execution.
+	 */
+	public void runEntityTaskLater(Entity entity, Runnable task, long delayTicks) {
+	    if (entity == null) { runAsyncTaskLater(task, delayTicks); return; }
+	    if (isFolia) {
+	        try {
+	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
+	            entitySchedulerRunDelayedMethod.invoke(scheduler, main, wrapConsumer(task), null, delayTicks);
+	        } catch (Exception e) {
+	            main.logger().sendError("Failed to schedule delayed entity task : " + e.getMessage());
 	        }
 	    } else {
 	        Bukkit.getScheduler().runTaskLater(main, task, delayTicks);
