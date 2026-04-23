@@ -11,7 +11,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
+import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.Plugin;
 
 /**
  * Custom {@link URLClassLoader} for loading addon JARs.
@@ -20,10 +22,18 @@ import org.bukkit.configuration.file.YamlConfiguration;
  * The {@code addon.yml} descriptor is parsed from the JAR during construction
  * and made available via {@link #getDescriptor()}.
  * </p>
+ * <p>
+ * As a last-resort fallback, {@link #findClass(String)} iterates over loaded
+ * server plugins (Bukkit + Paper) and tries their classloaders. This allows
+ * addons to import classes from plugins like FancyHolograms that XCore itself
+ * does not declare as a paper-plugin dependency. A small negative cache avoids
+ * re-scanning all plugins for every class lookup miss.
+ * </p>
  */
 public class AddonClassLoader extends URLClassLoader {
 
     private final AddonDescriptor descriptor;
+    private final java.util.Set<String> missCache = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * Creates a new AddonClassLoader for the given JAR file.
@@ -41,11 +51,6 @@ public class AddonClassLoader extends URLClassLoader {
 
     /**
      * Parses the {@code addon.yml} from inside the JAR file.
-     *
-     * @param jarFile The JAR file to read from.
-     * @return The parsed {@link AddonDescriptor}.
-     * @throws IOException              If the JAR cannot be read.
-     * @throws IllegalArgumentException If {@code addon.yml} is missing or malformed.
      */
     private AddonDescriptor parseDescriptor(File jarFile) throws IOException {
         try (JarFile jar = new JarFile(jarFile)) {
@@ -63,8 +68,6 @@ public class AddonClassLoader extends URLClassLoader {
 
     /**
      * Returns the addon descriptor parsed from this JAR's {@code addon.yml}.
-     *
-     * @return The {@link AddonDescriptor}.
      */
     public AddonDescriptor getDescriptor() {
         return descriptor;
@@ -96,5 +99,49 @@ public class AddonClassLoader extends URLClassLoader {
             }
         }
         return super.getResourceAsStream(name);
+    }
+
+    /**
+     * Fallback class lookup : if a class isn't in the addon jar nor in XCore's
+     * classloader, iterate loaded plugins' classloaders. This lets addons use
+     * third-party Paper plugins (FancyHolograms, ItemsAdder, etc.) via direct
+     * imports without requiring XCore to declare each of them in its
+     * {@code paper-plugin.yml}.
+     */
+    @Override
+    protected Class<?> findClass(String name) throws ClassNotFoundException {
+        try {
+            return super.findClass(name);
+        } catch (ClassNotFoundException primary) {
+            // Skip core Java / Bukkit classes : never going to be in another plugin.
+            if (name.startsWith("java.") || name.startsWith("javax.")
+                    || name.startsWith("org.bukkit.") || name.startsWith("net.kyori.")
+                    || name.startsWith("fr.xyness.XCore.")) {
+                throw primary;
+            }
+            if (missCache.contains(name)) throw primary;
+            Plugin[] plugins;
+            try {
+                plugins = Bukkit.getPluginManager().getPlugins();
+            } catch (Throwable t) {
+                missCache.add(name);
+                throw primary;
+            }
+            for (Plugin plugin : plugins) {
+                if (plugin == null) continue;
+                ClassLoader pluginLoader = plugin.getClass().getClassLoader();
+                if (pluginLoader == null || pluginLoader == this) continue;
+                try {
+                    Class<?> found = Class.forName(name, false, pluginLoader);
+                    if (found != null) return found;
+                } catch (ClassNotFoundException | NoClassDefFoundError ignored) {
+                    // keep iterating
+                } catch (Throwable t) {
+                    // Any other error (e.g. classloader closed) : skip this plugin.
+                }
+            }
+            missCache.add(name);
+            throw primary;
+        }
     }
 }
