@@ -159,7 +159,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    compileOnly 'com.github.xyness:XCore:1.0.0'
+    compileOnly 'com.github.Xyness:XCore:1.0.3'
 }
 ```
 
@@ -182,7 +182,11 @@ public class MyAddon extends XAddon {
 
     @Override
     public boolean onEnable() {
-        saveDefaultConfig();
+        // Writes config.yml on first run, then adds any new top-level keys
+        // introduced by future versions. Pass user-managed map sections
+        // (key:value entries the user adds/removes) so their contents are
+        // never re-injected — listed paths are skipped entirely.
+        updateConfigWithDefaults("limits.blocks", "limits.entities");
         // Listeners, commands, tables...
         return true;
     }
@@ -207,6 +211,8 @@ public class MyAddon extends XAddon {
 | `guiRegistry()` | GUI definition registry (loaded from YAML) |
 | `getConfig()` | Addon config.yml |
 | `getDataFolder()` | `plugins/XCore/addons/<name>/` |
+| `saveDefaultConfig()` | Write bundled `config.yml` to disk if missing (no merge) |
+| `updateConfigWithDefaults(String... protectedSections)` | Write defaults on first run, then add new top-level keys on later runs. Paths listed in `protectedSections` are skipped entirely — useful for user-managed maps (e.g. `chunk-limits.blocks`, `shops`) where removed entries must stay removed |
 
 ### GUI Framework
 
@@ -384,7 +390,7 @@ cd XCore
 ./gradlew clean shadowJar
 ```
 
-Output: `build/libs/XCore-1.0.0.jar`
+Output: `build/libs/XCore-1.0.3.jar`
 
 ## License
 

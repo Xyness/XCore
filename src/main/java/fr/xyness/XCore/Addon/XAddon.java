@@ -307,8 +307,14 @@ public abstract class XAddon {
     /**
      * Updates the configuration file by adding missing keys from the default config in the JAR.
      * Existing values are preserved; only new keys are added.
+     *
+     * @param protectedSections Sections whose contents are user-managed (e.g. key:value maps like
+     *                          {@code "chunk-limits.blocks"} or named entries like {@code "shops"}).
+     *                          Nothing under a protected path is ever re-injected — regardless of
+     *                          whether the section is present on disk. The initial defaults are
+     *                          still written on first run via {@link #saveDefaultConfig()}.
      */
-    public final void updateConfigWithDefaults() {
+    public final void updateConfigWithDefaults(String... protectedSections) {
         if (configFile == null) {
             configFile = new File(dataFolder, "config.yml");
         }
@@ -325,10 +331,11 @@ public abstract class XAddon {
 
             boolean changed = false;
             for (String key : defConfig.getKeys(true)) {
-                if (!defConfig.isConfigurationSection(key) && !diskConfig.contains(key)) {
-                    diskConfig.set(key, defConfig.get(key));
-                    changed = true;
-                }
+                if (defConfig.isConfigurationSection(key)) continue;
+                if (diskConfig.contains(key)) continue;
+                if (isUnderProtectedSection(key, protectedSections)) continue;
+                diskConfig.set(key, defConfig.get(key));
+                changed = true;
             }
 
             if (changed) {
@@ -338,6 +345,14 @@ public abstract class XAddon {
             logger.sendError("Error updating config with defaults: " + e.getMessage());
         }
         reloadConfig();
+    }
+
+    private static boolean isUnderProtectedSection(String key, String[] protectedSections) {
+        for (String prot : protectedSections) {
+            if (prot == null || prot.isEmpty()) continue;
+            if (key.equals(prot) || key.startsWith(prot + ".")) return true;
+        }
+        return false;
     }
 
     // -------------------------------------------------------------------------
