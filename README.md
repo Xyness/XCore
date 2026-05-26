@@ -159,7 +159,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    compileOnly 'com.github.Xyness:XCore:1.0.3'
+    compileOnly 'com.github.Xyness:XCore:1.0.4'
 }
 ```
 
@@ -390,7 +390,7 @@ cd XCore
 ./gradlew clean shadowJar
 ```
 
-Output: `build/libs/XCore-1.0.3.jar`
+Output: `build/libs/XCore-1.0.4.jar`
 
 ## License
 

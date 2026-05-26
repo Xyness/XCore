@@ -48,7 +48,10 @@ public class CommandAction implements GuiAction {
      */
     @Override
     public void execute(Player player) {
-        String cmd = command.replace("%player%", player.getName());
+        // Sanitise the name before substitution to avoid command injection via hostile
+        // usernames on offline-mode servers (valid names are already [A-Za-z0-9_]).
+        String safeName = player.getName().replaceAll("[^A-Za-z0-9_]", "");
+        String cmd = command.replace("%player%", safeName);
         if (executor == Executor.CONSOLE) {
             Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
         } else {
