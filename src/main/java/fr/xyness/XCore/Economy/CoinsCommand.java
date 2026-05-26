@@ -378,39 +378,37 @@ public class CoinsCommand {
 
             var targetData = opt.get();
 
-            // Fire event for sender (remove)
-            coins().getBalanceAsync(player.getUniqueId(), resolved).thenCompose(oldSenderBal -> {
-                BalanceChangeEvent senderEvent = new BalanceChangeEvent(player.getUniqueId(), resolved, oldSenderBal, oldSenderBal - amount, BalanceChangeEvent.ChangeType.PAY);
-                Bukkit.getPluginManager().callEvent(senderEvent);
-                if (senderEvent.isCancelled()) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+            // Fire event for sender (remove) — events are dispatched synchronously by CoinsManager
+            coins().getBalanceAsync(player.getUniqueId(), resolved).thenCompose(oldSenderBal ->
+                coins().fireBalanceChangeEvent(player.getUniqueId(), resolved, oldSenderBal, oldSenderBal - amount, BalanceChangeEvent.ChangeType.PAY).thenCompose(senderCancelled -> {
+                    if (senderCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-                return coins().removeBalance(player.getUniqueId(), resolved, amount)
-                    .thenCompose(v -> {
-                        // Fire event for receiver (add)
-                        return coins().getBalanceAsync(targetData.getUuid(), resolved).thenCompose(oldTargetBal -> {
-                            BalanceChangeEvent targetEvent = new BalanceChangeEvent(targetData.getUuid(), resolved, oldTargetBal, oldTargetBal + amount, BalanceChangeEvent.ChangeType.PAY);
-                            Bukkit.getPluginManager().callEvent(targetEvent);
-                            if (targetEvent.isCancelled()) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+                    return coins().removeBalance(player.getUniqueId(), resolved, amount)
+                        .thenCompose(v ->
+                            // Fire event for receiver (add)
+                            coins().getBalanceAsync(targetData.getUuid(), resolved).thenCompose(oldTargetBal ->
+                                coins().fireBalanceChangeEvent(targetData.getUuid(), resolved, oldTargetBal, oldTargetBal + amount, BalanceChangeEvent.ChangeType.PAY).thenCompose(targetCancelled -> {
+                                    if (targetCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-                            return coins().addBalance(targetData.getUuid(), resolved, amount);
+                                    return coins().addBalance(targetData.getUuid(), resolved, amount);
+                                })))
+                        .thenRun(() -> {
+                            String formatted = coins().format(resolved, amount);
+                            sender.sendMessage(lang().getComponent("pay-sent",
+                                "amount", formatted, "target", targetData.getName(), "currency", resolved));
+
+                            Player target = Bukkit.getPlayer(targetData.getUuid());
+                            if (target != null && target.isOnline()) {
+                                target.sendMessage(lang().getComponent("pay-received",
+                                    "amount", formatted, "sender", player.getName(), "currency", resolved));
+                            }
+
+                            // Log transactions
+                            coins().logTransaction(player.getUniqueId(), player.getName(), resolved, -amount, "PAY", targetData.getName(), "Paid " + formatted + " to " + targetData.getName());
+                            coins().logTransaction(targetData.getUuid(), targetData.getName(), resolved, amount, "PAY", player.getName(), "Received " + formatted + " from " + player.getName());
                         });
-                    })
-                    .thenRun(() -> {
-                        String formatted = coins().format(resolved, amount);
-                        sender.sendMessage(lang().getComponent("pay-sent",
-                            "amount", formatted, "target", targetData.getName(), "currency", resolved));
-
-                        Player target = Bukkit.getPlayer(targetData.getUuid());
-                        if (target != null && target.isOnline()) {
-                            target.sendMessage(lang().getComponent("pay-received",
-                                "amount", formatted, "sender", player.getName(), "currency", resolved));
-                        }
-
-                        // Log transactions
-                        coins().logTransaction(player.getUniqueId(), player.getName(), resolved, -amount, "PAY", targetData.getName(), "Paid " + formatted + " to " + targetData.getName());
-                        coins().logTransaction(targetData.getUuid(), targetData.getName(), resolved, amount, "PAY", player.getName(), "Received " + formatted + " from " + player.getName());
-                    });
-            }).exceptionally(ex -> {
+                })
+            ).exceptionally(ex -> {
                 plugin.logger().sendWarning("Pay command failed for " + player.getName() + ": " + ex.getMessage());
                 sender.sendMessage(lang().getComponent("error"));
                 return null;
@@ -562,33 +560,32 @@ public class CoinsCommand {
             return;
         }
 
-        // Fire events for both currencies
-        coins().getBalanceAsync(player.getUniqueId(), resolvedFrom).thenCompose(oldFromBal -> {
-            BalanceChangeEvent fromEvent = new BalanceChangeEvent(player.getUniqueId(), resolvedFrom, oldFromBal, oldFromBal - amount, BalanceChangeEvent.ChangeType.EXCHANGE);
-            Bukkit.getPluginManager().callEvent(fromEvent);
-            if (fromEvent.isCancelled()) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+        // Fire events for both currencies — events are dispatched synchronously by CoinsManager
+        coins().getBalanceAsync(player.getUniqueId(), resolvedFrom).thenCompose(oldFromBal ->
+            coins().fireBalanceChangeEvent(player.getUniqueId(), resolvedFrom, oldFromBal, oldFromBal - amount, BalanceChangeEvent.ChangeType.EXCHANGE).thenCompose(fromCancelled -> {
+                if (fromCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-            return coins().removeBalance(player.getUniqueId(), resolvedFrom, amount)
-                .thenCompose(v -> coins().getBalanceAsync(player.getUniqueId(), resolvedTo))
-                .thenCompose(oldToBal -> {
-                    BalanceChangeEvent toEvent = new BalanceChangeEvent(player.getUniqueId(), resolvedTo, oldToBal, oldToBal + destinationAmount, BalanceChangeEvent.ChangeType.EXCHANGE);
-                    Bukkit.getPluginManager().callEvent(toEvent);
-                    if (toEvent.isCancelled()) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+                return coins().removeBalance(player.getUniqueId(), resolvedFrom, amount)
+                    .thenCompose(v -> coins().getBalanceAsync(player.getUniqueId(), resolvedTo))
+                    .thenCompose(oldToBal ->
+                        coins().fireBalanceChangeEvent(player.getUniqueId(), resolvedTo, oldToBal, oldToBal + destinationAmount, BalanceChangeEvent.ChangeType.EXCHANGE).thenCompose(toCancelled -> {
+                            if (toCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-                    return coins().addBalance(player.getUniqueId(), resolvedTo, destinationAmount);
-                })
-                .thenRun(() -> {
-                    String formattedFrom = coins().format(resolvedFrom, amount);
-                    String formattedTo = coins().format(resolvedTo, destinationAmount);
-                    sender.sendMessage(lang().getComponent("exchange-success",
-                        "from_amount", formattedFrom, "from_currency", resolvedFrom,
-                        "to_amount", formattedTo, "to_currency", resolvedTo));
+                            return coins().addBalance(player.getUniqueId(), resolvedTo, destinationAmount);
+                        }))
+                    .thenRun(() -> {
+                        String formattedFrom = coins().format(resolvedFrom, amount);
+                        String formattedTo = coins().format(resolvedTo, destinationAmount);
+                        sender.sendMessage(lang().getComponent("exchange-success",
+                            "from_amount", formattedFrom, "from_currency", resolvedFrom,
+                            "to_amount", formattedTo, "to_currency", resolvedTo));
 
-                    // Log transactions
-                    coins().logTransaction(player.getUniqueId(), player.getName(), resolvedFrom, -amount, "EXCHANGE", null, "Exchanged " + formattedFrom + " to " + formattedTo);
-                    coins().logTransaction(player.getUniqueId(), player.getName(), resolvedTo, destinationAmount, "EXCHANGE", null, "Received " + formattedTo + " from exchange of " + formattedFrom);
-                });
-        }).exceptionally(ex -> {
+                        // Log transactions
+                        coins().logTransaction(player.getUniqueId(), player.getName(), resolvedFrom, -amount, "EXCHANGE", null, "Exchanged " + formattedFrom + " to " + formattedTo);
+                        coins().logTransaction(player.getUniqueId(), player.getName(), resolvedTo, destinationAmount, "EXCHANGE", null, "Received " + formattedTo + " from exchange of " + formattedFrom);
+                    });
+            })
+        ).exceptionally(ex -> {
             plugin.logger().sendWarning("Exchange command failed for " + player.getName() + ": " + ex.getMessage());
             sender.sendMessage(lang().getComponent("error"));
             return null;

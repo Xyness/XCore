@@ -379,16 +379,37 @@ public class CoinsManager {
                 capped = true;
             }
 
-            BalanceChangeEvent event = new BalanceChangeEvent(playerId, currencyId, oldBalance, finalAmount, type);
-            Bukkit.getPluginManager().callEvent(event);
-            if (event.isCancelled()) {
-                return CompletableFuture.completedFuture(false);
-            }
-
+            double newAmount = finalAmount;
             boolean wasCapped = capped;
-            return api().updatePlayerDataAsync(playerId, col(currencyId), currency.round(finalAmount))
-                .thenApply(v -> wasCapped);
+            return fireBalanceChangeEvent(playerId, currencyId, oldBalance, newAmount, type).thenCompose(cancelled -> {
+                if (cancelled) {
+                    return CompletableFuture.completedFuture(false);
+                }
+                return api().updatePlayerDataAsync(playerId, col(currencyId), currency.round(newAmount))
+                    .thenApply(v -> wasCapped);
+            });
         });
+    }
+
+    /**
+     * Fires a {@link BalanceChangeEvent} on the main thread and returns a future that
+     * completes with whether the event was cancelled.
+     * <p>
+     * Balance operations run asynchronously, but Bukkit events tied to gameplay must be
+     * triggered synchronously. This bridges back to the global region thread for the
+     * {@code callEvent} call, then resumes the async chain with the cancellation result.
+     * </p>
+     *
+     * @return A future completing with {@code true} if a listener cancelled the event.
+     */
+    public CompletableFuture<Boolean> fireBalanceChangeEvent(UUID playerId, String currencyId, double oldBalance, double newBalance, BalanceChangeEvent.ChangeType type) {
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        plugin.schedulerAdapter().runGlobalTask(() -> {
+            BalanceChangeEvent event = new BalanceChangeEvent(playerId, currencyId, oldBalance, newBalance, type);
+            Bukkit.getPluginManager().callEvent(event);
+            future.complete(event.isCancelled());
+        });
+        return future;
     }
 
     public CompletableFuture<Void> addBalance(UUID playerId, String currencyId, double amount) {

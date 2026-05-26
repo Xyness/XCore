@@ -11,6 +11,8 @@ import org.bukkit.event.HandlerList;
  * <p>
  * Other plugins can listen to this event and cancel it to prevent the change.
  * </p>
+ * <b>Note:</b> This is a synchronous event. Balance operations run asynchronously,
+ * so it is dispatched on the main thread via the scheduler before the change is persisted.
  */
 public class BalanceChangeEvent extends Event implements Cancellable {
 
@@ -24,7 +26,7 @@ public class BalanceChangeEvent extends Event implements Cancellable {
     private boolean cancelled;
 
     public BalanceChangeEvent(UUID playerId, String currencyId, double oldBalance, double newBalance, ChangeType type) {
-        super(true); // async
+        super(false); // sync — dispatched on the main thread via SchedulerAdapter#runGlobalTask
         this.playerId = playerId;
         this.currencyId = currencyId;
         this.oldBalance = oldBalance;
