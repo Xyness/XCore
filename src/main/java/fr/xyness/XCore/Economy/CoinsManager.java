@@ -26,6 +26,7 @@ import fr.xyness.XCore.API.XCoreApi;
 import fr.xyness.XCore.API.XCoreApiProvider;
 import fr.xyness.XCore.Database.SqlUtils;
 import fr.xyness.XCore.Models.PlayerData;
+import fr.xyness.XCore.Sync.SyncMessage;
 import fr.xyness.XCore.Utils.Logger;
 
 /**
@@ -40,6 +41,7 @@ import fr.xyness.XCore.Utils.Logger;
 public class CoinsManager {
 
     private static final DateTimeFormatter DT_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final java.util.regex.Pattern SAFE_COLUMN = java.util.regex.Pattern.compile("[a-zA-Z0-9_]+");
 
     private final XCore plugin;
     private final Map<String, Currency> currencies = new LinkedHashMap<>();
@@ -424,6 +426,82 @@ public class CoinsManager {
 
     public boolean has(UUID playerId, String currencyId, double amount) {
         return getBalance(playerId, currencyId) >= amount;
+    }
+
+    /**
+     * Resets a single player's balance back to the currency's starting balance.
+     * Works for offline players: the UUID is all that is needed.
+     *
+     * @param playerId   The player's server UUID.
+     * @param currencyId The currency to reset.
+     * @return A future completing with the starting balance that was applied.
+     */
+    public CompletableFuture<Double> resetBalance(UUID playerId, String currencyId) {
+        Currency currency = currencies.get(currencyId);
+        if (currency == null) return CompletableFuture.completedFuture(0.0);
+        double start = currency.getStartingBalance();
+        return setBalanceWithEvent(playerId, currencyId, start, BalanceChangeEvent.ChangeType.SET)
+            .thenApply(capped -> start);
+    }
+
+    /**
+     * Resets the balance of <b>every</b> player — online and offline — back to the starting
+     * balance of the given currencies, in a single bulk database statement.
+     * <p>
+     * Because this bypasses the per-player write path, all cache layers are dropped afterwards:
+     * L1 locally, L2 (Redis), and L1 on the other servers through the {@code xcore} sync channel.
+     * No {@link BalanceChangeEvent} is fired — the operation is not per-player.
+     *
+     * @param currencyIds The currencies to reset. Unknown IDs are ignored.
+     * @return A future completing with the number of rows updated, or -1 on failure.
+     */
+    public CompletableFuture<Integer> resetAllBalances(Collection<String> currencyIds) {
+        List<Currency> targets = new ArrayList<>();
+        for (String id : currencyIds) {
+            Currency currency = currencies.get(id);
+            if (currency != null && !targets.contains(currency)) targets.add(currency);
+        }
+        if (targets.isEmpty()) return CompletableFuture.completedFuture(0);
+
+        StringBuilder sql = new StringBuilder("UPDATE players SET ");
+        for (int i = 0; i < targets.size(); i++) {
+            String column = col(targets.get(i).getId());
+            if (!SAFE_COLUMN.matcher(column).matches()) {
+                logger().sendError("Refusing to reset balances: unsafe column name '" + column + "'.");
+                return CompletableFuture.completedFuture(-1);
+            }
+            if (i > 0) sql.append(", ");
+            sql.append(column).append(" = ?");
+        }
+
+        return CompletableFuture.supplyAsync(() -> {
+            try (Connection conn = api().getDataSource().getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+                for (int i = 0; i < targets.size(); i++) {
+                    Currency currency = targets.get(i);
+                    ps.setDouble(i + 1, currency.round(currency.getStartingBalance()));
+                }
+                return ps.executeUpdate();
+            } catch (SQLException e) {
+                logger().sendError("Failed to reset all balances: " + e.getMessage());
+                return -1;
+            }
+        }).thenApply(rows -> {
+            if (rows >= 0) invalidateAllPlayerCaches();
+            return rows;
+        });
+    }
+
+    /**
+     * Drops every cached copy of player data after a bulk write: L1 here, L2 (Redis),
+     * and L1 on the other servers via the {@code xcore} sync channel.
+     */
+    private void invalidateAllPlayerCaches() {
+        plugin.playerCache().clearRedis();
+        plugin.clearAndWarmPlayerCache();
+        if (plugin.getSyncManager() != null && plugin.getSyncManager().isRunning()) {
+            plugin.getSyncManager().publish(XCore.SYNC_CHANNEL, new SyncMessage("CACHE_CLEAR", "players"));
+        }
     }
 
     public String format(String currencyId, double amount) {

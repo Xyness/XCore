@@ -76,6 +76,9 @@ public class XCore extends JavaPlugin {
     /** Standard date-time formatter for timestamps stored in the database. */
     public static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    /** Sync channel used by XCore itself (cache invalidation after bulk writes). */
+    public static final String SYNC_CHANNEL = "xcore";
+
     // -------------------------------------------------------------------------
     // Core subsystems
     // -------------------------------------------------------------------------
@@ -371,6 +374,15 @@ public class XCore extends JavaPlugin {
             logger::sendDebug, logger::sendWarning, logger::sendError
         );
 
+        // XCore's own channel: lets a bulk database write (e.g. /coins resetall) drop the
+        // stale L1 player caches held by the other servers.
+        syncManager.registerChannel(SYNC_CHANNEL, message -> {
+            if ("CACHE_CLEAR".equals(message.action())) {
+                clearAndWarmPlayerCache();
+                logger.sendDebug("Player caches cleared by a cross-server request.");
+            }
+        });
+
         if (crossServerEnabled) {
             syncManager.start();
             logger.sendInfo("Cross-server sync started.");
@@ -655,6 +667,22 @@ public class XCore extends JavaPlugin {
 
     /** @return The cross-server sync manager. */
     public SyncManager getSyncManager() { return syncManager; }
+
+    /**
+     * Drops the L1 player cache and immediately reloads the online players from the database.
+     * <p>
+     * Used after a bulk write that bypasses the per-player write path (see
+     * {@code /coins resetall}). The reload matters: {@code getPlayer(uuid)} is a
+     * cache-only lookup, so without it every synchronous read would report "no data"
+     * for online players until something triggered an async load.
+     */
+    public void clearAndWarmPlayerCache() {
+        playerCache.clearAll();
+        List<UUID> online = Bukkit.getOnlinePlayers().stream()
+                .map(org.bukkit.entity.Player::getUniqueId)
+                .collect(java.util.stream.Collectors.toList());
+        if (!online.isEmpty()) playerCache.getPlayers(online);
+    }
 
     /** @return The GUI manager. */
     public GuiManager getGuiManager() { return guiManager; }
