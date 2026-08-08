@@ -22,6 +22,12 @@ pay-self: "<red>You cannot pay yourself."
 set-success: "<green>Set <white>{name}<green>'s <gray>({currency}) <green>balance to <gold>{amount}<green>."
 add-success: "<green>Added <gold>{amount} <gray>({currency}) <green>to <white>{name}<green>. New: <gold>{balance}<green>."
 remove-success: "<green>Removed <gold>{amount} <gray>({currency}) <green>from <white>{name}<green>. New: <gold>{balance}<green>."
+reset-success: "<green>Reset <white>{name}<green>'s <gray>({currency}) <green>balance to <gold>{amount}<green>."
+
+resetall-warning: "<red>This will reset EVERY player (online and offline) for: <white>{currency}<red>. This cannot be undone."
+resetall-confirm-usage: "<gray>Type <white>/coins resetall {currency} confirm <gray>to proceed."
+resetall-started: "<gray>Resetting all balances for <white>{currency}<gray>..."
+resetall-success: "<green>Reset <gold>{count} <green>player balance(s) for <white>{currency}<green>."
 
 exchange-success: "<green>Exchanged <gold>{from_amount} <gray>({from_currency}) <green>for <gold>{to_amount} <gray>({to_currency})<green>."
 exchange-no-rate: "<red>No exchange rate available for this currency pair."
@@ -51,9 +57,11 @@ help-message: |
   <white>/coins set <player> <amount> [currency] <gray>- Set balance (admin)
   <white>/coins add <player> <amount> [currency] <gray>- Add balance (admin)
   <white>/coins remove <player> <amount> [currency] <gray>- Remove balance (admin)
+  <white>/coins reset <player> [currency|all] <gray>- Reset a player to the starting balance (admin)
+  <white>/coins resetall [currency|all] confirm <gray>- Reset every player, online and offline (admin)
   <white>/coins exchange <from> <to> <amount> <gray>- Exchange currencies
   <white>/coins history [player] [currency] [page] <gray>- Transaction history
   <white>/coins top [currency] <gray>- Top balances
   <white>/coins reload <gray>- Reload config (admin)
 
-usage: "<red>Usage: /coins <balance|pay|set|add|remove|exchange|history|top|reload>"
+usage: "<red>Usage: /coins <balance|pay|set|add|remove|reset|resetall|exchange|history|top|reload>"

@@ -947,6 +947,9 @@
         card.innerHTML = '<div class="loading">Loading data...</div>';
         main.appendChild(card);
 
+        // Generic raw config editor: any module exposing a "config" page + /config/raw GET+POST.
+        if (path === 'config') { renderConfigEditor(name, card); return; }
+
         // Transactions: load all immediately, with optional player filter
         if (path === 'transactions') {
             card.innerHTML = '';
@@ -981,6 +984,64 @@
         }
 
         loadModuleData(card, '/api/' + name.toLowerCase() + '/' + path);
+    }
+
+    // Raw YAML config editor — generic, works for any module exposing /api/<name>/config/raw.
+    function renderConfigEditor(name, card) {
+        var lower = name.toLowerCase();
+        var base = '/api/' + lower + '/config/raw';
+        card.innerHTML = '<div class="loading">Loading config...</div>';
+
+        api(base).then(function (data) {
+            card.innerHTML = '';
+
+            card.appendChild(el('p', {
+                className: 'config-hint',
+                textContent: 'Edit ' + name + "'s config.yml directly. Saving validates the YAML, writes it to disk and reloads the addon — invalid YAML is rejected before anything is changed."
+            }));
+
+            var textarea = el('textarea', { className: 'config-editor', spellcheck: 'false' });
+            textarea.value = data.yaml || '';
+            card.appendChild(textarea);
+
+            var actions = el('div', { className: 'config-actions' });
+            var status = el('span', { className: 'config-status' });
+
+            var saveBtn = el('button', {
+                className: 'btn', textContent: 'Save & Reload',
+                onClick: function () {
+                    saveBtn.disabled = true;
+                    status.className = 'config-status';
+                    status.textContent = 'Saving...';
+                    apiPost(base, { yaml: textarea.value }).then(function () {
+                        saveBtn.disabled = false;
+                        status.textContent = '';
+                        showToast('Config saved & ' + name + ' reloaded', 'success');
+                    }).catch(function (err) {
+                        saveBtn.disabled = false;
+                        var msg = (err && err.error) ? err.error : 'Save failed';
+                        status.className = 'config-status config-error';
+                        status.textContent = msg;
+                        showToast('Save failed — see message below the editor', 'error');
+                    });
+                }
+            });
+
+            var reloadBtn = el('button', {
+                className: 'btn btn-secondary', textContent: 'Revert (reload from disk)',
+                onClick: function () { renderConfigEditor(name, card); }
+            });
+
+            actions.appendChild(saveBtn);
+            actions.appendChild(reloadBtn);
+            actions.appendChild(status);
+            card.appendChild(actions);
+        }).catch(function () {
+            card.innerHTML = '';
+            card.appendChild(el('div', { className: 'empty-state' }, [
+                el('p', { textContent: 'Could not load config.yml for ' + name + '.' })
+            ]));
+        });
     }
 
     function loadModuleData(card, url) {
@@ -1802,6 +1863,25 @@
             }
 
             loadPage();
+        },
+
+        // -- Bans --
+        bans: function () {
+            renderBanLikePage({
+                title: 'Auction House - Bans',
+                fetchUrl: '/api/xauctionhouse/bans',
+                actionLabel: 'Unban',
+                actionEndpoint: '/api/xauctionhouse/bans/remove',
+                actionKey: 'playerName',
+                actionBody: function (item) { return { player: item.playerName || item.player_name }; },
+                formTitle: 'Ban Player',
+                formEndpoint: '/api/xauctionhouse/bans/add',
+                formFields: [
+                    { key: 'player', label: 'Player', type: 'text', placeholder: 'Player name', required: true },
+                    { key: 'duration', label: 'Duration', type: 'text', placeholder: 'e.g. 7d, 30d, def (permanent)' },
+                    { key: 'reason', label: 'Reason', type: 'text', placeholder: 'Reason for ban' }
+                ]
+            });
         },
 
         // -- Stats --

@@ -35,6 +35,8 @@ import com.google.gson.JsonParser;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 /**
  * Multi-level player data cache with Mojang API integration and circuit breaker.
@@ -311,6 +313,32 @@ public class PlayerCache<P> {
         mojangUUIDCache.invalidateAll();
         skinCache.invalidateAll();
         logDebug.log("All caches cleared.");
+    }
+
+    /**
+     * Deletes every cached player entry from Redis (L2).
+     * <p>
+     * Needed after a bulk database write that bypasses the per-player write path
+     * (which normally refreshes Redis itself): without this, L2 would keep serving
+     * the pre-update values until its TTL expires.
+     */
+    public void clearRedis() {
+        if (jedisPool == null) return;
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (String prefix : new String[]{REDIS_PREFIX_UUID, REDIS_PREFIX_NAME}) {
+                ScanParams params = new ScanParams().match(prefix + "*").count(500);
+                String cursor = ScanParams.SCAN_POINTER_START;
+                do {
+                    ScanResult<String> scan = jedis.scan(cursor, params);
+                    List<String> keys = scan.getResult();
+                    if (!keys.isEmpty()) jedis.del(keys.toArray(new String[0]));
+                    cursor = scan.getCursor();
+                } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+            }
+            logDebug.log("Redis player cache cleared.");
+        } catch (Exception e) {
+            logError.log("Redis clear error : " + e.getMessage());
+        }
     }
 
     /**

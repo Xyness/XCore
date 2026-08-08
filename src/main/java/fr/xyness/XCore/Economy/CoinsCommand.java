@@ -45,6 +45,20 @@ public class CoinsCommand {
         return builder.buildFuture();
     };
 
+    /** Currency suggestions plus the {@code all} keyword used by the reset commands. */
+    private SuggestionProvider<CommandSourceStack> currencyOrAllSuggestions() {
+        return (ctx, builder) -> {
+            String input = builder.getRemainingLowerCase();
+            if ("all".startsWith(input)) builder.suggest("all");
+            for (Currency c : coinsManager.getCurrencies()) {
+                if (c.getId().toLowerCase().startsWith(input)) {
+                    builder.suggest(c.getId());
+                }
+            }
+            return builder.buildFuture();
+        };
+    }
+
     private SuggestionProvider<CommandSourceStack> currencySuggestions() {
         return (ctx, builder) -> {
             String input = builder.getRemainingLowerCase();
@@ -187,6 +201,49 @@ public class CoinsCommand {
                                         return Command.SINGLE_SUCCESS;
                                     })
                                 )
+                            )
+                        )
+                    )
+
+                    // /coins reset <player> [currency]
+                    .then(Commands.literal("reset")
+                        .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.reset"))
+                        .then(Commands.argument("player", StringArgumentType.word())
+                            .suggests(playerSuggestions)
+                            .executes(ctx -> {
+                                handleReset(ctx.getSource().getSender(),
+                                    StringArgumentType.getString(ctx, "player"), null);
+                                return Command.SINGLE_SUCCESS;
+                            })
+                            .then(Commands.argument("currency", StringArgumentType.word())
+                                .suggests(currencyOrAllSuggestions())
+                                .executes(ctx -> {
+                                    handleReset(ctx.getSource().getSender(),
+                                        StringArgumentType.getString(ctx, "player"),
+                                        StringArgumentType.getString(ctx, "currency"));
+                                    return Command.SINGLE_SUCCESS;
+                                })
+                            )
+                        )
+                    )
+
+                    // /coins resetall confirm [currency]
+                    .then(Commands.literal("resetall")
+                        .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.resetall"))
+                        .executes(ctx -> { handleResetAllWarning(ctx.getSource().getSender(), null); return Command.SINGLE_SUCCESS; })
+                        .then(Commands.argument("currency", StringArgumentType.word())
+                            .suggests(currencyOrAllSuggestions())
+                            .executes(ctx -> {
+                                handleResetAllWarning(ctx.getSource().getSender(),
+                                    StringArgumentType.getString(ctx, "currency"));
+                                return Command.SINGLE_SUCCESS;
+                            })
+                            .then(Commands.literal("confirm")
+                                .executes(ctx -> {
+                                    handleResetAll(ctx.getSource().getSender(),
+                                        StringArgumentType.getString(ctx, "currency"));
+                                    return Command.SINGLE_SUCCESS;
+                                })
                             )
                         )
                     )
@@ -519,6 +576,84 @@ public class CoinsCommand {
             });
         }).exceptionally(ex -> {
             plugin.logger().sendWarning("Remove command failed to resolve player " + name + ": " + ex.getMessage());
+            sender.sendMessage(lang().getComponent("error"));
+            return null;
+        });
+    }
+
+    /**
+     * Resolves the currencies targeted by a reset command.
+     * {@code null} means the vault currency, {@code "all"} means every configured currency.
+     *
+     * @return The currency IDs, or {@code null} if the input was invalid (error already sent).
+     */
+    private java.util.List<String> resolveResetCurrencies(CommandSender sender, String input) {
+        if (input == null) {
+            Currency vault = coins().getVaultCurrency();
+            if (vault == null) {
+                sender.sendMessage(lang().getComponent("reload-warning-no-vault"));
+                return null;
+            }
+            return java.util.List.of(vault.getId());
+        }
+        if ("all".equalsIgnoreCase(input)) {
+            return coins().getCurrencies().stream().map(Currency::getId).toList();
+        }
+        String resolved = resolveCurrency(sender, input);
+        return resolved == null ? null : java.util.List.of(resolved);
+    }
+
+    private void handleReset(CommandSender sender, String name, String currencyId) {
+        java.util.List<String> targets = resolveResetCurrencies(sender, currencyId);
+        if (targets == null) return;
+
+        api().getPlayerAsync(name).thenAccept(opt -> {
+            if (opt.isEmpty()) {
+                sender.sendMessage(lang().getComponent("player-not-found", "name", name));
+                return;
+            }
+            var data = opt.get();
+            for (String currency : targets) {
+                coins().resetBalance(data.getUuid(), currency).thenAccept(start -> {
+                    sender.sendMessage(lang().getComponent("reset-success",
+                        "name", data.getName(), "currency", currency,
+                        "amount", coins().format(currency, start)));
+                    coins().logTransaction(data.getUuid(), data.getName(), currency, start, "RESET",
+                        sender.getName(), "Balance reset to " + coins().format(currency, start) + " by " + sender.getName());
+                });
+            }
+        }).exceptionally(ex -> {
+            plugin.logger().sendWarning("Reset command failed to resolve player " + name + ": " + ex.getMessage());
+            sender.sendMessage(lang().getComponent("error"));
+            return null;
+        });
+    }
+
+    private void handleResetAllWarning(CommandSender sender, String currencyId) {
+        java.util.List<String> targets = resolveResetCurrencies(sender, currencyId);
+        if (targets == null) return;
+        String label = currencyId != null ? currencyId : targets.get(0);
+        sender.sendMessage(lang().getComponent("resetall-warning",
+            "currency", String.join(", ", targets)));
+        sender.sendMessage(lang().getComponent("resetall-confirm-usage", "currency", label));
+    }
+
+    private void handleResetAll(CommandSender sender, String currencyId) {
+        java.util.List<String> targets = resolveResetCurrencies(sender, currencyId);
+        if (targets == null) return;
+
+        sender.sendMessage(lang().getComponent("resetall-started", "currency", String.join(", ", targets)));
+        coins().resetAllBalances(targets).thenAccept(rows -> {
+            if (rows < 0) {
+                sender.sendMessage(lang().getComponent("error"));
+                return;
+            }
+            sender.sendMessage(lang().getComponent("resetall-success",
+                "count", String.valueOf(rows), "currency", String.join(", ", targets)));
+            plugin.logger().sendInfo("Economy: " + sender.getName() + " reset " + rows
+                + " player balance(s) for [" + String.join(", ", targets) + "].");
+        }).exceptionally(ex -> {
+            plugin.logger().sendWarning("Reset-all command failed: " + ex.getMessage());
             sender.sendMessage(lang().getComponent("error"));
             return null;
         });
