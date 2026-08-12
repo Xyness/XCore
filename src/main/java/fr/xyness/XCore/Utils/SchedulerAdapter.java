@@ -332,7 +332,7 @@ public class SchedulerAdapter {
                 main.logger().sendError("Failed to schedule Folia located task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTask(main, task);
+            Bukkit.getScheduler().runTaskLater(main, task, Math.max(1L, delayTicks));
         }
     }
 
@@ -375,7 +375,7 @@ public class SchedulerAdapter {
                 main.logger().sendError("Failed to schedule Folia chunk task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTask(main, task);
+            Bukkit.getScheduler().runTaskLater(main, task, Math.max(1L, delayTicks));
         }
     }
 

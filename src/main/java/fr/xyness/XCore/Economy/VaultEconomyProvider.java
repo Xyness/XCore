@@ -64,12 +64,17 @@ public class VaultEconomyProvider implements Economy {
         if (amount < 0) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Cannot withdraw negative amount.");
         }
-        if (!has(player, amount)) {
+        // Vault's contract is synchronous: a plugin hands over goods based on what this returns.
+        // The withdrawal is therefore awaited (bounded) and its real outcome reported, rather than
+        // checking has() and firing an update that may quietly take nothing.
+        Boolean ok = await(coins.withdraw(player.getUniqueId(), amount));
+        if (ok == null) {
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Economy timed out.");
+        }
+        if (!ok) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Insufficient funds.");
         }
-        coins.removeBalance(player.getUniqueId(), amount);
-        double newBalance = getBalance(player);
-        return new EconomyResponse(amount, newBalance, ResponseType.SUCCESS, null);
+        return new EconomyResponse(amount, getBalance(player), ResponseType.SUCCESS, null);
     }
 
     @Override
@@ -82,14 +87,32 @@ public class VaultEconomyProvider implements Economy {
         if (amount < 0) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Cannot deposit negative amount.");
         }
-        coins.addBalance(player.getUniqueId(), amount);
-        double newBalance = getBalance(player);
+        Double newBalance = await(coins.deposit(player.getUniqueId(), amount));
+        if (newBalance == null) {
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Economy timed out.");
+        }
         return new EconomyResponse(amount, newBalance, ResponseType.SUCCESS, null);
     }
 
     @Override
     public EconomyResponse depositPlayer(OfflinePlayer player, String worldName, double amount) {
         return depositPlayer(player, amount);
+    }
+
+    /**
+     * Awaits an economy future for at most two seconds.
+     *
+     * @return The result, or {@code null} when it failed or did not complete in time.
+     */
+    private static <T> T await(java.util.concurrent.CompletableFuture<T> future) {
+        try {
+            return future.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static final EconomyResponse NOT_IMPL = new EconomyResponse(0, 0, ResponseType.NOT_IMPLEMENTED, "XCore economy does not support banks.");

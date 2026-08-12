@@ -65,6 +65,9 @@ web-dashboard:
   token: "CHANGE_ME_TO_A_SECURE_TOKEN"
   # Whether the /api/metrics endpoint is publicly accessible (no auth required)
   metrics-public: true
+  # Allowed browser origin for the API. Keep "*" only if the dashboard is not
+  # reachable from the internet; otherwise set your panel URL (e.g. https://panel.example.com)
+  cors-origin: "*"
 
 # Economy system (built-in, requires Vault)
 # Automatically enabled if Vault is installed, disabled otherwise.

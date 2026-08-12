@@ -11,7 +11,9 @@ Core framework for the X ecosystem of Minecraft plugins. Provides centralized da
 - **GUI Framework**: YAML-driven inventory management with custom model data, item models, sounds, actions, permissions, blink animations, pagination
 - **Language System**: Per-addon MiniMessage lang files with automatic default merging
 - **Web Dashboard**: Built-in HTTP server with REST API, module system for addons
-- **Built-in Economy**: Multi-currency system with Vault provider, transactions, exchange, interest
+- **Built-in Economy**: Multi-currency system with Vault provider, transactions, exchange, interest.
+  Balance changes are applied atomically in the database (`col = col +/- ?`, guarded on available
+  funds) and serialized per player, so concurrent operations cannot create or destroy money.
 - **Vault Integration**: Registers as Vault economy provider, shared by all addons
 - **PlaceholderAPI**: Core placeholders + addon-specific expansions
 - **Folia Compatible**: Full region threading support via SchedulerAdapter
@@ -22,7 +24,7 @@ Core framework for the X ecosystem of Minecraft plugins. Provides centralized da
 
 - Paper 1.21.1+
 - Java 21+
-- Vault (required for economy)
+- Vault (optional -- only needed to expose the economy to other plugins)
 - PlaceholderAPI (optional)
 
 ## Official Addons
@@ -53,7 +55,7 @@ Core framework for the X ecosystem of Minecraft plugins. Provides centralized da
 | `/xcore clear-cache` | Invalidate all cache regions | `xcore.admin` |
 | `/xcore player <name>` | Detailed player information | `xcore.admin` |
 
-### Economy Commands (requires Vault)
+### Economy Commands
 
 | Command | Description | Permission |
 |---------|-------------|------------|
@@ -96,13 +98,17 @@ cross-server:
     retention-seconds: 300
 
 # Web dashboard
+# The dashboard refuses to start if the token is missing, still the default, or under
+# 16 characters. Authentication is rate limited to 10 failed attempts per IP per minute.
 web-dashboard:
   enabled: false
   port: 8085
   token: "CHANGE_ME_TO_A_SECURE_TOKEN"
   metrics-public: true
+  cors-origin: "*"   # set your panel URL if the dashboard is reachable from the internet
 
-# Economy (requires Vault, auto-enabled if Vault is present)
+# Economy (Vault is optional: without it the economy still runs, it just is not
+# published to other plugins)
 economy:
   enabled: true
   currencies:
@@ -130,6 +136,7 @@ economy:
 ## Web API
 
 All endpoints require `Authorization: Bearer <token>` (except `/api/metrics` if configured public).
+Requests are rate limited per IP; ten failed authentications in a minute temporarily lock the source out.
 
 | Endpoint | Description |
 |----------|-------------|
