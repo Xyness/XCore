@@ -37,7 +37,10 @@ publishing {
             artifact shadowJar
             groupId = 'fr.xyness'
             artifactId = 'XCore'
-            version = '1.0.4'
+            // Follows the project version. It used to be hardcoded, so every release published a
+            // POM advertising the same stale number. JitPack resolves tags on its own and was not
+            // affected, but the metadata was simply wrong.
+            version = project.version
         }
     }
 }
