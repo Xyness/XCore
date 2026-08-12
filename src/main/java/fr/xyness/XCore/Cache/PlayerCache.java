@@ -13,8 +13,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
@@ -63,10 +61,16 @@ public class PlayerCache<P> {
     private static final String REDIS_PREFIX_SKIN = "xcore:players:skin:";
     private static final String MOJANG_API_URL = "https://api.mojang.com/users/profiles/minecraft/";
     private static final String MOJANG_PROFILE_API_URL = "https://sessionserver.mojang.com/session/minecraft/profile/";
-    private static final int MAX_RETRIES = 3;
-    private static final long RATE_LIMIT_BASE_DELAY_MS = 1000;
-    private static final int MAX_LOAD_RETRIES = 3;
-    private static final long LOAD_RETRY_BASE_DELAY_MS = 500;
+    /**
+     * Retries on an HTTP 429 from Mojang.
+     *
+     * <p>Caffeine's synchronous loader means the backoff is a real {@link Thread#sleep} on a pool
+     * thread, so the total is kept short on purpose: 250ms + 500ms, never the several seconds a
+     * 1s-doubling schedule would cost. The API concurrency permit is released before sleeping, so
+     * other lookups keep flowing meanwhile.</p>
+     */
+    private static final int MAX_RETRIES = 2;
+    private static final long RATE_LIMIT_BASE_DELAY_MS = 250;
 
     private final Executor executor;
     private final JedisPool jedisPool;
@@ -78,8 +82,6 @@ public class PlayerCache<P> {
     private final String userAgent;
     private final Semaphore apiSemaphore;
     private final MojangCircuitBreaker circuitBreaker;
-    private final ScheduledExecutorService retryScheduler = Executors.newSingleThreadScheduledExecutor(
-        r -> { Thread t = new Thread(r, "XCore-PlayerCache-RetryScheduler"); t.setDaemon(true); return t; });
 
     private final LoadingCache<String, String> mojangUUIDCache;
     private final LoadingCache<String, String> skinCache;
@@ -100,8 +102,6 @@ public class PlayerCache<P> {
     private final Function<String, P> deserializer;
     private final Function<P, UUID> uuidExtractor;
     private final Function<P, String> nameExtractor;
-    private final Function<P, String> textureExtractor;
-    private final Function<P, String> mojangUuidExtractor;
     private final Function<String, CompletableFuture<Optional<P>>> findByUuidAsync;
     private final Function<String, CompletableFuture<Optional<P>>> findByNameAsync;
     private final Function<List<String>, CompletableFuture<Map<String, Optional<P>>>> findByUuidsAsync;
@@ -134,8 +134,6 @@ public class PlayerCache<P> {
         this.deserializer = builder.deserializer;
         this.uuidExtractor = builder.uuidExtractor;
         this.nameExtractor = builder.nameExtractor;
-        this.textureExtractor = builder.textureExtractor;
-        this.mojangUuidExtractor = builder.mojangUuidExtractor;
         this.findByUuidAsync = builder.findByUuidAsync;
         this.findByNameAsync = builder.findByNameAsync;
         this.findByUuidsAsync = builder.findByUuidsAsync;
@@ -169,10 +167,13 @@ public class PlayerCache<P> {
         this.uuidToPlayers = Caffeine.newBuilder()
                 .maximumSize(builder.maxCacheSize).executor(executor).recordStats()
                 .expireAfterAccess(builder.cacheTTLMinutes, TimeUnit.MINUTES)
+                // Deliberately no Redis cleanup on eviction. L2 is shared by every server: dropping
+                // an entry here because *this* server stopped using it would invalidate the copy the
+                // others still rely on. Redis expires on its own TTL, and a genuine deletion goes
+                // through removeFromCache().
                 .removalListener((UUID key, Optional<P> value, com.github.benmanes.caffeine.cache.RemovalCause cause) -> {
                     if (cause.wasEvicted() && value != null && value.isPresent()) {
-                        removeFromRedis(value.get());
-                        logDebug.log("L1 eviction triggered Redis cleanup for " + nameExtractor.apply(value.get()) + ".");
+                        logDebug.log("L1 evicted " + nameExtractor.apply(value.get()) + " (Redis entry left intact).");
                     }
                 })
                 .buildAsync(new AsyncCacheLoader<UUID, Optional<P>>() {
@@ -253,6 +254,9 @@ public class PlayerCache<P> {
         this.playersTempCache = Caffeine.newBuilder()
                 .expireAfterAccess(5, TimeUnit.MINUTES)
                 .maximumSize(10_000)
+                // Comme les deux caches ci-dessus : l'entretien (expiration, éviction) part sur
+                // le pool du plugin au lieu du thread appelant, qui est ici un thread de jeu.
+                .executor(executor)
                 .build(uuid -> new PlayerTempData(uuid));
     }
 
@@ -465,7 +469,8 @@ public class PlayerCache<P> {
      * @return The Mojang UUID string, or {@code "none"} if unavailable.
      */
     public String fetchMojangUUID(String playerName) {
-        String val = mojangUUIDCache.get(playerName);
+        // Lower-cased so "Xyness" and "xyness" share one entry, as they already do in Redis.
+        String val = mojangUUIDCache.get(playerName.toLowerCase());
         if (val.equals(NONE)) { mojangCacheMisses.increment(); return NONE; }
         mojangCacheHits.increment();
         return val;
@@ -610,10 +615,17 @@ public class PlayerCache<P> {
     }
 
     /**
-     * Shuts down internal schedulers. Call on plugin disable.
+     * Releases the local cache layers. Call on plugin disable.
+     * <p>
+     * Redis is intentionally left alone: the entries belong to the cluster, not to this instance.
+     * </p>
      */
     public void shutdown() {
-        retryScheduler.shutdownNow();
+        uuidToPlayers.synchronous().invalidateAll();
+        nameToPlayers.synchronous().invalidateAll();
+        mojangUUIDCache.invalidateAll();
+        skinCache.invalidateAll();
+        playersTempCache.invalidateAll();
     }
 
     // -- Metrics --
@@ -662,8 +674,10 @@ public class PlayerCache<P> {
      * @return {@code true} if the data was removed.
      */
     public boolean removePlayerTempDataFromCache(UUID playerId) {
+        // invalidate() retire l'entrée de façon synchrone : la relire pour s'en assurer était un
+        // second passage dans le cache, sur le thread de jeu, pour une réponse déjà connue.
         playersTempCache.invalidate(playerId);
-        return playersTempCache.getIfPresent(playerId) == null;
+        return true;
     }
 
     // -- Load player (pre-login) --
@@ -730,8 +744,6 @@ public class PlayerCache<P> {
         private Function<String, P> deserializer;
         private Function<P, UUID> uuidExtractor;
         private Function<P, String> nameExtractor;
-        private Function<P, String> textureExtractor;
-        private Function<P, String> mojangUuidExtractor;
         private Function<String, CompletableFuture<Optional<P>>> findByUuidAsync;
         private Function<String, CompletableFuture<Optional<P>>> findByNameAsync;
         private Function<List<String>, CompletableFuture<Map<String, Optional<P>>>> findByUuidsAsync;
@@ -753,8 +765,6 @@ public class PlayerCache<P> {
         public Builder<P> deserializer(Function<String, P> deserializer) { this.deserializer = deserializer; return this; }
         public Builder<P> uuidExtractor(Function<P, UUID> uuidExtractor) { this.uuidExtractor = uuidExtractor; return this; }
         public Builder<P> nameExtractor(Function<P, String> nameExtractor) { this.nameExtractor = nameExtractor; return this; }
-        public Builder<P> textureExtractor(Function<P, String> textureExtractor) { this.textureExtractor = textureExtractor; return this; }
-        public Builder<P> mojangUuidExtractor(Function<P, String> mojangUuidExtractor) { this.mojangUuidExtractor = mojangUuidExtractor; return this; }
         public Builder<P> findByUuidAsync(Function<String, CompletableFuture<Optional<P>>> fn) { this.findByUuidAsync = fn; return this; }
         public Builder<P> findByNameAsync(Function<String, CompletableFuture<Optional<P>>> fn) { this.findByNameAsync = fn; return this; }
         public Builder<P> findByUuidsAsync(Function<List<String>, CompletableFuture<Map<String, Optional<P>>>> fn) { this.findByUuidsAsync = fn; return this; }

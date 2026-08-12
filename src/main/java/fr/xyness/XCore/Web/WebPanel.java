@@ -65,6 +65,24 @@ public class WebPanel {
     /** The server start time in millis, for uptime calculation. */
     private final long startTimeMillis;
 
+    /** Allowed CORS origin, {@code "*"} to allow any. */
+    private final String corsOrigin;
+
+    /** Maximum authentication attempts per IP within {@link #AUTH_WINDOW_MS}. */
+    private static final int AUTH_LIMIT = 10;
+
+    /** Maximum requests per IP per minute on the core endpoints. */
+    private static final int REQUEST_LIMIT = 120;
+
+    /** Sliding window used by both limiters. */
+    private static final long AUTH_WINDOW_MS = 60_000L;
+
+    /** Per-IP timestamps of recent failed authentications. */
+    private final java.util.Map<String, java.util.Deque<Long>> authAttempts = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Per-IP timestamps of recent requests. */
+    private final java.util.Map<String, java.util.Deque<Long>> requestHits = new java.util.concurrent.ConcurrentHashMap<>();
+
     // **************************************************************************
     // *                           Constructor                                  *
     // **************************************************************************
@@ -74,13 +92,18 @@ public class WebPanel {
      *
      * @param dataFolder    The plugin data folder (used to resolve the {@code web/} directory).
      * @param port          The port to listen on.
-     * @param token         The Bearer token for API authentication.
+     * @param token         The Bearer token for API authentication. Must not be blank.
      * @param metricsPublic Whether the metrics endpoint is publicly accessible.
+     * @param corsOrigin    The allowed CORS origin, or {@code "*"}.
      */
-    public WebPanel(File dataFolder, int port, String token, boolean metricsPublic) {
+    public WebPanel(File dataFolder, int port, String token, boolean metricsPublic, String corsOrigin) {
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException("WebPanel requires a non-blank token.");
+        }
         this.port = port;
         this.token = token;
         this.metricsPublic = metricsPublic;
+        this.corsOrigin = (corsOrigin == null || corsOrigin.isBlank()) ? "*" : corsOrigin;
         this.logger = new Logger("WebPanel");
         this.webRoot = new File(dataFolder, "web").toPath();
         this.startTimeMillis = System.currentTimeMillis();
@@ -184,6 +207,7 @@ public class WebPanel {
     private void handleModules(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
+        if (!rateLimit(exchange)) return;
         if (!authenticate(exchange)) return;
 
         JsonArray arr = new JsonArray();
@@ -222,6 +246,7 @@ public class WebPanel {
     private void handleAuth(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
+        if (!rateLimit(exchange)) return;
         if (!authenticate(exchange)) return;
         sendJson(exchange, 200, "{\"status\":\"ok\"}");
     }
@@ -232,6 +257,7 @@ public class WebPanel {
     private void handlePlayers(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
+        if (!rateLimit(exchange)) return;
         if (!authenticate(exchange)) return;
 
         String query = exchange.getRequestURI().getQuery();
@@ -272,6 +298,7 @@ public class WebPanel {
     private void handleMetrics(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
+        if (!rateLimit(exchange)) return;
         if (!metricsPublic && !authenticate(exchange)) return;
 
         JsonObject metrics = new JsonObject();
@@ -355,11 +382,67 @@ public class WebPanel {
      * @throws IOException If an I/O error occurs while sending the error response.
      */
     public boolean authenticate(HttpExchange exchange) throws IOException {
+        String ip = clientIp(exchange);
+
+        // A wrong token costs an attempt. Ten failures inside a minute and the source is turned
+        // away without the comparison even running, which is what turns a 32-character token from
+        // "guessable eventually" into "not guessable".
+        if (!allow(authAttempts, ip, AUTH_LIMIT)) {
+            sendJson(exchange, 429, "{\"error\":\"Too many authentication attempts\"}");
+            return false;
+        }
+
         String auth = exchange.getRequestHeaders().getFirst("Authorization");
-        if (auth != null && auth.startsWith("Bearer ") &&
-                java.security.MessageDigest.isEqual(auth.substring(7).getBytes(), token.getBytes())) return true;
+        if (auth != null && auth.startsWith("Bearer ")) {
+            byte[] provided = auth.substring(7).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] expected = token.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (provided.length > 0 && java.security.MessageDigest.isEqual(provided, expected)) {
+                authAttempts.remove(ip);
+                return true;
+            }
+        }
+        record(authAttempts, ip);
         sendJson(exchange, 401, "{\"error\":\"Unauthorized\"}");
         return false;
+    }
+
+    /**
+     * Applies the shared per-IP request limit. Modules may call it before their own handling.
+     *
+     * @param exchange The HTTP exchange.
+     * @return {@code true} when the request may proceed; a 429 has already been sent otherwise.
+     * @throws IOException If an I/O error occurs.
+     */
+    public boolean rateLimit(HttpExchange exchange) throws IOException {
+        String ip = clientIp(exchange);
+        if (!allow(requestHits, ip, REQUEST_LIMIT)) {
+            sendJson(exchange, 429, "{\"error\":\"Rate limit exceeded\"}");
+            return false;
+        }
+        record(requestHits, ip);
+        return true;
+    }
+
+    private static String clientIp(HttpExchange exchange) {
+        var addr = exchange.getRemoteAddress();
+        return (addr == null || addr.getAddress() == null) ? "unknown" : addr.getAddress().getHostAddress();
+    }
+
+    /** Whether the source is under its quota, pruning anything older than the window. */
+    private static boolean allow(java.util.Map<String, java.util.Deque<Long>> map, String ip, int limit) {
+        java.util.Deque<Long> hits = map.get(ip);
+        if (hits == null) return true;
+        long cutoff = System.currentTimeMillis() - AUTH_WINDOW_MS;
+        synchronized (hits) {
+            while (!hits.isEmpty() && hits.peekFirst() < cutoff) hits.pollFirst();
+            if (hits.isEmpty()) { map.remove(ip); return true; }
+            return hits.size() < limit;
+        }
+    }
+
+    private static void record(java.util.Map<String, java.util.Deque<Long>> map, String ip) {
+        java.util.Deque<Long> hits = map.computeIfAbsent(ip, k -> new java.util.ArrayDeque<>());
+        synchronized (hits) { hits.addLast(System.currentTimeMillis()); }
     }
 
     /**
@@ -371,7 +454,8 @@ public class WebPanel {
      * @param exchange The HTTP exchange.
      */
     public void addCorsHeaders(HttpExchange exchange) {
-        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", corsOrigin);
+        if (!"*".equals(corsOrigin)) exchange.getResponseHeaders().set("Vary", "Origin");
         exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Authorization, Content-Type");
     }

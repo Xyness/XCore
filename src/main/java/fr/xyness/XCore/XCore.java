@@ -86,8 +86,29 @@ public class XCore extends JavaPlugin {
     private final Logger logger = new Logger("Main");
     private final Methods methods = new Methods(this);
     private final Gson gson = new Gson();
-    private final ExecutorService executor = Executors.newCachedThreadPool(
-            r -> { Thread t = new Thread(r, "XCore-Thread"); t.setDaemon(true); return t; });
+
+    /**
+     * Shared worker pool for every asynchronous operation in XCore and its addons.
+     * <p>
+     * Bounded on purpose. A cached pool grows a thread per queued task and would happily create
+     * thousands of them under a burst — far past the point where they can do anything useful, since
+     * nearly every task ends up waiting on the (much smaller) HikariCP pool anyway. Excess work
+     * queues instead, and {@code CallerRunsPolicy} applies back-pressure rather than dropping it.
+     * </p>
+     */
+    private final ExecutorService executor = buildExecutor();
+
+    private static ExecutorService buildExecutor() {
+        int core = Math.max(4, Runtime.getRuntime().availableProcessors());
+        java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
+            core, core * 4,
+            60L, TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(10_000),
+            r -> { Thread t = new Thread(r, "XCore-Thread"); t.setDaemon(true); return t; },
+            new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
 
     private SchedulerAdapter schedulerAdapter;
     private PlayerDAO playerDAO;
@@ -184,7 +205,13 @@ public class XCore extends JavaPlugin {
         // ---- Config ----
         updateConfigWithDefaults();
         FileConfiguration config = getConfig();
-        databaseType = DatabaseType.valueOf(config.getString("database-type", "sqlite").toUpperCase());
+        String configuredType = config.getString("database-type", "sqlite");
+        try {
+            databaseType = DatabaseType.valueOf(configuredType.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            logger.sendWarning("Unknown database-type '" + configuredType + "'. Falling back to SQLITE.");
+            databaseType = DatabaseType.SQLITE;
+        }
         this.dialect = SqlDialect.of(databaseType);
 
         // ---- Lang ----
@@ -354,8 +381,6 @@ public class XCore extends JavaPlugin {
             .deserializer(s -> gson.fromJson(s, PlayerData.class))
             .uuidExtractor(PlayerData::getUuid)
             .nameExtractor(PlayerData::getName)
-            .textureExtractor(PlayerData::getTexture)
-            .mojangUuidExtractor(PlayerData::getMojangUUID)
             .findByUuidAsync(uuid -> playerDAO.findByServerUuidAsync(uuid))
             .findByNameAsync(name -> playerDAO.findByNameAsync(name))
             .findByUuidsAsync(uuids -> playerDAO.findByServerUuidsAsync(uuids))
@@ -371,6 +396,7 @@ public class XCore extends JavaPlugin {
         this.syncManager = new SyncManager(
             jedisPool, dataSource, databaseType, executor,
             pollSeconds * 20, retentionSeconds,
+            config.getString("cross-server.server-name", "default"),
             logger::sendDebug, logger::sendWarning, logger::sendError
         );
 
@@ -425,22 +451,33 @@ public class XCore extends JavaPlugin {
             int webPort = clamp(config.getInt("web-dashboard.port", 8085), 1, 65535, "web-dashboard.port");
             String webToken = config.getString("web-dashboard.token", "CHANGE_ME_TO_A_SECURE_TOKEN");
             boolean metricsPublic = config.getBoolean("web-dashboard.metrics-public", true);
-            webPanel = new WebPanel(getDataFolder(), webPort, webToken, metricsPublic);
-            try {
-                webPanel.start();
-            } catch (Exception e) {
-                logger.sendError("Failed to start web dashboard: " + e.getMessage());
-                webPanel = null;
-            }
-            if (webPanel != null && "CHANGE_ME_TO_A_SECURE_TOKEN".equals(webToken)) {
-                logger.sendSevere("Web dashboard token is set to default! Change it in config.yml immediately.");
+
+            // Refused before the socket is opened, not warned about after: a dashboard listening
+            // with the shipped token (or none at all) is an open door to every admin endpoint the
+            // addons register on it.
+            if (webToken == null || webToken.isBlank()
+                    || "CHANGE_ME_TO_A_SECURE_TOKEN".equals(webToken)
+                    || webToken.length() < 16) {
+                logger.sendSevere("Web dashboard NOT started: 'web-dashboard.token' is missing, still the default, "
+                    + "or shorter than 16 characters. Set a strong token in config.yml.");
+            } else {
+                webPanel = new WebPanel(getDataFolder(), webPort, webToken, metricsPublic,
+                    config.getString("web-dashboard.cors-origin", "*"));
+                try {
+                    webPanel.start();
+                } catch (Exception e) {
+                    logger.sendError("Failed to start web dashboard: " + e.getMessage());
+                    webPanel = null;
+                }
             }
         }
 
         // ---- Economy (requires Vault) ----
+        // Vault is only needed to *publish* the economy to other plugins. Balances, columns,
+        // /coins, placeholders and the web module all work without it.
         boolean economyEnabled = config.getBoolean("economy.enabled", true);
         boolean vaultPresent = Bukkit.getPluginManager().getPlugin("Vault") != null;
-        if (economyEnabled && vaultPresent) {
+        if (economyEnabled) {
             try {
                 coinsManager = new CoinsManager(this);
 
@@ -458,15 +495,19 @@ public class XCore extends JavaPlugin {
                         .apply();
                 }
 
-                // Vault provider
-                try {
-                    var provider = new VaultEconomyProvider(coinsManager);
-                    Bukkit.getServicesManager().register(
-                        net.milkbowl.vault.economy.Economy.class, provider, this,
-                        org.bukkit.plugin.ServicePriority.Highest);
-                    logger.sendInfo("Vault economy provider registered.");
-                } catch (Throwable e) {
-                    logger.sendDebug("Failed to register Vault provider: " + e.getMessage());
+                // Vault provider (optional)
+                if (vaultPresent) {
+                    try {
+                        var provider = new VaultEconomyProvider(coinsManager);
+                        Bukkit.getServicesManager().register(
+                            net.milkbowl.vault.economy.Economy.class, provider, this,
+                            org.bukkit.plugin.ServicePriority.Highest);
+                        logger.sendInfo("Vault economy provider registered.");
+                    } catch (Throwable e) {
+                        logger.sendDebug("Failed to register Vault provider: " + e.getMessage());
+                    }
+                } else {
+                    logger.sendInfo("Vault not installed — the economy runs internally only.");
                 }
 
                 // Commands
@@ -516,8 +557,6 @@ public class XCore extends JavaPlugin {
                 logger.sendError("Failed to initialize economy: " + e.getMessage());
                 coinsManager = null;
             }
-        } else if (economyEnabled && !vaultPresent) {
-            logger.sendWarning("Economy is enabled but Vault is not installed. Economy system disabled.");
         }
 
         // ---- Addons ----

@@ -373,7 +373,9 @@ public class QueryBuilder {
 
     private static void validateOperator(String operator) {
         String op = operator.trim().toUpperCase();
-        if (!op.matches("=|!=|<>|<|>|<=|>=|LIKE|NOT LIKE|IN|IS|IS NOT")) {
+        // IN / IS / IS NOT are deliberately absent: appendWhere() renders every clause as
+        // "column <op> ?", which is not valid SQL for any of them.
+        if (!op.matches("=|!=|<>|<|>|<=|>=|LIKE|NOT LIKE")) {
             throw new IllegalArgumentException("Invalid SQL operator: '" + operator + "'.");
         }
     }

@@ -7,6 +7,9 @@ import java.util.concurrent.Executor;
 
 import javax.sql.DataSource;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import fr.xyness.XCore.API.DatabaseType;
 import redis.clients.jedis.JedisPool;
 
@@ -18,7 +21,10 @@ import redis.clients.jedis.JedisPool;
  * and multiplexes all channels over that transport.
  * </p>
  * <p>
- * Message wire format: {@code serverId|channelName|action|key|payload}
+ * Message wire format: a JSON object {@code {"s":serverId,"c":channel,"a":action,"k":key,"p":payload}}.
+ * Values are escaped by the encoder, so a key or payload containing the delimiter of the previous
+ * pipe-separated format no longer shifts the whole message. That legacy format is still accepted on
+ * read, so a cluster can be restarted one server at a time.
  * </p>
  */
 public class SyncManager {
@@ -71,14 +77,21 @@ public class SyncManager {
      * @param executor           Async executor for message handling.
      * @param pollIntervalTicks  Poll interval in ticks for database transport (20 ticks = 1 second).
      * @param retentionSeconds   How long to keep DB sync rows before cleanup.
+     * @param serverName         Stable identifier for this server (cross-server.server-name).
      * @param logDebug           Debug log callback.
      * @param logWarning         Warning log callback.
      * @param logError           Error log callback.
      */
     public SyncManager(JedisPool jedisPool, DataSource dataSource, DatabaseType databaseType,
                        Executor executor, int pollIntervalTicks, int retentionSeconds,
+                       String serverName,
                        LogCallback logDebug, LogCallback logWarning, LogCallback logError) {
-        this.serverId = UUID.randomUUID().toString().substring(0, 8);
+        // Derived from cross-server.server-name so the identity survives a restart and matches the
+        // one already used for per-server column suffixes. A random id per boot meant a server could
+        // not recognise its own pending messages after a restart.
+        this.serverId = (serverName == null || serverName.isBlank())
+            ? UUID.randomUUID().toString().substring(0, 8)
+            : serverName.replaceAll("[^a-zA-Z0-9_.-]", "_");
         this.jedisPool = jedisPool;
         this.dataSource = dataSource;
         this.databaseType = databaseType;
@@ -120,7 +133,13 @@ public class SyncManager {
             logWarning.log("Attempted to publish to unregistered channel '" + channelName + "'.");
             return;
         }
-        String formatted = serverId + "|" + channelName + "|" + message.action() + "|" + message.key() + "|" + message.payload();
+        JsonObject json = new JsonObject();
+        json.addProperty("s", serverId);
+        json.addProperty("c", channelName);
+        json.addProperty("a", message.action());
+        json.addProperty("k", message.key() == null ? "" : message.key());
+        json.addProperty("p", message.payload() == null ? "" : message.payload());
+        String formatted = json.toString();
         executor.execute(() -> {
             try {
                 transport.publish(formatted);
@@ -175,21 +194,34 @@ public class SyncManager {
 
     /**
      * Handles a raw message from the transport layer.
-     * Format: {@code serverId|channelName|action|key|payload}
+     * Accepts the JSON format emitted by {@link #publish}, and the legacy
+     * {@code serverId|channel|action|key|payload} form for rolling upgrades.
      */
     private void handleRawMessage(String rawMessage) {
         try {
-            // Split into at most 5 parts: serverId|channel|action|key|payload
-            String[] parts = rawMessage.split("\\|", 5);
-            if (parts.length < 4) return;
+            if (rawMessage == null || rawMessage.isBlank()) return;
 
-            String sourceServerId = parts[0];
+            String sourceServerId, channelName, action, key, payload;
+            String trimmed = rawMessage.trim();
+
+            if (trimmed.charAt(0) == '{') {
+                JsonObject json = JsonParser.parseString(trimmed).getAsJsonObject();
+                sourceServerId = json.has("s") ? json.get("s").getAsString() : "";
+                channelName = json.has("c") ? json.get("c").getAsString() : "";
+                action = json.has("a") ? json.get("a").getAsString() : "";
+                key = json.has("k") ? json.get("k").getAsString() : "";
+                payload = json.has("p") ? json.get("p").getAsString() : "";
+            } else {
+                String[] parts = trimmed.split("\\|", 5);
+                if (parts.length < 4) return;
+                sourceServerId = parts[0];
+                channelName = parts[1];
+                action = parts[2];
+                key = parts[3];
+                payload = parts.length >= 5 ? parts[4] : "";
+            }
+
             if (sourceServerId.equals(serverId)) return; // Ignore own messages
-
-            String channelName = parts[1];
-            String action = parts[2];
-            String key = parts[3];
-            String payload = parts.length >= 5 ? parts[4] : "";
 
             SyncChannel channel = channels.get(channelName);
             if (channel == null) return; // Not subscribed to this channel
