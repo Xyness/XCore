@@ -21,6 +21,7 @@ public class ColumnBuilder {
 
     private final XCore main;
     private final List<ColumnDef> columns = new ArrayList<>();
+    private final List<String> dropped = new ArrayList<>();
 
     /**
      * Creates a new ColumnBuilder.
@@ -87,9 +88,25 @@ public class ColumnBuilder {
     }
 
     /**
+     * Marks a column for removal, for an addon that has moved a value out of the shared table.
+     * <p>
+     * Dropping is not cosmetic: as long as the column is there, every {@code PlayerData} load reads
+     * it and every Redis write carries it, for every addon on the server. Call this only once the
+     * data has been copied somewhere else — nothing is backed up here.
+     * </p>
+     *
+     * @param name The column name to drop.
+     * @return This builder for chaining.
+     */
+    public ColumnBuilder dropColumn(String name) {
+        dropped.add(name);
+        return this;
+    }
+
+    /**
      * Applies all column definitions to the default {@code players} table.
      *
-     * @return {@code true} if at least one column was added.
+     * @return {@code true} if at least one column was added or dropped.
      */
     public boolean apply() {
         return apply("players");
@@ -99,18 +116,24 @@ public class ColumnBuilder {
      * Applies all column definitions to the specified table.
      *
      * @param table The target table name.
-     * @return {@code true} if at least one column was added.
+     * @return {@code true} if at least one column was added or dropped.
      */
     public boolean apply(String table) {
         SqlDialect dialect = main.getDialect();
-        boolean anyAdded = false;
+        boolean anyChange = false;
         for (ColumnDef col : columns) {
             if (main.methods().addColumnIfMissing(table, col.name, col.toSqlDefinition(dialect))) {
-                anyAdded = true;
+                anyChange = true;
             }
             main.playerDAO().registerExtraColumn(col.name);
         }
-        return anyAdded;
+        for (String name : dropped) {
+            if (main.methods().dropColumnIfPresent(table, name)) {
+                anyChange = true;
+            }
+            main.playerDAO().unregisterExtraColumn(name);
+        }
+        return anyChange;
     }
 
     private ColumnDef lastColumn() {

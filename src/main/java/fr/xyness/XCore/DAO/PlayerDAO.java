@@ -50,13 +50,23 @@ public class PlayerDAO extends AbstractDAO {
     private static final String SELECT_BY_UUID =
         "SELECT * FROM players WHERE server_uuid = ?";
 
-	/** SQL statement for selecting a player by name (case-insensitive). */
-    private static final String SELECT_BY_NAME =
-         "SELECT * FROM players WHERE lower(player_name) = ?";
+	/**
+	 * SQL for a case-insensitive lookup by name, in a form the index can actually serve.
+	 *
+	 * <p>{@code lower(player_name) = ?} applies a function to the column, which disqualifies
+	 * {@code idx_players_name} on every engine: the lookup degraded into a full table scan, once per
+	 * name resolution that missed the cache. Each dialect gets the spelling it can index instead —
+	 * MySQL's default collation is already case-insensitive, SQLite has {@code COLLATE NOCASE}, and
+	 * PostgreSQL keeps the function but is given a matching functional index.</p>
+	 */
+    private final String selectByName;
 
-	/** SQL statement for selecting all players. */
-    private static final String SELECT_ALL =
-        "SELECT * FROM players";
+	/** Whether {@link #selectByName} expects its parameter already lower-cased. */
+    private final boolean selectByNameLowercased;
+
+	/** SQL statement for selecting one page of players, ordered so the pages do not shift. */
+    private static final String SELECT_PAGE =
+        "SELECT * FROM players ORDER BY server_uuid LIMIT ? OFFSET ?";
 
 	/** SQL statement for updating a player's core fields by server UUID. */
     private static final String UPDATE =
@@ -72,7 +82,23 @@ public class PlayerDAO extends AbstractDAO {
 	 * @param main     The main plugin instance.
 	 * @param executor The executor service for async operations.
 	 */
-    public PlayerDAO(XCore main, ExecutorService executor) { super(main, executor); }
+    public PlayerDAO(XCore main, ExecutorService executor) {
+        super(main, executor);
+        switch (main.getDatabaseType()) {
+            case MYSQL -> {
+                selectByName = "SELECT * FROM players WHERE player_name = ?";
+                selectByNameLowercased = false;
+            }
+            case POSTGRESQL -> {
+                selectByName = "SELECT * FROM players WHERE lower(player_name) = ?";
+                selectByNameLowercased = true;
+            }
+            default -> {
+                selectByName = "SELECT * FROM players WHERE player_name = ? COLLATE NOCASE";
+                selectByNameLowercased = false;
+            }
+        }
+    }
 
 	/**
 	 * Inserts a new player into the database asynchronously.
@@ -129,8 +155,8 @@ public class PlayerDAO extends AbstractDAO {
     public CompletableFuture<Optional<PlayerData>> findByNameAsync(String name) {
         return supplyAsync(() -> {
             try (Connection c = getConnection();
-                 PreparedStatement ps = c.prepareStatement(SELECT_BY_NAME)) {
-                ps.setString(1, name.toLowerCase());
+                 PreparedStatement ps = c.prepareStatement(selectByName)) {
+                ps.setString(1, selectByNameLowercased ? name.toLowerCase() : name);
                 try (ResultSet rs = ps.executeQuery()) {
                 	main.logger().sendDebug("[DAO] Select player by name : " + name + ".");
                     return rs.next() ? Optional.of(map(rs)) : Optional.empty();
@@ -143,22 +169,84 @@ public class PlayerDAO extends AbstractDAO {
     }
 
 	/**
-	 * Retrieves all players from the database asynchronously.
+	 * Finds a player by the Mojang UUID recorded for them.
 	 *
-	 * @return A future containing a list of all {@link PlayerData} entries.
+	 * <p>The one identifier that survives a change of UUID mode: {@code server_uuid} is the offline
+	 * hash of the name in one mode and Mojang's own value in the other, so it cannot be used to
+	 * recognise a returning player across that switch.</p>
+	 *
+	 * @param mojangUuid The Mojang UUID, dashed.
+	 * @return A future containing the player, or empty when no row carries that Mojang UUID.
 	 */
-    public CompletableFuture<List<PlayerData>> findAllAsync() {
+    public CompletableFuture<Optional<PlayerData>> findByMojangUuidAsync(String mojangUuid) {
+        return supplyAsync(() -> {
+            if (mojangUuid == null || mojangUuid.isBlank() || "none".equalsIgnoreCase(mojangUuid)) {
+                return Optional.empty();
+            }
+            try (Connection c = getConnection();
+                 PreparedStatement ps = c.prepareStatement("SELECT * FROM players WHERE mojang_uuid = ?")) {
+                ps.setString(1, mojangUuid);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) return Optional.empty();
+                    return Optional.of(map(rs));
+                }
+            } catch (SQLException e) {
+                main.logger().sendError("[DAO] Failed to get player by mojang uuid '" + mojangUuid + "' : " + e.getMessage());
+            }
+            return Optional.empty();
+        });
+    }
+
+	/**
+	 * Retrieves a page of players from the database asynchronously.
+	 *
+	 * <p>Paged rather than whole. This used to be {@code findAllAsync()} — {@code SELECT * FROM
+	 * players} with no bound — which held every row of the table, with every column every addon has
+	 * added to it, in one list. That is fine on a test server and is a heap exhaustion on a network
+	 * with two hundred thousand players, and being a public method it was an invitation to find out
+	 * which one you had.</p>
+	 *
+	 * @param offset How many rows to skip.
+	 * @param limit  How many rows to return; clamped to 1000.
+	 * @return A future containing that page of {@link PlayerData} entries, ordered by UUID so the
+	 *         pages are stable between calls.
+	 */
+    public CompletableFuture<List<PlayerData>> findPageAsync(int offset, int limit) {
+        int safeOffset = Math.max(0, offset);
+        int safeLimit = Math.max(1, Math.min(limit, 1000));
         return supplyAsync(() -> {
             List<PlayerData> list = new ArrayList<>();
             try (Connection c = getConnection();
-                 PreparedStatement ps = c.prepareStatement(SELECT_ALL);
-                 ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) list.add(map(rs));
-                main.logger().sendDebug("[DAO] Select all players : " + main.methods().getNumberSeparate(list.size()) + " results.");
+                 PreparedStatement ps = c.prepareStatement(SELECT_PAGE)) {
+                ps.setInt(1, safeLimit);
+                ps.setInt(2, safeOffset);
+                try (ResultSet rs = ps.executeQuery()) {
+                    String[] extraColumns = extraColumnNames(rs);
+                    while (rs.next()) list.add(map(rs, extraColumns));
+                }
+                main.logger().sendDebug("[DAO] Select players page : " + list.size() + " rows from " + safeOffset + ".");
             } catch (SQLException e) {
-				main.logger().sendError("[DAO] Failed to get all players : " + e.getMessage());
+				main.logger().sendError("[DAO] Failed to get players page : " + e.getMessage());
 			}
             return list;
+        });
+    }
+
+	/**
+	 * Counts the rows of the players table.
+	 *
+	 * @return A future containing the total, for paging through {@link #findPageAsync(int, int)}.
+	 */
+    public CompletableFuture<Integer> countAsync() {
+        return supplyAsync(() -> {
+            try (Connection c = getConnection();
+                 PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM players");
+                 ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            } catch (SQLException e) {
+				main.logger().sendError("[DAO] Failed to count players : " + e.getMessage());
+			}
+            return 0;
         });
     }
 
@@ -227,6 +315,15 @@ public class PlayerDAO extends AbstractDAO {
 	 */
     public void registerExtraColumn(String column) {
         knownExtraColumns.add(column.toLowerCase());
+    }
+
+	/**
+	 * Forgets an extra column (called after ColumnBuilder.dropColumn()).
+	 *
+	 * @param column The column name to forget.
+	 */
+    public void unregisterExtraColumn(String column) {
+        knownExtraColumns.remove(column.toLowerCase());
     }
 
 	/**
@@ -312,8 +409,9 @@ public class PlayerDAO extends AbstractDAO {
                     ps.setString(i + 1, uuids.get(i));
                 }
                 try (ResultSet rs = ps.executeQuery()) {
+                    String[] extraColumns = extraColumnNames(rs);
                     while (rs.next()) {
-                        PlayerData data = map(rs);
+                        PlayerData data = map(rs, extraColumns);
                         result.put(data.getUuid().toString(), Optional.of(data));
                     }
                 }
@@ -337,9 +435,41 @@ public class PlayerDAO extends AbstractDAO {
 	 * @throws SQLException If a database access error occurs.
 	 */
     private PlayerData map(ResultSet rs) throws SQLException {
-        ResultSetMetaData meta = rs.getMetaData();
-        int totalCols = meta.getColumnCount();
+        return map(rs, extraColumnNames(rs));
+    }
 
+	/**
+	 * Resolves, once for a whole {@link ResultSet}, which columns are extra data and under what name.
+	 *
+	 * <p>Reading the metadata inside the row loop meant one {@code getColumnName} and one
+	 * {@code toLowerCase} per column <em>per row</em> — six hundred thousand throw-away strings for a
+	 * fifty-thousand-player export.</p>
+	 *
+	 * @param rs The result set.
+	 * @return An array indexed by column position (1-based, index 0 unused); {@code null} marks a
+	 *         core column that must not be copied into the dynamic data.
+	 * @throws SQLException If the metadata cannot be read.
+	 */
+    private static String[] extraColumnNames(ResultSet rs) throws SQLException {
+        ResultSetMetaData meta = rs.getMetaData();
+        int total = meta.getColumnCount();
+        String[] names = new String[total + 1];
+        for (int i = 1; i <= total; i++) {
+            String colName = meta.getColumnName(i).toLowerCase();
+            names[i] = CORE_COLUMNS.contains(colName) ? null : colName;
+        }
+        return names;
+    }
+
+	/**
+	 * Maps one row using pre-resolved column names.
+	 *
+	 * @param rs           The result set positioned at the current row.
+	 * @param extraColumns The output of {@link #extraColumnNames(ResultSet)}.
+	 * @return The mapped {@link PlayerData}.
+	 * @throws SQLException If a database access error occurs.
+	 */
+    private static PlayerData map(ResultSet rs, String[] extraColumns) throws SQLException {
         PlayerData playerData = new PlayerData(
             UUID.fromString(rs.getString("server_uuid")),
             rs.getString("player_name"),
@@ -347,13 +477,12 @@ public class PlayerDAO extends AbstractDAO {
             rs.getString("mojang_uuid")
         );
 
-        for (int i = 1; i <= totalCols; i++) {
-            String colName = meta.getColumnName(i).toLowerCase();
-            if (!CORE_COLUMNS.contains(colName)) {
-                Object value = rs.getObject(i);
-                if (value != null) {
-                    playerData.setTargetData(colName, value);
-                }
+        for (int i = 1; i < extraColumns.length; i++) {
+            String colName = extraColumns[i];
+            if (colName == null) continue;
+            Object value = rs.getObject(i);
+            if (value != null) {
+                playerData.setTargetData(colName, value);
             }
         }
 

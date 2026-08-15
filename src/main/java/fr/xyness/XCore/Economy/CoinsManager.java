@@ -87,7 +87,22 @@ public class CoinsManager {
     private final Map<String, Currency> currencies = new LinkedHashMap<>();
     private final Map<String, Double> exchangeRates = new HashMap<>();
     private final Object[] locks = new Object[LOCK_STRIPES];
-    private final Map<String, double[]> dbFallback = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Balances read straight from the database on a cache miss.
+     *
+     * <p>Bounded and self-expiring. It used to be a plain map with the age checked on read and
+     * nothing ever removing an entry: one line per (player, currency) ever queried, kept for the
+     * lifetime of the server — a slow leak that only showed after days of uptime.</p>
+     */
+    private final com.github.benmanes.caffeine.cache.Cache<String, Double> dbFallback =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .maximumSize(20_000)
+                    .expireAfterWrite(java.time.Duration.ofMillis(DB_FALLBACK_TTL_MS))
+                    .build();
+
+    /** Transactions waiting to be written, flushed as one batch. */
+    private final java.util.Queue<Object[]> pendingTransactions = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private Currency vaultCurrency;
     private boolean exchangeEnabled;
     private String columnSuffix;
@@ -97,7 +112,7 @@ public class CoinsManager {
         for (int i = 0; i < LOCK_STRIPES; i++) locks[i] = new Object();
         // Cross-server suffix
         boolean perServer = plugin.getConfig().getBoolean("economy.per-server-balances", false);
-        String serverName = plugin.getConfig().getString("cross-server.server-name", "default");
+        String serverName = plugin.getServerName();
         this.columnSuffix = perServer ? "_" + serverName : "";
         loadCurrencies();
         loadExchangeRates();
@@ -248,22 +263,136 @@ public class CoinsManager {
      * Logs a transaction to the database.
      */
     public void logTransaction(UUID playerId, String playerName, String currency, double amount, String type, String targetName, String details) {
+        // Queued rather than written on the spot: a busy shop turns every purchase into its own
+        // connection borrow, statement preparation and round trip. The flush below writes them as a
+        // single batch, and the timestamp is taken here so the order and the times stay exact.
+        pendingTransactions.add(new Object[]{
+            playerId.toString(), playerName, currency, amount, type, targetName, details,
+            LocalDateTime.now().format(DT_FORMAT)
+        });
+        if (pendingTransactions.size() >= 200) flushTransactions();
+    }
+
+    /**
+     * Writes every queued transaction as one batch.
+     *
+     * <p>Called on a timer, when the queue grows past its threshold, and on shutdown.</p>
+     */
+    public void flushTransactions() {
+        if (pendingTransactions.isEmpty()) return;
+        java.util.List<Object[]> batch = new ArrayList<>();
+        for (Object[] row = pendingTransactions.poll(); row != null; row = pendingTransactions.poll()) {
+            batch.add(row);
+            if (batch.size() >= 500) break;
+        }
+        if (batch.isEmpty()) return;
+
         CompletableFuture.runAsync(() -> {
             try (Connection conn = api().getDataSource().getConnection();
                  PreparedStatement ps = conn.prepareStatement(
                      "INSERT INTO xcore_transactions (player_uuid, player_name, currency, amount, type, target_name, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                ps.setString(1, playerId.toString());
-                ps.setString(2, playerName);
-                ps.setString(3, currency);
-                ps.setDouble(4, amount);
-                ps.setString(5, type);
-                ps.setString(6, targetName);
-                ps.setString(7, details);
-                ps.setString(8, LocalDateTime.now().format(DT_FORMAT));
-                ps.executeUpdate();
+                for (Object[] row : batch) {
+                    ps.setString(1, (String) row[0]);
+                    ps.setString(2, (String) row[1]);
+                    ps.setString(3, (String) row[2]);
+                    ps.setDouble(4, (Double) row[3]);
+                    ps.setString(5, (String) row[4]);
+                    ps.setString(6, (String) row[5]);
+                    ps.setString(7, (String) row[6]);
+                    ps.setString(8, (String) row[7]);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
             } catch (SQLException e) {
-                logger().sendWarning("Failed to log transaction: " + e.getMessage());
+                logger().sendWarning("Failed to log " + batch.size() + " transaction(s): " + e.getMessage());
             }
+        }, plugin.getExecutor());
+    }
+
+    /**
+     * Credits the same amount to a set of players in a single statement.
+     *
+     * <p>The scheduled payout used to walk the online players and issue one full balance operation
+     * each — three statements per player, per payout. This is one {@code UPDATE}, one read-back, and
+     * the caches refreshed from it.</p>
+     *
+     * @param playerIds  Who to credit.
+     * @param currencyId The currency.
+     * @param amount     The amount to add to each balance.
+     * @return A future completing with the resulting balance of each player that was updated.
+     */
+    public CompletableFuture<Map<UUID, Double>> depositAll(Collection<UUID> playerIds, String currencyId, double amount) {
+        return bulkApply(playerIds, currencyId, "COALESCE(" + col(currencyId) + ", 0) + ?", amount, false);
+    }
+
+    /**
+     * Multiplies the balance of a set of players in a single statement, for interest.
+     *
+     * @param playerIds  Who to credit.
+     * @param currencyId The currency.
+     * @param rate       The interest rate ({@code 0.01} adds one percent).
+     * @return A future completing with the resulting balance of each player that was updated.
+     */
+    public CompletableFuture<Map<UUID, Double>> applyInterest(Collection<UUID> playerIds, String currencyId, double rate) {
+        return bulkApply(playerIds, currencyId, "COALESCE(" + col(currencyId) + ", 0) * ?", 1.0 + rate, true);
+    }
+
+    /**
+     * Shared body of the bulk operations: one UPDATE, one read-back, caches refreshed.
+     *
+     * @param playerIds     Who to update.
+     * @param currencyId    The currency.
+     * @param expression    The SQL expression assigned to the column, taking one {@code ?}.
+     * @param parameter     The value bound to that placeholder.
+     * @param positiveOnly  Whether to skip players whose balance is zero or negative.
+     * @return A future completing with the resulting balance of each updated player.
+     */
+    private CompletableFuture<Map<UUID, Double>> bulkApply(Collection<UUID> playerIds, String currencyId,
+                                                           String expression, double parameter, boolean positiveOnly) {
+        Currency currency = currencies.get(currencyId);
+        Map<UUID, Double> empty = Map.of();
+        if (currency == null || playerIds == null || playerIds.isEmpty()) {
+            return CompletableFuture.completedFuture(empty);
+        }
+        String column = col(currencyId);
+        if (!SAFE_COLUMN.matcher(column).matches()) {
+            logger().sendError("Refusing bulk balance operation: unsafe column name '" + column + "'.");
+            return CompletableFuture.completedFuture(empty);
+        }
+        List<UUID> targets = new ArrayList<>(playerIds);
+
+        return CompletableFuture.supplyAsync(() -> {
+            Map<UUID, Double> results = new HashMap<>();
+            String placeholders = String.join(",", java.util.Collections.nCopies(targets.size(), "?"));
+            String guard = positiveOnly ? " AND COALESCE(" + column + ", 0) > 0" : "";
+            try (Connection conn = api().getDataSource().getConnection()) {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE players SET " + column + " = " + expression
+                        + " WHERE server_uuid IN (" + placeholders + ")" + guard)) {
+                    ps.setDouble(1, parameter);
+                    for (int i = 0; i < targets.size(); i++) ps.setString(i + 2, targets.get(i).toString());
+                    ps.executeUpdate();
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT server_uuid, COALESCE(" + column + ", 0) FROM players"
+                        + " WHERE server_uuid IN (" + placeholders + ")")) {
+                    for (int i = 0; i < targets.size(); i++) ps.setString(i + 1, targets.get(i).toString());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            UUID id = UUID.fromString(rs.getString(1));
+                            double value = currency.round(rs.getDouble(2));
+                            double max = currency.getMaxBalance();
+                            if (max > 0 && value > max) value = max;
+                            results.put(id, value);
+                        }
+                    }
+                }
+            } catch (SQLException e) {
+                logger().sendError("Bulk balance operation failed: " + e.getMessage());
+                return empty;
+            }
+            results.forEach((id, value) -> refreshCachedBalance(id, currencyId, value));
+            return results;
         }, plugin.getExecutor());
     }
 
@@ -403,16 +532,12 @@ public class CoinsManager {
             Double value = opt.get().getTargetData(col(currencyId), Double.class);
             if (value != null) return value;
         }
-        double[] cached = dbFallback.get(playerId + ":" + currencyId);
-        if (cached != null && System.currentTimeMillis() - (long) cached[1] < DB_FALLBACK_TTL_MS) {
-            return cached[0];
-        }
-        return null;
+        return dbFallback.getIfPresent(playerId + ":" + currencyId);
     }
 
     /** Stores a database-sourced balance in the short-lived fallback cache. */
     private void rememberBalance(UUID playerId, String currencyId, double value) {
-        dbFallback.put(playerId + ":" + currencyId, new double[]{value, System.currentTimeMillis()});
+        dbFallback.put(playerId + ":" + currencyId, value);
     }
 
     /**
@@ -459,6 +584,24 @@ public class CoinsManager {
      * @param playerId   The player's server UUID.
      * @param currencyId The currency.
      * @return The balance, or the currency's starting balance when the player has no row at all.
+     */
+    /**
+     * A balance, right now.
+     *
+     * <h2>This one can touch the database on the calling thread</h2>
+     * It is the shape Vault demands — {@code Economy#getBalance} returns a number, not a future —
+     * so it cannot be made asynchronous without breaking every plugin that reads a balance through
+     * Vault. On a cache hit it is a map lookup. On a miss it reads one column, and remembers the
+     * answer for thirty seconds so a burst of calls costs one query.
+     *
+     * <p>The alternative was worse: the earlier version returned {@code starting-balance} on a miss,
+     * which invented money for anybody whose row was not cached. If you see {@code GuardedDataSource}
+     * naming this method in debug mode, that is why — and {@link #getBalanceAsync(UUID, String)} is
+     * the one to call from your own code.</p>
+     *
+     * @param playerId   The player's server UUID.
+     * @param currencyId The currency.
+     * @return The balance, or the currency's starting balance when the player is unknown.
      */
     public double getBalance(UUID playerId, String currencyId) {
         Currency currency = currencies.get(currencyId);
@@ -903,7 +1046,7 @@ public class CoinsManager {
     public void reload() {
         // Re-read cross-server suffix
         boolean perServer = plugin.getConfig().getBoolean("economy.per-server-balances", false);
-        String serverName = plugin.getConfig().getString("cross-server.server-name", "default");
+        String serverName = plugin.getServerName();
         this.columnSuffix = perServer ? "_" + serverName : "";
         loadCurrencies();
         loadExchangeRates();

@@ -1,15 +1,26 @@
 package fr.xyness.XCore.Addon;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.bukkit.Bukkit;
+import org.bukkit.event.Event;
+import org.bukkit.event.EventException;
+import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
+import org.bukkit.plugin.EventExecutor;
 
 import fr.xyness.XCore.XCore;
+import fr.xyness.XCore.Utils.Profiler;
 
 /**
  * Tracks Bukkit event listeners registered by each addon.
@@ -53,8 +64,74 @@ public class AddonListenerRegistry {
      * @param listener  The Bukkit event listener to register.
      */
     public void registerListener(String addonName, Listener listener) {
-        Bukkit.getPluginManager().registerEvents(listener, core);
+        if (!registerTimed(addonName, listener)) {
+            // Anything unexpected in the reflective path and the listener still gets registered the
+            // plain way: a missing measurement is a nuisance, a missing listener is a broken addon.
+            Bukkit.getPluginManager().registerEvents(listener, core);
+        }
         addonListeners.computeIfAbsent(addonName, k -> new CopyOnWriteArrayList<>()).add(listener);
+    }
+
+    /**
+     * Registers every {@code @EventHandler} of a listener behind an executor that can time it.
+     *
+     * <p>Addons run their listeners under XCore's plugin identity, so a timings report attributes
+     * everything they do to XCore and nothing to the addon that actually spent the time. Going
+     * through our own executor is what makes {@code /xcore profile} able to name the culprit.</p>
+     *
+     * <p>The handler itself is invoked through a {@link MethodHandle} — the same mechanism Bukkit
+     * uses — so the only cost added when profiling is off is one volatile read per event.</p>
+     *
+     * @param addonName The owning addon.
+     * @param listener  The listener to register.
+     * @return {@code true} when every handler was registered here.
+     */
+    private boolean registerTimed(String addonName, Listener listener) {
+        try {
+            Set<Method> methods = new LinkedHashSet<>();
+            Collections.addAll(methods, listener.getClass().getMethods());
+            Collections.addAll(methods, listener.getClass().getDeclaredMethods());
+
+            MethodHandles.Lookup lookup = MethodHandles.lookup();
+            String owner = listener.getClass().getSimpleName();
+            boolean any = false;
+
+            for (Method method : methods) {
+                EventHandler annotation = method.getAnnotation(EventHandler.class);
+                if (annotation == null) continue;
+                if (method.isBridge() || method.isSynthetic()) continue;
+                if (method.getParameterCount() != 1) continue;
+                Class<?> parameter = method.getParameterTypes()[0];
+                if (!Event.class.isAssignableFrom(parameter)) continue;
+
+                Class<? extends Event> eventClass = parameter.asSubclass(Event.class);
+                method.setAccessible(true);
+                MethodHandle handle = lookup.unreflect(method);
+                String key = addonName + "/" + owner + "#" + eventClass.getSimpleName();
+                Profiler profiler = core.profiler();
+
+                EventExecutor executor = (registered, event) -> {
+                    if (!eventClass.isInstance(event)) return;
+                    long start = Profiler.isEnabled() ? System.nanoTime() : 0L;
+                    try {
+                        handle.invoke(registered, event);
+                    } catch (Throwable throwable) {
+                        throw new EventException(throwable);
+                    } finally {
+                        if (start != 0L) profiler.record(key, System.nanoTime() - start);
+                    }
+                };
+
+                Bukkit.getPluginManager().registerEvent(eventClass, listener, annotation.priority(),
+                        executor, core, annotation.ignoreCancelled());
+                any = true;
+            }
+            return any;
+        } catch (Throwable t) {
+            core.logger().sendDebug("Falling back to plain listener registration for "
+                    + listener.getClass().getSimpleName() + " : " + t.getMessage());
+            return false;
+        }
     }
 
     /**

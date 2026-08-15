@@ -4,7 +4,7 @@ plugins {
     id 'com.gradleup.shadow' version '8.3.6'
 }
 group = 'fr.xyness'
-version = '1.0.6'
+version = '1.0.7'
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
@@ -29,6 +29,15 @@ dependencies {
     compileOnly 'redis.clients:jedis:5.2.0'
     compileOnly 'com.google.code.gson:gson:2.10.1'
 }
+// paper-plugin.yml used to carry its own hardcoded version, which drifted from the build and
+// made the server report an old release. It now takes the number from here.
+processResources {
+    filteringCharset 'UTF-8'
+    def tokens = [version: version]
+    inputs.properties tokens
+    filesMatching('paper-plugin.yml') { expand tokens }
+}
+
 shadowJar { archiveClassifier.set('') }
 tasks.named('build') { dependsOn shadowJar }
 publishing {

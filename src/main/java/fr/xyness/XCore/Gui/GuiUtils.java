@@ -40,6 +40,30 @@ public class GuiUtils {
     /** Cached reflection reference for the 1.20.5+ setItemModel method. */
     private static final Method setItemModelMethod;
 
+    /**
+     * Every item flag, resolved once.
+     *
+     * <p>{@code ItemFlag.values()} clones its backing array on every call, and every item this class
+     * builds used to ask for it — including the fifty rebuilt twice a second by a blinking GUI.</p>
+     */
+    private static final ItemFlag[] ALL_ITEM_FLAGS = ItemFlag.values();
+
+    /** Shared instance for the static helpers, so nothing has to allocate a utils object. */
+    private static final GuiUtils SHARED = new GuiUtils();
+
+    /**
+     * Textured heads, keyed by texture hash.
+     *
+     * <p>Building one means creating a {@link PlayerProfile}, parsing a URL and writing the texture
+     * property — a page of a player list did that fifty-four times, and did it again on every
+     * refresh. The head is built once and cloned per use; only the name and lore differ.</p>
+     */
+    private static final com.github.benmanes.caffeine.cache.Cache<String, ItemStack> HEAD_CACHE =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .maximumSize(4_096)
+                    .expireAfterAccess(java.time.Duration.ofMinutes(30))
+                    .build();
+
     static {
         Method m = null;
         try {
@@ -121,6 +145,12 @@ public class GuiUtils {
      * @return The component with italic set to {@code false}.
      */
     public static Component noItalic(Component component) {
+        // Already flat and already non-italic: returning it untouched avoids rebuilding a component
+        // tree that would be identical — the common case for lore coming out of the language cache.
+        if (component.children().isEmpty()
+                && component.decoration(TextDecoration.ITALIC) == TextDecoration.State.FALSE) {
+            return component;
+        }
         return component.decoration(TextDecoration.ITALIC, false)
             .children(component.children().stream().map(GuiUtils::noItalic).toList());
     }
@@ -154,7 +184,7 @@ public class GuiUtils {
         if (meta != null) {
             if (name != null) meta.displayName(noItalic(name));
             if (lore != null && !lore.isEmpty()) meta.lore(noItalic(lore));
-            meta.addItemFlags(ItemFlag.values());
+            meta.addItemFlags(ALL_ITEM_FLAGS);
             item.setItemMeta(meta);
         }
         return item;
@@ -215,6 +245,76 @@ public class GuiUtils {
     }
 
     // -------------------------------------------------------------------------
+    // Blinking bar items
+    // -------------------------------------------------------------------------
+
+    /**
+     * Builds one of the two faces of a bar item — the navigation and menu buttons every paginated
+     * GUI carries along its bottom row — and remembers it.
+     *
+     * <p>Each addon had its own copy of this method, and each copy rebuilt the item from the
+     * language file twice a second for as long as the GUI stayed open. What actually alternates is
+     * the click hint, so there are two possible results and the {@link BlinkCache} holds both.</p>
+     *
+     * <p>The click hint is substituted for {@code %button%} when the lore contains it, and appended
+     * after a blank line when it does not — the two conventions that were already in use.</p>
+     *
+     * <p>Only for items whose content is fully determined by the blink state. An item showing a
+     * countdown must keep being rebuilt; see {@link BlinkCache}.</p>
+     *
+     * @param blink             The cache for this open GUI.
+     * @param lang              The addon's language namespace.
+     * @param itemDef           The item definition.
+     * @param on                The blink state.
+     * @param viewer            The player looking at it, for the permission check and the Bedrock
+     *                          head fallback.
+     * @param loreReplacements  Placeholder pairs for the lore, constant for as long as the GUI is
+     *                          open — they are part of what gets cached.
+     * @return The item to place in the slot.
+     */
+    public ItemStack blinkBarItem(BlinkCache blink, LangNamespace lang, GuiItem itemDef, boolean on,
+                                  Player viewer, String... loreReplacements) {
+        return blink.get(itemDef.getSlot(), on, () -> buildBarItem(lang, itemDef, on, viewer, loreReplacements));
+    }
+
+    /**
+     * The uncached build behind {@link #blinkBarItem}, for a slot that cannot be cached.
+     *
+     * @param lang             The addon's language namespace.
+     * @param itemDef          The item definition.
+     * @param on               The blink state.
+     * @param viewer           The player looking at it.
+     * @param loreReplacements Placeholder pairs for the lore.
+     * @return The item to place in the slot.
+     */
+    public ItemStack buildBarItem(LangNamespace lang, GuiItem itemDef, boolean on, Player viewer,
+                                  String... loreReplacements) {
+        Component title = lang.getComponent(itemDef.getTitleKey());
+
+        String permission = itemDef.getPermission();
+        boolean allowed = permission == null || permission.isBlank()
+                || viewer == null || viewer.hasPermission(permission);
+
+        String onKey = itemDef.getButtonOnKey() != null && !itemDef.getButtonOnKey().isBlank()
+                ? itemDef.getButtonOnKey() : "gui-btn-click-access-on";
+        String offKey = itemDef.getButtonOffKey() != null && !itemDef.getButtonOffKey().isBlank()
+                ? itemDef.getButtonOffKey() : "gui-btn-click-access-off";
+        String button = allowed
+                ? lang.getMessageString(on ? onKey : offKey)
+                : lang.getMessageString(on ? "gui-btn-no-perm-on" : "gui-btn-no-perm-off");
+
+        String loreKey = itemDef.getLoreKey();
+        if (loreKey == null || loreKey.isBlank()) {
+            return createItemFromDef(itemDef, title, null, viewer);
+        }
+
+        String lore = lang.getMessage(loreKey, loreReplacements);
+        lore = lore.contains("%button%") ? lore.replace("%button%", button)
+                                         : lore + "\n<gray></gray>\n" + button;
+        return createItemFromDef(itemDef, title, lang.getLore(lore), viewer);
+    }
+
+    // -------------------------------------------------------------------------
     // Item update
     // -------------------------------------------------------------------------
 
@@ -227,16 +327,18 @@ public class GuiUtils {
      * @param lore  The new lore lines, or {@code null} to keep the current lore.
      */
     public void updateGuiItem(Inventory inv, int slot, Component title, List<Component> lore) {
-        ItemStack item = inv.getItem(slot);
-        if (item != null) {
-            ItemMeta meta = item.getItemMeta();
-            if (meta != null) {
-                if (title != null) meta.displayName(noItalic(title));
-                if (lore != null) meta.lore(noItalic(lore));
-                item.setItemMeta(meta);
-                inv.setItem(slot, item);
-            }
-        }
+        ItemStack existing = inv.getItem(slot);
+        if (existing == null) return;
+        // Cloned first: on CraftBukkit, getItem() hands back a live mirror of the stack the server
+        // is holding. Writing meta straight into it mutates what a clicking player is reading at the
+        // same moment — the "empty heads / container_set_slot kick" family of bug.
+        ItemStack item = existing.clone();
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return;
+        if (title != null) meta.displayName(noItalic(title));
+        if (lore != null) meta.lore(noItalic(lore));
+        item.setItemMeta(meta);
+        inv.setItem(slot, item);
     }
 
     // -------------------------------------------------------------------------
@@ -304,26 +406,43 @@ public class GuiUtils {
         if (viewer != null && FloodgateHook.isBedrockPlayer(viewer)) {
             return createItem(Material.PLAYER_HEAD, name, lore);
         }
+        if (texture == null || texture.isBlank()) {
+            return createItem(Material.PLAYER_HEAD, name, lore);
+        }
 
+        // The textured head is built once per skin and reused; only name and lore change per use.
+        ItemStack head = HEAD_CACHE.get(texture, GuiUtils::buildTexturedHead).clone();
+        ItemMeta meta = head.getItemMeta();
+        if (meta != null) {
+            if (name != null) meta.displayName(noItalic(name));
+            if (lore != null && !lore.isEmpty()) meta.lore(noItalic(lore));
+            meta.addItemFlags(ALL_ITEM_FLAGS);
+            head.setItemMeta(meta);
+        }
+        return head;
+    }
+
+    /**
+     * Builds the bare textured head for a skin hash. Returns an untextured head on a bad URL.
+     *
+     * @param texture The texture hash.
+     * @return A {@link Material#PLAYER_HEAD} carrying the skin, never {@code null}.
+     */
+    private static ItemStack buildTexturedHead(String texture) {
         ItemStack head = new ItemStack(Material.PLAYER_HEAD, 1);
         SkullMeta meta = (SkullMeta) head.getItemMeta();
-        if (meta != null) {
+        if (meta == null) return head;
+        try {
             PlayerProfile profile = Bukkit.createPlayerProfile(UUID.randomUUID());
-            String skinUrl = "http://textures.minecraft.net/texture/" + texture;
-            try {
-                URI uri = new URI(skinUrl);
-                URL url = uri.toURL();
-                PlayerTextures textures = profile.getTextures();
-                textures.setSkin(url);
-                profile.setTextures(textures);
-                meta.setOwnerProfile(profile);
-                if (name != null) meta.displayName(noItalic(name));
-                if (lore != null && !lore.isEmpty()) meta.lore(noItalic(lore));
-                meta.addItemFlags(ItemFlag.values());
-                head.setItemMeta(meta);
-            } catch (MalformedURLException | URISyntaxException e) {
-                return head;
-            }
+            URI uri = new URI("http://textures.minecraft.net/texture/" + texture);
+            URL url = uri.toURL();
+            PlayerTextures textures = profile.getTextures();
+            textures.setSkin(url);
+            profile.setTextures(textures);
+            meta.setOwnerProfile(profile);
+            head.setItemMeta(meta);
+        } catch (MalformedURLException | URISyntaxException e) {
+            return head;
         }
         return head;
     }
@@ -342,7 +461,13 @@ public class GuiUtils {
         if (material == Material.PLAYER_HEAD) {
             material = Material.SKELETON_SKULL;
         }
-        GuiUtils utils = new GuiUtils();
-        return utils.createItem(material, name, lore);
+        return SHARED.createItem(material, name, lore);
+    }
+
+    /**
+     * Clears the textured-head cache. Called on reload, when skins may have been refreshed.
+     */
+    public static void clearHeadCache() {
+        HEAD_CACHE.invalidateAll();
     }
 }

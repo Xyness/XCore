@@ -35,6 +35,25 @@ public class LangNamespace {
     private final Map<String, String> messages = new HashMap<>();
 
     /**
+     * Parsed forms of the strings this namespace has already been asked to render.
+     *
+     * <p>MiniMessage parsing is the single most repeated piece of work in the whole ecosystem: a GUI
+     * blink task re-renders every item twice a second, and the strings it parses are identical from
+     * one tick to the next — same lore, same button, same numbers. Parsing is pure, and Adventure
+     * components are immutable, so the result can simply be kept.</p>
+     *
+     * <p>Bounded and dropped on reload, so an administrator editing a language file never sees a
+     * stale message, and a placeholder taking unbounded values (a countdown, a price) cannot grow
+     * the cache without limit.</p>
+     */
+    private final com.github.benmanes.caffeine.cache.Cache<String, Component> parsedCache =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder().maximumSize(8_192).build();
+
+    /** Same idea for multi-line lore, keyed by the whole raw block. */
+    private final com.github.benmanes.caffeine.cache.Cache<String, List<Component>> loreCache =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder().maximumSize(4_096).build();
+
+    /**
      * Creates a new empty LangNamespace.
      */
     public LangNamespace() {
@@ -64,6 +83,13 @@ public class LangNamespace {
     /**
      * Returns the raw MiniMessage string with placeholders replaced.
      *
+     * <p>Both notations are honoured: <code>{name}</code> and <code>%name%</code>. They coexist
+     * across the ecosystem — the core and the older addons write braces, the GUI conventions and
+     * the newer addons write percent signs — and only braces used to be substituted. Every
+     * <code>%placeholder%</code> in a language file was therefore printed verbatim to players
+     * unless the caller happened to run its own {@code replace()}. Accepting both is what makes a
+     * language file behave the way it reads.</p>
+     *
      * @param key          The message key.
      * @param replacements Alternating placeholder name and value pairs
      *                     (e.g. {@code "name", "Steve", "uuid", "abc"}).
@@ -71,8 +97,18 @@ public class LangNamespace {
      */
     public String getMessage(String key, String... replacements) {
         String msg = getRaw(key);
+        if (replacements.length == 0) return msg;
+        // Each notation is only attempted when the message actually contains its delimiter: a
+        // message with no placeholder at all now costs two character scans instead of two string
+        // concatenations and two full replace passes per replacement pair.
+        boolean braces = msg.indexOf('{') >= 0;
+        boolean percents = msg.indexOf('%') >= 0;
+        if (!braces && !percents) return msg;
         for (int i = 0; i + 1 < replacements.length; i += 2) {
-            msg = msg.replace("{" + replacements[i] + "}", replacements[i + 1]);
+            String name = replacements[i];
+            String value = replacements[i + 1] == null ? "" : replacements[i + 1];
+            if (braces) msg = msg.replace("{" + name + "}", value);
+            if (percents) msg = msg.replace("%" + name + "%", value);
         }
         return msg;
     }
@@ -85,7 +121,18 @@ public class LangNamespace {
      * @return The parsed component.
      */
     public Component getComponent(String key, String... replacements) {
-        return MINI.deserialize(getMessage(key, replacements));
+        return parse(getMessage(key, replacements));
+    }
+
+    /**
+     * Parses a MiniMessage string, reusing the previous result for a string already seen.
+     *
+     * @param raw The MiniMessage string.
+     * @return The parsed component (shared and immutable).
+     */
+    public Component parse(String raw) {
+        if (raw == null || raw.isEmpty()) return Component.empty();
+        return parsedCache.get(raw, MINI::deserialize);
     }
 
     /**
@@ -96,13 +143,18 @@ public class LangNamespace {
      * @return A list of parsed components, one per line.
      */
     public List<Component> getLore(String loreString) {
-        List<Component> lore = new ArrayList<>();
-        if (loreString == null || loreString.isBlank()) return lore;
-        for (String line : loreString.split("\n")) {
-            if (line.isEmpty()) continue;
-            lore.add(MINI.deserialize(line));
-        }
-        return lore;
+        if (loreString == null || loreString.isBlank()) return new ArrayList<>();
+        List<Component> cached = loreCache.get(loreString, raw -> {
+            List<Component> lore = new ArrayList<>();
+            for (String line : raw.split("\n")) {
+                if (line.isEmpty()) continue;
+                lore.add(MINI.deserialize(line));
+            }
+            return List.copyOf(lore);
+        });
+        // A fresh mutable list every time: callers routinely append to the lore they get back, and
+        // handing them the cached one would corrupt every later reader of the same block.
+        return new ArrayList<>(cached);
     }
 
     /**
@@ -130,6 +182,9 @@ public class LangNamespace {
     public void reload(File langFile, InputStream defaults) {
         this.langFile = langFile;
         messages.clear();
+        // The parsed forms belong to the file that was just replaced.
+        parsedCache.invalidateAll();
+        loreCache.invalidateAll();
 
         // Load defaults first
         if (defaults != null) {

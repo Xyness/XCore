@@ -1,0 +1,235 @@
+# Fichier de langue XCore
+# Format MiniMessage : https://docs.advntr.dev/minimessage/format.html
+# Placeholders : {clé} est remplacé par la valeur correspondante.
+#
+# Mise en page : quelques libellés sont complétés par des espaces pour aligner les colonnes.
+# Ajustez ce remplissage si vous rallongez un libellé.
+#
+# Attention aux arguments de hover et de click : leur texte est entouré de guillemets simples, donc
+# une apostrophe à l'intérieur couperait la ligne. Écrivez « Cliquez pour ouvrir », jamais
+# « Cliquez pour l'ouvrir ».
+
+no-permission: "<red>Vous n'avez pas la permission d'utiliser cette commande."
+
+# Éléments partagés
+bar: "<white><strikethrough>                                                            </strikethrough>"
+blank: ""
+status-on: "<green>actif"
+status-off: "<red>inactif"
+player-online: "<green>en ligne"
+player-offline: "<red>hors ligne"
+value-none: "<gray>aucun"
+
+# Unités de durée, collées au nombre : 2j 4h, 13m, 45s
+unit-day: "j"
+unit-hour: "h"
+unit-minute: "m"
+unit-second: "s"
+
+# ---------------------------------------------------------------------------
+# /xcore
+# ---------------------------------------------------------------------------
+
+info-header: " <aqua>XCore <yellow>v{version}"
+info-subtitle: " <gray>Socle de l'écosystème X"
+
+info-server: " <yellow>▸ <white>Serveur : <green>{name} <white>· <gray>{software}"
+info-uptime: " <yellow>▸ <white>En ligne : <gray>{value} <white>· <green>{players}<white> connecté(s)"
+info-database: " <yellow>▸ <white>Base : <gray>{type} <white>· <gray>{reads} lectures <white>· <gray>{writes} écritures"
+info-addons: " <yellow>▸ <white>Addons : <hover:show_text:'{list}'><gray>{enabled}/{total}</hover>"
+info-addons-entry: "<aqua>{name} <yellow>v{version} <white>— {state}"
+info-addons-none: "<gray>Aucun addon installé"
+info-sync: " <yellow>▸ <white>Sync : {status} <white>· <gray>{backend}"
+sync-backend-redis: "Redis"
+sync-backend-database: "interrogation BDD"
+info-dashboard: " <yellow>▸ <white>Dashboard : <click:open_url:'{url}'><hover:show_text:'<gray>Cliquez pour ouvrir'><aqua><underlined>{url}</underlined></aqua></hover></click>"
+info-dashboard-off: " <yellow>▸ <white>Dashboard <red>inactif <white>· <gray>activez-le dans config.yml"
+
+info-commands: " <gray>Commandes"
+cmd-stats: " <yellow>› <click:run_command:'/xcore stats'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore stats</hover></click> <gray>— Compteurs de cache et API"
+cmd-addons: " <yellow>› <click:run_command:'/xcore addons'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore addons</hover></click> <gray>— Versions et états des addons"
+cmd-player: " <yellow>› <click:suggest_command:'/xcore player '><hover:show_text:'<gray>Cliquez pour pré-remplir'><white>/xcore player <pseudo></hover></click> <gray>— Consulter un joueur"
+cmd-dashboard: " <yellow>› <click:run_command:'/xcore dashboard'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore dashboard</hover></click> <gray>— Accès au dashboard web"
+cmd-reload: " <yellow>› <click:suggest_command:'/xcore reload'><hover:show_text:'<gray>Cliquez pour pré-remplir'><white>/xcore reload [addon]</hover></click> <gray>— Recharger le cœur et les addons"
+cmd-profile: " <yellow>› <click:run_command:'/xcore profile'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore profile</hover></click> <gray>— Temps passé par addon"
+cmd-diag: " <yellow>› <click:run_command:'/xcore diag'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore diag</hover></click> <gray>— Rapport de diagnostic"
+cmd-clear-cache: " <yellow>› <click:suggest_command:'/xcore clear-cache'><hover:show_text:'<gray>Cliquez pour pré-remplir'><white>/xcore clear-cache</hover></click> <gray>— Vider tous les caches"
+
+# ---------------------------------------------------------------------------
+# /xcore stats
+# ---------------------------------------------------------------------------
+
+stats-header: " <aqua>Statistiques"
+stats-database: " <yellow>▸ <white>Base : <gray>{type} <white>· <gray>{reads} lectures <white>· <gray>{writes} écritures"
+stats-l1-cache: " <yellow>▸ <white>Cache L1 : <gray>{hit_rate}% <gray>de réussite <white>· <gray>{size} entrées"
+stats-redis: " <yellow>▸ <white>Redis : {status}"
+stats-cross-server: " <yellow>▸ <white>Inter-serveurs : {status}"
+stats-mojang-api: " <yellow>▸ <white>API Mojang : <gray>{calls} <gray>appels <white>· <red>{failures} <gray>échecs <white>· <gold>{rate_limits} <gray>limitations"
+stats-mojang-cache: " <yellow>▸ <white>Cache Mojang : <green>{hits} <gray>trouvés <white>· <red>{misses} <gray>manqués"
+stats-skin-cache: " <yellow>▸ <white>Cache des skins : <green>{hits} <gray>trouvés <white>· <red>{misses} <gray>manqués"
+stats-circuit-breaker: " <yellow>▸ <white>Coupe-circuit : <gray>{state}"
+
+# ---------------------------------------------------------------------------
+# /xcore profile
+# ---------------------------------------------------------------------------
+
+profile-header: " <aqua>Profilage"
+profile-disabled: " <yellow>▸ <white>Mesure inactive. <gray>Activez-la avec <white>/xcore profile on<gray>, ou <white>profiling: true<gray> dans config.yml."
+profile-empty: " <yellow>▸ <white>Aucune mesure pour le moment. <gray>Laissez tourner quelques minutes."
+profile-window: " <yellow>▸ <white>Fenêtre : <gray>{seconds}s <white>· <gray>{keys} gestionnaires mesurés"
+profile-entry: " <yellow>▸ <white>{key} <dark_gray>│ <gray>{calls} appels <white>· <gray>{total} ms <white>· <gray>{avg} µs/appel <white>· <gray>max {max} µs"
+profile-hint: " <gray>Trié par temps total. La moyenne est le coût d'un seul événement : au-delà de 1000 µs, cherchez pourquoi."
+profile-turned-on: " <yellow>▸ <white>Profilage <green>activé<white>. <gray>Compteurs remis à zéro."
+profile-turned-off: " <yellow>▸ <white>Profilage <red>désactivé<white>."
+profile-reset: " <yellow>▸ <white>Compteurs de profilage remis à zéro."
+
+# ---------------------------------------------------------------------------
+# /xcore diag
+# ---------------------------------------------------------------------------
+
+diag-header: " <aqua>Diagnostic"
+diag-platform: " <yellow>▸ <white>XCore <gray>v{version} <white>· <gray>{software} <white>· <gray>Java {java}"
+diag-storage: " <yellow>▸ <white>Base : <gray>{type} <white>· <gray>{queries} connexions <white>· <gray>{blocking} depuis un thread de tick"
+diag-addons: " <yellow>▸ <white>Addons : <gray>{enabled}/{count} actifs"
+diag-written: " <yellow>▸ <white>Rapport écrit dans <gray>plugins/XCore/{file}"
+diag-failed: " <red>Impossible d'écrire le rapport : <gray>{error}"
+
+# ---------------------------------------------------------------------------
+# /xcore addons
+# ---------------------------------------------------------------------------
+
+addons-header: " <aqua>Addons <yellow>({count})"
+addons-empty: " <yellow>▸ <white>Aucun addon installé. Déposez leurs JAR dans <gray>plugins/XCore/addons<white>."
+addons-entry: " <yellow>▸ <green>{name} <yellow>v{version} <white>— {state}"
+addon-state-enabled: "<green>actif"
+addon-state-loading: "<yellow>chargement"
+addon-state-disabled: "<gray>désactivé"
+addon-state-errored: "<red>en erreur"
+addon-not-found: "<red>Aucun addon nommé <white>{name}<red> n'est chargé."
+
+# ---------------------------------------------------------------------------
+# /xcore dashboard
+# ---------------------------------------------------------------------------
+
+dashboard-header: " <aqua>Dashboard web"
+dashboard-status: " <yellow>▸ <white>État : {status}"
+dashboard-disabled: " <yellow>▸ <white>Mettez <gray>web-dashboard.enabled: true<white> dans config.yml, puis redémarrez."
+dashboard-failed: " <yellow>▸ <white>Il est activé mais n'a pas démarré, consultez la console."
+dashboard-address: " <yellow>▸ <white>Adresse : <click:open_url:'{url}'><hover:show_text:'<gray>Cliquez pour ouvrir'><yellow><underlined>{url}</underlined></yellow></hover></click>"
+dashboard-modules: " <yellow>▸ <white>Modules : <hover:show_text:'{list}'><gray>{count} enregistré(s)</hover>"
+dashboard-modules-none: "<gray>Aucun module enregistré"
+dashboard-login: " <yellow>▸ <white>Connexion : <click:open_url:'{url}'><hover:show_text:'<green>Cliquez pour ouvrir le dashboard, déjà connecté'><green>[ouvrir le dashboard]</green></hover></click>"
+dashboard-login-ttl: "   <yellow>· <white>Le lien vous connecte pendant <gray>{hours}h<white>. Gardez-le pour vous."
+dashboard-login-forever: "   <yellow>· <white>Le lien reste valide jusqu'à révocation. Gardez-le pour vous."
+dashboard-login-revoke: "   <yellow>· <white>Envoyé au mauvais endroit ? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Cliquez pour exécuter'><gray>/xcore dashboard revoke</gray></hover></click>"
+dashboard-login-console: " <yellow>▸ <white>Lancez <gray>/xcore dashboard<white> en jeu pour obtenir un lien de connexion. La console n'a pas de navigateur pour l'ouvrir."
+dashboard-revoked: "<green>{count} session(s) du dashboard fermée(s). Les anciens liens ne fonctionnent plus."
+dashboard-revoked-none: "<red>Vous n'aviez aucune session ouverte sur le dashboard."
+
+# ---------------------------------------------------------------------------
+# /xcore reload
+# ---------------------------------------------------------------------------
+
+reload-core: "<green>Rechargement effectué."
+reload-addons: "<green>{count} addon(s) rechargé(s) : <white>{list}"
+reload-addons-none: "<red>Aucun addon actif à recharger."
+reload-addons-failed: "<red>Échec du rechargement : {list}. Consultez la console."
+reload-restart-required: "<gray>Nécessite un redémarrage : base de données, Redis, tailles de cache, port du dashboard."
+reload-addon-success: "<green>Addon {name} rechargé."
+
+# ---------------------------------------------------------------------------
+# /xcore clear-cache
+# ---------------------------------------------------------------------------
+
+clear-cache-success: "<green>Tous les caches ont été vidés."
+
+# ---------------------------------------------------------------------------
+# /xcore player <pseudo>
+# ---------------------------------------------------------------------------
+
+player-loading: "<gray>Recherche de {name}…"
+player-not-found: "<red>Aucun joueur nommé {name} n'est connu de ce serveur."
+player-header: " <aqua>{name} <white>· {status}"
+player-server-uuid: " <yellow>▸ <white>UUID serveur: <gray>{value}"
+player-mojang-uuid: " <yellow>▸ <white>UUID Mojang: <gray>{value}"
+player-texture: " <yellow>▸ <white>Texture: <gray>{value}"
+player-last-login: " <yellow>▸ <white>Dern. connexion: <gray>{value}"
+player-last-logout: " <yellow>▸ <white>Dern. déconnexion: <gray>{value}"
+player-data-header: " <gray>Données personnalisées <yellow>({count})"
+player-data-entry: " <yellow>› <white>{key} : <gray>{value}"
+
+# ---------------------------------------------------------------------------
+# Économie (/eco)
+#
+# Ces clés vivaient dans economy_<code>.yml. Elles sont préfixées par eco- pour qu'un
+# nouveau message du cœur ne puisse jamais en prendre la place.
+# ---------------------------------------------------------------------------
+
+player-only: "<red>Cette commande est réservée aux joueurs."
+eco-invalid-currency: "<red>Monnaie {currency} inconnue. Disponibles : {currencies}"
+eco-insufficient-funds: "<red>Fonds insuffisants. Vous avez {balance}."
+error: "<red>Une erreur est survenue. Réessayez."
+eco-balance-capped: "<yellow>Le solde a été plafonné à {max} pour {currency}."
+
+eco-balance-title: "<aqua>Soldes"
+eco-balance-self-single: "<white>Votre solde : <yellow>{balance} <gray>({currency})"
+eco-balance-other-single: "<white>Solde de {name} : <yellow>{balance} <gray>({currency})"
+eco-balance-entry: "  <yellow>{balance} <gray>({currency})"
+eco-balance-end: ""
+
+eco-pay-sent: "<green>Vous avez envoyé <yellow>{amount} <gray>({currency}) <green>à {target}."
+eco-pay-received: "<green>Vous avez reçu <yellow>{amount} <gray>({currency}) <green>de {sender}."
+eco-pay-self: "<red>Vous ne pouvez pas vous payer vous-même."
+
+eco-set-success: "<green>Solde <gray>({currency}) <green>de {name} défini à <yellow>{amount}<green>."
+eco-add-success: "<green>Ajout de <yellow>{amount} <gray>({currency}) <green>à {name}. Nouveau : <yellow>{balance}<green>."
+eco-remove-success: "<green>Retrait de <yellow>{amount} <gray>({currency}) <green>à {name}. Nouveau : <yellow>{balance}<green>."
+eco-reset-success: "<green>Solde <gray>({currency}) <green>de {name} réinitialisé à <yellow>{amount}<green>."
+
+eco-resetall-warning: "<red>Ceci réinitialisera TOUS les joueurs (connectés et hors ligne) pour : {currency}. C'est irréversible."
+eco-resetall-confirm-usage: "<red>Tapez <gray>/eco resetall {currency} confirm <red>pour confirmer."
+eco-resetall-started: "<gray>Réinitialisation de tous les soldes pour {currency}..."
+eco-resetall-success: "<green>{count} <green>solde(s) réinitialisé(s) pour {currency}."
+
+eco-exchange-success: "<green>Vous avez échangé <yellow>{from_amount} <gray>({from_currency}) <green>contre <yellow>{to_amount} <gray>({to_currency})<green>."
+eco-exchange-no-rate: "<red>Aucun taux de change disponible pour cette paire de monnaies."
+eco-exchange-disabled: "<red>L'échange de monnaies est actuellement désactivé."
+
+eco-history-title: "<aqua>Historique de {name} <gray>(Page {page}/{max_page})"
+eco-history-entry: "  <gray>{date} <gray>| <green>{type} <gray>| <yellow>{amount} <gray>{currency} <gray>| <white>{target}"
+eco-history-empty: "  <gray>Aucune transaction trouvée."
+eco-history-end: ""
+
+eco-top-title: "<aqua>Classement {currency}"
+eco-top-entry: "  <white>#{rank} <gray>- <gold>{name} <gray>- <yellow>{balance}"
+eco-top-empty: "  <gray>Aucune donnée disponible."
+eco-top-end: ""
+
+eco-reload-success: "<green>Configuration de l'économie rechargée."
+eco-reload-warning-no-vault: "<yellow>Aucune monnaie n'est marquée <white>vault: true<yellow> — les autres plugins ne verront aucun solde."
+
+eco-payout-received: "<green>Vous avez reçu <yellow>{amount} <gray>({currency}) <green>au titre du versement automatique."
+eco-interest-received: "<green>Vous avez gagné <yellow>{amount} <gray>({currency}) <green>d'intérêts."
+
+eco-help-message: |
+  <aqua>Aide - Économie
+  <gray>
+  <yellow>/eco <white>- Voir tous vos soldes
+  <yellow>/eco balance [joueur] [monnaie] <white>- Voir un solde
+  <yellow>/eco pay <joueur> <montant> [monnaie] <white>- Envoyer de l'argent
+  <yellow>/eco set <joueur> <montant> [monnaie] <white>- Définir un solde (admin)
+  <yellow>/eco add <joueur> <montant> [monnaie] <white>- Ajouter à un solde (admin)
+  <yellow>/eco remove <joueur> <montant> [monnaie] <white>- Retirer d'un solde (admin)
+  <yellow>/eco reset <joueur> [monnaie|all] <white>- Remettre un joueur au solde de départ (admin)
+  <yellow>/eco resetall [monnaie|all] confirm <white>- Réinitialiser tous les joueurs, connectés ou non (admin)
+  <yellow>/eco exchange <de> <vers> <montant> <white>- Échanger des monnaies
+  <yellow>/eco history [joueur] [monnaie] [page] <white>- Historique des transactions
+  <yellow>/eco top [monnaie] <white>- Classement des soldes
+  <yellow>/eco reload <white>- Recharger la configuration (admin)
+
+# ---------------------------------------------------------------------------
+# Addon update notice, sent in game to staff who may update the server.
+# An addon can override it in its own language file.
+# ---------------------------------------------------------------------------
+
+update-available: "<red>[{addon}] Une mise à jour est disponible : <aqua>{version} <red>({date})"

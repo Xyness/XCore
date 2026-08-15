@@ -47,6 +47,9 @@ public abstract class XAddon {
     private XCore core;
     private File dataFolder;
     private Logger logger;
+    /** Language key for the in-game "an update is available" notice. */
+    private static final String UPDATE_MESSAGE_KEY = "update-available";
+
     private LangNamespace lang;
     private GuiRegistry guiRegistry;
     private FileConfiguration config;
@@ -203,7 +206,7 @@ public abstract class XAddon {
     }
 
     /**
-     * Alias for {@link #saveDefaultResource(String)} for compatibility.
+     * Alias for {@link #saveDefaultResource(String)}.
      */
     public final void saveResource(String path, boolean replace) {
         File outFile = new File(dataFolder, path);
@@ -263,16 +266,19 @@ public abstract class XAddon {
     /**
      * Initializes the update checker for this addon.
      * Call this in {@link #onEnable()} to enable update checking and join notifications.
-     * <p>
-     * The updater fetches version info from GitHub at
-     * {@code https://raw.githubusercontent.com/Xyness/<addonName>/refs/heads/main/version.yml}.
-     * </p>
      *
-     * @param addonName The addon name matching the GitHub repository name.
+     * <p>The address is the {@code update-url} declared in {@code addon.yml}. Without one, update
+     * checking stays off.</p>
      */
-    public final void initUpdater(String addonName) {
-        this.updater = new Updater(addonName, getDescriptor().getVersion(), logger);
+    public final void initUpdater() {
+        String url = descriptor.getUpdateUrl();
+        if (url == null || url.isBlank()) {
+            logger.sendWarning("No 'update-url' in addon.yml: update checking is off for this addon.");
+            return;
+        }
+        this.updater = new Updater(url, descriptor.getVersion(), logger);
     }
+
 
     /**
      * Returns the updater instance, or {@code null} if not initialized.
@@ -285,21 +291,37 @@ public abstract class XAddon {
      * Checks for updates and notifies the player if one is available.
      * Call this in your PlayerJoinEvent handler for players with the update notification permission.
      *
+     * <p>The wording comes from {@code update-available} in the language file — the addon's own
+     * if it defines the key, XCore's otherwise. It takes {@code {addon}}, {@code {version}} and
+     * {@code {date}}.</p>
+     *
      * @param player         The player to notify.
      * @param permissionNode The permission required to receive update notifications (e.g. {@code "ah.update"}).
      */
     public final void notifyUpdateOnJoin(Player player, String permissionNode) {
         if (updater == null || !updater.isUpdateAvailable()) return;
         if (!player.hasPermission(permissionNode)) return;
-        boolean notifications = getConfig().getBoolean("update.notifications", true);
-        if (!notifications) return;
+        if (!getConfig().getBoolean("update.notifications", true)) return;
+
         String addonName = descriptor.getName();
         String newVersion = updater.getNewVersionAvailable();
         String date = updater.getDate();
+
+        // The addon's own file wins when it defines the key, so an addon can word it its way;
+        // otherwise the single copy in XCore's lang/<code>.yml speaks for all of them.
+        String template = lang.getRaw(UPDATE_MESSAGE_KEY);
+        if (UPDATE_MESSAGE_KEY.equals(template)) {
+            template = core.langManager().getRaw(UPDATE_MESSAGE_KEY);
+        }
+        final String message = template
+                .replace("{addon}", addonName)
+                .replace("{version}", newVersion)
+                .replace("{date}", date == null ? "" : date);
+
         core.schedulerAdapter().runEntityTaskLater(player, () -> {
             if (player.isOnline()) {
-                player.sendMessage(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(
-                    "<red>[" + addonName + "] An update is available: <aqua>" + newVersion + " <red>(" + date + ")"));
+                player.sendMessage(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage()
+                        .deserialize(message));
             }
         }, 60L);
     }
@@ -353,6 +375,199 @@ public abstract class XAddon {
             if (key.equals(prot) || key.startsWith(prot + ".")) return true;
         }
         return false;
+    }
+
+    /**
+     * Removes keys the addon no longer reads, using the bundled defaults as the reference.
+     *
+     * <p>The counterpart to {@link #updateConfigWithDefaults(String...)}, which only ever <em>adds</em>.
+     * After a refactor an existing install keeps every renamed or deleted key, silently inert — which
+     * is how an administrator ends up certain a setting is applied when nothing reads it any more.
+     * Anything absent from the bundled file is therefore dead by definition and is dropped.</p>
+     *
+     * <p>Two safeguards. Protected sections are never touched: they are the ones whose keys the user
+     * legitimately invents — world names, material lists, shop entries — and which the defaults
+     * cannot possibly enumerate. And the file is copied to {@code <name>.pre-prune.bak} before the
+     * first removal, because this deletes user data.</p>
+     *
+     * <p>YAML lists are values, not sections, so their contents are never walked: a list a user has
+     * extended is kept whole as long as its key still exists in the defaults.</p>
+     *
+     * @param fileName          The file to prune, relative to the data folder and to the JAR root
+     *                          (typically {@code "config.yml"} or {@code "lang.yml"}).
+     * @param protectedSections Paths whose contents are user-managed and must be left alone.
+     * @return The number of keys removed.
+     */
+    public final int pruneObsoleteKeys(String fileName, String... protectedSections) {
+        File file = new File(dataFolder, fileName);
+        if (!file.exists()) return 0;
+
+        FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(file);
+        try (InputStream defStream = getClass().getClassLoader().getResourceAsStream(fileName)) {
+            if (defStream == null) {
+                logger.sendDebug("No bundled " + fileName + " to compare against; nothing pruned.");
+                return 0;
+            }
+            YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
+                new InputStreamReader(defStream, StandardCharsets.UTF_8));
+
+            // Shallowest first, so removing an obsolete section lets its children be skipped
+            // instead of being reported one by one.
+            java.util.List<String> candidates = new java.util.ArrayList<>();
+            for (String key : diskConfig.getKeys(true)) {
+                if (defConfig.contains(key)) continue;
+                if (isUnderProtectedSection(key, protectedSections)) continue;
+                candidates.add(key);
+            }
+            candidates.sort(java.util.Comparator.comparingInt(k -> k.split("\\.").length));
+
+            java.util.List<String> removed = new java.util.ArrayList<>();
+            for (String key : candidates) {
+                // Already gone with an ancestor.
+                boolean covered = false;
+                for (String done : removed) {
+                    if (key.startsWith(done + ".")) { covered = true; break; }
+                }
+                if (covered) continue;
+                if (!diskConfig.contains(key)) continue;
+                diskConfig.set(key, null);
+                removed.add(key);
+            }
+
+            if (removed.isEmpty()) return 0;
+
+            File backup = new File(dataFolder, fileName + ".pre-prune.bak");
+            try {
+                java.nio.file.Files.copy(file.toPath(), backup.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                logger.sendWarning("Could not back up " + fileName + " before pruning: " + e.getMessage()
+                        + " — leaving the file untouched.");
+                return 0;
+            }
+
+            diskConfig.save(file);
+            logger.sendInfo("Pruned " + removed.size() + " obsolete key(s) from " + fileName
+                    + " (backup: " + backup.getName() + "):");
+            for (String key : removed) logger.sendInfo("  - " + key);
+            return removed.size();
+
+        } catch (IOException e) {
+            logger.sendError("Error pruning " + fileName + ": " + e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Prunes {@code config.yml}. Convenience overload of
+     * {@link #pruneObsoleteKeys(String, String...)}.
+     *
+     * @param protectedSections Paths whose contents are user-managed.
+     * @return The number of keys removed.
+     */
+    public final int pruneObsoleteConfigKeys(String... protectedSections) {
+        int removed = pruneObsoleteKeys("config.yml", protectedSections);
+        if (removed > 0) reloadConfig();
+        return removed;
+    }
+
+    // -------------------------------------------------------------------------
+    // Language
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resolves which language this addon should speak.
+     *
+     * <p>XCore's {@code language} setting drives the whole installation: pick French once and every
+     * addon follows, instead of repeating the choice in a dozen files. An addon may still override
+     * it with its own {@code language} key — useful when one addon has no translation for the
+     * server's language, or when a network deliberately runs one component in another language.</p>
+     *
+     * @return The language code, lower-cased (e.g. {@code "fr"}).
+     */
+    public final String getLanguage() {
+        String own = getConfig().getString("language", "");
+        if (own != null && !own.isBlank()) return own.trim().toLowerCase();
+        return core.getLanguage();
+    }
+
+    /**
+     * Loads this addon's language file, honouring the resolved language.
+     *
+     * <p>Files live in {@code <addon>/lang/<code>.yml}. Every language bundled in the jar is
+     * extracted on first run so the administrator can read and edit them all; the one matching
+     * {@link #getLanguage()} is the one loaded, falling back to English when the addon ships no
+     * translation for it.</p>
+     *
+     * @param available The language codes bundled in the jar, English first.
+     */
+    /**
+     * Adds to a file on disk the keys its bundled version has and it does not.
+     *
+     * <p>Never overwrites: an administrator's translation is theirs. Used for the dashboard string
+     * files, which have no merge pass of their own.</p>
+     *
+     * @param resourcePath The resource inside the addon jar, e.g. {@code lang/web_fr.yml}.
+     */
+    private void mergeMissingKeys(String resourcePath) {
+        File target = new File(dataFolder, resourcePath.replace('/', File.separatorChar));
+        if (!target.isFile()) return;
+        try (InputStream defaults = getClass().getClassLoader().getResourceAsStream(resourcePath)) {
+            if (defaults == null) return;
+            YamlConfiguration bundled = YamlConfiguration.loadConfiguration(
+                    new InputStreamReader(defaults, StandardCharsets.UTF_8));
+            YamlConfiguration current = YamlConfiguration.loadConfiguration(target);
+            boolean changed = false;
+            for (String key : bundled.getKeys(true)) {
+                if (bundled.isConfigurationSection(key) || current.contains(key)) continue;
+                current.set(key, bundled.get(key));
+                changed = true;
+            }
+            if (changed) {
+                current.save(target);
+                logger.sendDebug("Added missing keys to " + resourcePath + ".");
+            }
+        } catch (Exception e) {
+            logger.sendDebug("Failed to merge " + resourcePath + ": " + e.getMessage());
+        }
+    }
+
+    public final void loadLanguage(String... available) {
+        File langFolder = new File(dataFolder, "lang");
+        if (!langFolder.exists()) langFolder.mkdirs();
+
+        // Extract every bundled translation, never overwriting an edited file. The web_ files are
+        // the addon's own dashboard strings, and only exist for addons that register a web module.
+        for (String code : available) {
+            saveDefaultResource("lang/" + code + ".yml");
+            saveDefaultResource("lang/web_" + code + ".yml");
+            // Unlike the message files, nothing merges the dashboard strings: a web_*.yml already
+            // on disk never received the keys a later version added, and the page showed the raw
+            // key instead of a label. Only missing keys are written, so translations survive.
+            mergeMissingKeys("lang/web_" + code + ".yml");
+        }
+
+        String wanted = getLanguage();
+        boolean bundled = false;
+        for (String code : available) {
+            if (code.equalsIgnoreCase(wanted)) { bundled = true; break; }
+        }
+
+        File target = new File(langFolder, wanted + ".yml");
+
+        if (!bundled && !target.exists()) {
+            String fallback = available.length > 0 ? available[0] : "en";
+            logger.sendWarning("No '" + wanted + "' translation bundled and no lang/" + wanted
+                    + ".yml on disk — falling back to '" + fallback + "'.");
+            wanted = fallback;
+            target = new File(langFolder, wanted + ".yml");
+        }
+
+        try (InputStream defaults = getClass().getClassLoader().getResourceAsStream("lang/" + wanted + ".yml")) {
+            lang.reload(target, defaults);
+        } catch (IOException e) {
+            logger.sendError("Failed to load language '" + wanted + "': " + e.getMessage());
+        }
     }
 
     // -------------------------------------------------------------------------

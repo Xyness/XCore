@@ -23,8 +23,7 @@ import redis.clients.jedis.JedisPool;
  * <p>
  * Message wire format: a JSON object {@code {"s":serverId,"c":channel,"a":action,"k":key,"p":payload}}.
  * Values are escaped by the encoder, so a key or payload containing the delimiter of the previous
- * pipe-separated format no longer shifts the whole message. That legacy format is still accepted on
- * read, so a cluster can be restarted one server at a time.
+ * pipe-separated format no longer shifts the whole message. Only JSON is accepted on read, so a cluster can be restarted one server at a time.
  * </p>
  */
 public class SyncManager {
@@ -77,7 +76,7 @@ public class SyncManager {
      * @param executor           Async executor for message handling.
      * @param pollIntervalTicks  Poll interval in ticks for database transport (20 ticks = 1 second).
      * @param retentionSeconds   How long to keep DB sync rows before cleanup.
-     * @param serverName         Stable identifier for this server (cross-server.server-name).
+     * @param serverName         Stable identifier for this server ({@code server-name}).
      * @param logDebug           Debug log callback.
      * @param logWarning         Warning log callback.
      * @param logError           Error log callback.
@@ -86,7 +85,7 @@ public class SyncManager {
                        Executor executor, int pollIntervalTicks, int retentionSeconds,
                        String serverName,
                        LogCallback logDebug, LogCallback logWarning, LogCallback logError) {
-        // Derived from cross-server.server-name so the identity survives a restart and matches the
+        // Derived from server-name so the identity survives a restart and matches the
         // one already used for per-server column suffixes. A random id per boot meant a server could
         // not recognise its own pending messages after a restart.
         this.serverId = (serverName == null || serverName.isBlank())
@@ -194,32 +193,21 @@ public class SyncManager {
 
     /**
      * Handles a raw message from the transport layer.
-     * Accepts the JSON format emitted by {@link #publish}, and the legacy
-     * {@code serverId|channel|action|key|payload} form for rolling upgrades.
+     * Accepts the JSON format emitted by {@link #publish}; anything else is ignored.
      */
     private void handleRawMessage(String rawMessage) {
         try {
             if (rawMessage == null || rawMessage.isBlank()) return;
 
-            String sourceServerId, channelName, action, key, payload;
             String trimmed = rawMessage.trim();
+            if (trimmed.charAt(0) != '{') return;
 
-            if (trimmed.charAt(0) == '{') {
-                JsonObject json = JsonParser.parseString(trimmed).getAsJsonObject();
-                sourceServerId = json.has("s") ? json.get("s").getAsString() : "";
-                channelName = json.has("c") ? json.get("c").getAsString() : "";
-                action = json.has("a") ? json.get("a").getAsString() : "";
-                key = json.has("k") ? json.get("k").getAsString() : "";
-                payload = json.has("p") ? json.get("p").getAsString() : "";
-            } else {
-                String[] parts = trimmed.split("\\|", 5);
-                if (parts.length < 4) return;
-                sourceServerId = parts[0];
-                channelName = parts[1];
-                action = parts[2];
-                key = parts[3];
-                payload = parts.length >= 5 ? parts[4] : "";
-            }
+            JsonObject json = JsonParser.parseString(trimmed).getAsJsonObject();
+            String sourceServerId = json.has("s") ? json.get("s").getAsString() : "";
+            String channelName = json.has("c") ? json.get("c").getAsString() : "";
+            String action = json.has("a") ? json.get("a").getAsString() : "";
+            String key = json.has("k") ? json.get("k").getAsString() : "";
+            String payload = json.has("p") ? json.get("p").getAsString() : "";
 
             if (sourceServerId.equals(serverId)) return; // Ignore own messages
 

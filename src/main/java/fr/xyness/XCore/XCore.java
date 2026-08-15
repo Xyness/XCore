@@ -12,7 +12,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import org.bukkit.Bukkit;
@@ -50,11 +49,10 @@ import fr.xyness.XCore.Utils.Logger;
 import fr.xyness.XCore.Utils.Methods;
 import fr.xyness.XCore.Utils.SchedulerAdapter;
 import fr.xyness.XCore.Economy.CoinsManager;
-import fr.xyness.XCore.Economy.CoinsCommand;
+import fr.xyness.XCore.Economy.EcoCommand;
 import fr.xyness.XCore.Economy.EconomyExpansion;
 import fr.xyness.XCore.Economy.EconomyWebModule;
 import fr.xyness.XCore.Economy.VaultEconomyProvider;
-import fr.xyness.XCore.Lang.LangNamespace;
 import fr.xyness.XCore.Web.WebPanel;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -113,6 +111,9 @@ public class XCore extends JavaPlugin {
     private SchedulerAdapter schedulerAdapter;
     private PlayerDAO playerDAO;
     private HikariDataSource dataSource;
+
+    /** Per-addon timings, off unless {@code profiling} or {@code debug} is on. */
+    private final fr.xyness.XCore.Utils.Profiler profiler = new fr.xyness.XCore.Utils.Profiler();
     private DatabaseType databaseType = DatabaseType.SQLITE;
     private SqlDialect dialect;
     private volatile JedisPool jedisPool;
@@ -127,7 +128,6 @@ public class XCore extends JavaPlugin {
     private Object redisHealthTask;
     private WebPanel webPanel;
     private CoinsManager coinsManager;
-    private LangNamespace economyLang;
     private long startTimeMillis;
     private FileConfiguration addonsConfig;
     private File addonsFile;
@@ -183,7 +183,6 @@ public class XCore extends JavaPlugin {
      *
      * @return {@code true} if startup was successful.
      */
-    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     public boolean start() {
         LogFilter.registerFilter();
         logger.sendRawBar();
@@ -217,6 +216,7 @@ public class XCore extends JavaPlugin {
         // ---- Lang ----
         langManager = new LangManager(this);
         logger.setDebug(config.getBoolean("debug", false));
+        profiler.setEnabled(config.getBoolean("profiling", false));
 
         // ---- Database (HikariCP) ----
         try {
@@ -255,10 +255,17 @@ public class XCore extends JavaPlugin {
                 }
                 default -> {
                     databaseType = DatabaseType.SQLITE;
-                    hikaConfig.setJdbcUrl("jdbc:sqlite:plugins/XCore/storage.db");
-                    hikaConfig.setConnectionInitSql("PRAGMA foreign_keys=ON");
+                    // SQLite serialises writers, and without busy_timeout a blocked writer fails
+                    // outright with SQLITE_BUSY instead of waiting — which is how an addon
+                    // creating its tables while another one writes can refuse to start.
+                    //
+                    // journal_mode is deliberately NOT set here: it would be negotiated by every
+                    // pooled connection at once, and they collide. It is applied once below, on a
+                    // single connection, and persists in the file from then on.
+                    hikaConfig.setJdbcUrl("jdbc:sqlite:plugins/XCore/storage.db"
+                        + "?busy_timeout=10000&synchronous=NORMAL&foreign_keys=on");
                     hikaConfig.setPoolName("SQLitePool");
-                    hikaConfig.setMaximumPoolSize(2); hikaConfig.setMinimumIdle(1);
+                    hikaConfig.setMaximumPoolSize(4); hikaConfig.setMinimumIdle(1);
                     hikaConfig.setIdleTimeout(60000); hikaConfig.setMaxLifetime(600000);
                     logger.sendInfo("Using SQLite database.");
                 }
@@ -267,7 +274,23 @@ public class XCore extends JavaPlugin {
             hikaConfig.addDataSourceProperty("socketTimeout", "30000");
             hikaConfig.setConnectionTimeout(10000);
 
-            this.dataSource = new HikariDataSource(hikaConfig);
+            this.dataSource = new fr.xyness.XCore.Database.GuardedDataSource(hikaConfig, logger);
+            // Debug mode turns the pool into a watchdog: any addon querying the database from a tick
+            // thread is named, once per call site.
+            fr.xyness.XCore.Database.GuardedDataSource.setWarnOnTickThread(
+                    config.getBoolean("debug", false) || config.getBoolean("profiling", false));
+
+            if (databaseType == DatabaseType.SQLITE) {
+                // Once, before any addon opens a connection. WAL is a property of the database
+                // file, so every later connection inherits it: readers stop blocking the writer.
+                try (Connection connection = dataSource.getConnection();
+                     Statement stmt = connection.createStatement()) {
+                    stmt.execute("PRAGMA journal_mode=WAL");
+                } catch (SQLException e) {
+                    logger.sendWarning("Could not switch SQLite to WAL: " + e.getMessage()
+                        + ". Concurrent writes may be refused under load.");
+                }
+            }
             try (Connection connection = dataSource.getConnection(); Statement stmt = connection.createStatement()) {
                 stmt.setQueryTimeout(10);
                 stmt.execute("SELECT 1");
@@ -291,6 +314,9 @@ public class XCore extends JavaPlugin {
                         """);
                         stmt.executeUpdate("CREATE INDEX IF NOT EXISTS idx_players_uuid ON players (server_uuid);");
                         stmt.executeUpdate("CREATE INDEX IF NOT EXISTS idx_players_name ON players (player_name);");
+                        // Case-insensitive lookups go through lower(player_name) on this engine, and
+                        // only a functional index can serve them.
+                        stmt.executeUpdate("CREATE INDEX IF NOT EXISTS idx_players_name_lower ON players (lower(player_name));");
                     }
                     default -> {
                         stmt.addBatch("PRAGMA foreign_keys = ON;");
@@ -303,12 +329,21 @@ public class XCore extends JavaPlugin {
                         """);
                         stmt.addBatch("CREATE INDEX IF NOT EXISTS idx_players_uuid ON players (server_uuid);");
                         stmt.addBatch("CREATE INDEX IF NOT EXISTS idx_players_name ON players (player_name);");
+                        // Name lookups compare with COLLATE NOCASE; the index has to carry the same
+                        // collation or it simply is not used.
+                        stmt.addBatch("CREATE INDEX IF NOT EXISTS idx_players_name_nocase ON players (player_name COLLATE NOCASE);");
                         stmt.executeBatch();
                     }
                 }
             }
         } catch (SQLException e) {
             logger.sendError("Failed to initialize database : " + e.getMessage());
+            return false;
+        } catch (Throwable t) {
+            // A missing JDBC driver surfaces as an Error, not an Exception. Say what to do about it
+            // rather than printing a stack trace nobody can act on.
+            logger.sendError("Failed to initialize the " + databaseType.name() + " database : " + t);
+            logger.sendError("If you have just changed 'database-type', restart once so the driver can be downloaded.");
             return false;
         }
 
@@ -347,9 +382,12 @@ public class XCore extends JavaPlugin {
                     try (Jedis jedis = jedisPool.getResource()) { jedis.ping(); }
                     catch (Exception e) { logger.sendWarning("Redis health check failed : " + e.getMessage()); }
                 }, 600, 600);
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // Throwable, not Exception: with the driver now downloaded on demand, a Redis block
+                // switched on after the fact fails with NoClassDefFoundError — an Error — and that
+                // must degrade to "no Redis", never take the server down.
                 logger.sendError("Failed to connect to Redis : " + e.getMessage());
-                logger.sendWarning("Falling back to local cache only.");
+                logger.sendWarning("Falling back to local cache only. If you have just enabled Redis, restart once so the driver can be downloaded.");
                 if (jedisPool != null) { jedisPool.close(); jedisPool = null; }
             }
         }
@@ -396,11 +434,11 @@ public class XCore extends JavaPlugin {
         this.syncManager = new SyncManager(
             jedisPool, dataSource, databaseType, executor,
             pollSeconds * 20, retentionSeconds,
-            config.getString("cross-server.server-name", "default"),
+            getServerName(),
             logger::sendDebug, logger::sendWarning, logger::sendError
         );
 
-        // XCore's own channel: lets a bulk database write (e.g. /coins resetall) drop the
+        // XCore's own channel: lets a bulk database write (e.g. /eco resetall) drop the
         // stale L1 player caches held by the other servers.
         syncManager.registerChannel(SYNC_CHANNEL, message -> {
             if ("CACHE_CLEAR".equals(message.action())) {
@@ -426,15 +464,6 @@ public class XCore extends JavaPlugin {
 
         // ---- Floodgate (Bedrock) ----
         FloodgateHook.init();
-        if (FloodgateHook.isAvailable()) {
-            logger.sendInfo("Floodgate detected. Bedrock GUI compatibility enabled.");
-        }
-
-        // ---- PlaceholderAPI ----
-        if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
-            // PlaceholderAPI expansion registration will be handled by an addon or integration class
-            logger.sendInfo("PlaceholderAPI detected.");
-        }
 
         // ---- Addon Listener Registry ----
         this.listenerRegistry = new AddonListenerRegistry(this);
@@ -449,43 +478,28 @@ public class XCore extends JavaPlugin {
                 }
             }
             int webPort = clamp(config.getInt("web-dashboard.port", 8085), 1, 65535, "web-dashboard.port");
-            String webToken = config.getString("web-dashboard.token", "CHANGE_ME_TO_A_SECURE_TOKEN");
             boolean metricsPublic = config.getBoolean("web-dashboard.metrics-public", true);
 
-            // Refused before the socket is opened, not warned about after: a dashboard listening
-            // with the shipped token (or none at all) is an open door to every admin endpoint the
-            // addons register on it.
-            if (webToken == null || webToken.isBlank()
-                    || "CHANGE_ME_TO_A_SECURE_TOKEN".equals(webToken)
-                    || webToken.length() < 16) {
-                logger.sendSevere("Web dashboard NOT started: 'web-dashboard.token' is missing, still the default, "
-                    + "or shorter than 16 characters. Set a strong token in config.yml.");
-            } else {
-                webPanel = new WebPanel(getDataFolder(), webPort, webToken, metricsPublic,
-                    config.getString("web-dashboard.cors-origin", "*"));
-                try {
-                    webPanel.start();
-                } catch (Exception e) {
-                    logger.sendError("Failed to start web dashboard: " + e.getMessage());
-                    webPanel = null;
-                }
+            // There is no token to configure: /xcore dashboard issues one, scoped to the player who
+            // asked and revocable. A key sitting in a config file cannot be either.
+            webPanel = new WebPanel(this, getDataFolder(), webPort, metricsPublic,
+                config.getString("web-dashboard.cors-origin", "*"));
+            try {
+                webPanel.start();
+            } catch (Exception e) {
+                logger.sendError("Failed to start web dashboard: " + e.getMessage());
+                webPanel = null;
             }
         }
 
         // ---- Economy (requires Vault) ----
         // Vault is only needed to *publish* the economy to other plugins. Balances, columns,
-        // /coins, placeholders and the web module all work without it.
+        // /eco, placeholders and the web module all work without it.
         boolean economyEnabled = config.getBoolean("economy.enabled", true);
         boolean vaultPresent = Bukkit.getPluginManager().getPlugin("Vault") != null;
         if (economyEnabled) {
             try {
                 coinsManager = new CoinsManager(this);
-
-                // Economy lang
-                File ecoLangFile = new File(getDataFolder(), "economy-lang.yml");
-                if (!ecoLangFile.exists()) saveResource("economy-lang.yml", false);
-                economyLang = new LangNamespace();
-                economyLang.reload(ecoLangFile, getResource("economy-lang.yml"));
 
                 // Register columns for currencies
                 for (var currency : coinsManager.getCurrencies()) {
@@ -507,16 +521,15 @@ public class XCore extends JavaPlugin {
                         logger.sendDebug("Failed to register Vault provider: " + e.getMessage());
                     }
                 } else {
-                    logger.sendInfo("Vault not installed — the economy runs internally only.");
+                    logger.sendInfo("Vault not installed : the economy runs internally only.");
                 }
 
                 // Commands
-                new CoinsCommand(this, coinsManager, economyLang).register();
+                new EcoCommand(this, coinsManager, langManager).register();
 
                 // PlaceholderAPI
                 if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
                     new EconomyExpansion(coinsManager).register();
-                    logger.sendInfo("Economy PlaceholderAPI expansion registered.");
                 }
 
                 // Web module
@@ -524,35 +537,48 @@ public class XCore extends JavaPlugin {
                     webPanel.registerModule(new EconomyWebModule(this, coinsManager));
                 }
 
-                // Scheduled payouts
+                // Transaction log: queued by CoinsManager, written as one batch every second.
+                schedulerAdapter.runAsyncTaskTimer(coinsManager::flushTransactions, 20L, 20L);
+
+                // Scheduled payouts — one statement for every online player, not one per player.
                 if (config.getBoolean("economy.scheduled-payouts.enabled", false)) {
                     long interval = config.getLong("economy.scheduled-payouts.interval-minutes", 60) * 60 * 20;
                     double amount = config.getDouble("economy.scheduled-payouts.amount", 100);
                     String currency = config.getString("economy.scheduled-payouts.currency", "coins");
                     schedulerAdapter.runAsyncTaskTimer(() -> {
-                        for (Player p : Bukkit.getOnlinePlayers()) {
-                            coinsManager.addBalance(p.getUniqueId(), currency, amount);
-                        }
+                        List<UUID> online = Bukkit.getOnlinePlayers().stream().map(Player::getUniqueId).toList();
+                        if (online.isEmpty()) return;
+                        coinsManager.depositAll(online, currency, amount).thenAccept(applied -> {
+                            for (UUID id : applied.keySet()) {
+                                Player player = Bukkit.getPlayer(id);
+                                // Money appearing with no explanation reads as a bug; the message for
+                                // this existed in the language file but nothing ever sent it.
+                                if (player != null) notifyEconomy(player, "eco-payout-received", currency, amount);
+                            }
+                        });
                     }, interval, interval);
-                    logger.sendInfo("Scheduled payouts enabled (" + amount + " " + currency + " every " + config.getLong("economy.scheduled-payouts.interval-minutes", 60) + "min).");
                 }
 
-                // Interest
+                // Interest — same idea: the multiplication happens inside the database.
                 if (config.getBoolean("economy.interest.enabled", false)) {
                     long interval = config.getLong("economy.interest.interval-minutes", 1440) * 60 * 20;
                     double rate = config.getDouble("economy.interest.rate", 0.01);
                     String currency = config.getString("economy.interest.currency", "coins");
                     schedulerAdapter.runAsyncTaskTimer(() -> {
-                        for (Player p : Bukkit.getOnlinePlayers()) {
-                            coinsManager.getBalanceAsync(p.getUniqueId(), currency).thenAccept(bal -> {
-                                if (bal > 0) coinsManager.addBalance(p.getUniqueId(), currency, bal * rate);
-                            });
-                        }
+                        List<UUID> online = Bukkit.getOnlinePlayers().stream().map(Player::getUniqueId).toList();
+                        if (online.isEmpty()) return;
+                        coinsManager.applyInterest(online, currency, rate).thenAccept(applied ->
+                            applied.forEach((id, balance) -> {
+                                Player player = Bukkit.getPlayer(id);
+                                if (player == null) return;
+                                // The balance already carries the interest, so what was earned is the
+                                // share the multiplier added.
+                                double earned = balance * rate / (1.0 + rate);
+                                notifyEconomy(player, "eco-interest-received", currency, earned);
+                            }));
                     }, interval, interval);
-                    logger.sendInfo("Interest enabled (" + (rate * 100) + "% on " + currency + ").");
                 }
 
-                logger.sendInfo("Economy system enabled with " + coinsManager.getCurrencies().size() + " currency(ies).");
             } catch (Exception e) {
                 logger.sendError("Failed to initialize economy: " + e.getMessage());
                 coinsManager = null;
@@ -591,6 +617,9 @@ public class XCore extends JavaPlugin {
 
         // Addons first (reverse dependency order)
         if (addonManager != null) addonManager.disableAddons();
+
+        // Anything still queued in the transaction log belongs in the database, not in memory.
+        if (coinsManager != null) coinsManager.flushTransactions();
 
         // Stop web dashboard
         if (webPanel != null) webPanel.stop();
@@ -668,6 +697,9 @@ public class XCore extends JavaPlugin {
     /** @return The XCore logger instance. */
     public Logger logger() { return logger; }
 
+    /** @return The per-addon profiler behind {@code /xcore profile}. */
+    public fr.xyness.XCore.Utils.Profiler profiler() { return profiler; }
+
     /** @return The Bukkit/Folia scheduler adapter. */
     public SchedulerAdapter schedulerAdapter() { return schedulerAdapter; }
 
@@ -711,7 +743,7 @@ public class XCore extends JavaPlugin {
      * Drops the L1 player cache and immediately reloads the online players from the database.
      * <p>
      * Used after a bulk write that bypasses the per-player write path (see
-     * {@code /coins resetall}). The reload matters: {@code getPlayer(uuid)} is a
+     * {@code /eco resetall}). The reload matters: {@code getPlayer(uuid)} is a
      * cache-only lookup, so without it every synchronous read would report "no data"
      * for online players until something triggered an async load.
      */
@@ -739,7 +771,6 @@ public class XCore extends JavaPlugin {
     public CoinsManager getCoinsManager() { return coinsManager; }
 
     /** @return The economy language namespace, or {@code null} if economy is disabled. */
-    public LangNamespace getEconomyLang() { return economyLang; }
 
     /**
      * Checks if cross-server sync is enabled for a specific addon.
@@ -785,9 +816,41 @@ public class XCore extends JavaPlugin {
         catch (IOException e) { logger.sendError("Failed to save addons.yml: " + e.getMessage()); }
     }
 
+
+    /**
+     * Tells a player about money that arrived without them asking for it.
+     *
+     * @param player   Who to tell.
+     * @param key      Language key, taking {@code {amount}} and {@code {currency}}.
+     * @param currency The currency id.
+     * @param amount   How much was credited.
+     */
+    private void notifyEconomy(Player player, String key, String currency, double amount) {
+        if (!player.isOnline()) return;
+        schedulerAdapter.runEntityTask(player, () -> player.sendMessage(langManager.getComponent(key,
+                "amount", coinsManager.format(currency, amount),
+                "currency", currency)));
+    }
+
+    /**
+     * The language every component of the installation speaks.
+     *
+     * <p>Set once here; addons inherit it unless they declare their own. Bundled translations are
+     * English and French, and an addon with no file for the chosen language falls back to English
+     * rather than printing raw keys.</p>
+     *
+     * @return The language code, lower-cased.
+     */
+    public String getLanguage() {
+        String code = getConfig().getString("language", "en");
+        return (code == null || code.isBlank()) ? "en" : code.trim().toLowerCase();
+    }
+
     /** @return The configured server name for cross-server tagging. */
     public String getServerName() {
-        return getConfig().getString("cross-server.server-name", "default");
+        // The name identifies this server everywhere — per-server columns, sync tags, the
+        // dashboard — not only when a network is configured.
+        return getConfig().getString("server-name", "default");
     }
 
     /** @return The plugin start time in milliseconds. */
