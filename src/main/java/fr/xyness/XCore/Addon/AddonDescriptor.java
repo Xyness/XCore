@@ -22,6 +22,7 @@ public class AddonDescriptor {
     private final String description;
     private final List<String> depend;
     private final List<String> softDepend;
+    private final String updateUrl;
     private final File jarFile;
 
     /**
@@ -43,6 +44,7 @@ public class AddonDescriptor {
         this.softDepend = yaml.contains("soft-depend")
                 ? Collections.unmodifiableList(yaml.getStringList("soft-depend"))
                 : Collections.emptyList();
+        this.updateUrl = yaml.getString("update-url", "");
         this.jarFile = jarFile;
     }
 
@@ -74,6 +76,16 @@ public class AddonDescriptor {
 
     /** @return Immutable list of optional addon dependencies. */
     public List<String> getSoftDepend() { return softDepend; }
+
+    /**
+     * Where the update checker looks for this addon's {@code version.yml}.
+     *
+     * <p>Declared as {@code update-url} in {@code addon.yml}. Empty when the addon does not say,
+     * in which case the checker falls back to the GitHub layout built from the addon name.</p>
+     *
+     * @return The full URL, or an empty string.
+     */
+    public String getUpdateUrl() { return updateUrl; }
 
     /** @return The JAR file this addon was loaded from. */
     public File getJarFile() { return jarFile; }

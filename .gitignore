@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# Eclipse build output
+bin/
+
 # IDE
 .idea/
 *.iml

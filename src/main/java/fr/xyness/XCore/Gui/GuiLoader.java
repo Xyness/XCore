@@ -17,7 +17,7 @@ import fr.xyness.XCore.Utils.Logger;
  * <p>
  * Each {@code .yml} file in the folder is parsed into a {@link GuiDefinition} and
  * keyed by the filename (without extension). The loader supports both the modern
- * section-based action format and the legacy colon-delimited format.
+ * section-based action format.
  * </p>
  */
 public class GuiLoader {
@@ -52,7 +52,8 @@ public class GuiLoader {
             }
         }
 
-        logger.sendInfo("Loaded " + result.size() + " GUI definition(s).");
+        // Loading GUI files is unremarkable; only say something when it goes wrong, or on debug.
+        logger.sendDebug("Loaded " + result.size() + " GUI definition(s).");
         return result;
     }
 
@@ -160,13 +161,6 @@ public class GuiLoader {
 
                 if (!actionList.isEmpty()) actions.put(kind, actionList);
             }
-        }
-
-        // Legacy action support
-        String legacyAction = section.getString("action", null);
-        if (legacyAction != null && actions.isEmpty()) {
-            GuiAction action = GuiActionFactory.fromLegacy(legacyAction);
-            if (action != null) actions.put(ClickKind.LEFT, List.of(action));
         }
 
         // Create a GuiItem for each slot

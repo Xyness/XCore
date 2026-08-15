@@ -8,7 +8,7 @@ import org.bukkit.event.inventory.InventoryClickEvent;
  * <p>
  * Implementations are registered per {@link org.bukkit.inventory.InventoryHolder}
  * class via {@link GuiManager#registerHandler(Class, GuiClickHandler)} and dispatched
- * by {@link GuiListener} when the player clicks inside a managed GUI.
+ * by XCore's player listener when somebody clicks inside a managed GUI.
  * </p>
  */
 @FunctionalInterface

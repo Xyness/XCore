@@ -60,13 +60,15 @@ public class AddonManager {
      */
     public void loadAddons() {
         File addonsDir = new File(core.getDataFolder(), "addons");
-        if (!addonsDir.exists()) {
-            addonsDir.mkdirs();
-            return;
-        }
+        if (!addonsDir.exists()) addonsDir.mkdirs();
 
         File[] jars = addonsDir.listFiles((dir, name) -> name.endsWith(".jar"));
-        if (jars == null || jars.length == 0) return;
+        if (jars == null || jars.length == 0) {
+            // Say so rather than returning silently: the caller frames this section with
+            // separator bars, and an empty frame reads like something went wrong.
+            logger.sendInfo("No addon found in " + addonsDir.getPath() + ".");
+            return;
+        }
 
         // Phase 1: Parse all descriptors
         Map<String, AddonClassLoader> pendingLoaders = new HashMap<>();
@@ -183,13 +185,7 @@ public class AddonManager {
             File dataFolder = addon.getDataFolder();
             if (!dataFolder.exists()) dataFolder.mkdirs();
 
-            // Load lang.yml: save default from JAR if missing, then load
-            File langFile = new File(dataFolder, "lang.yml");
-            if (!langFile.exists()) {
-                addon.saveResource("lang.yml", false);
-            }
-            java.io.InputStream defaults = addon.getClass().getClassLoader().getResourceAsStream("lang.yml");
-            addon.lang().reload(langFile, defaults);
+            // The addon loads its own messages with loadLanguage() in onEnable().
 
             // Register addon in cross-server sync config
             core.registerSyncAddon(name);

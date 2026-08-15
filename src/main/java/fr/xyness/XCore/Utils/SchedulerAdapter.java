@@ -1,7 +1,6 @@
 package fr.xyness.XCore.Utils;
 
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -43,18 +42,36 @@ public class SchedulerAdapter {
     private Method entityGetSchedulerMethod;
     private Method entitySchedulerRunMethod;
     private Method entitySchedulerRunDelayedMethod;
-    private Method bukkitGetGlobalRegionSchedulerMethod;
+    private Method entitySchedulerRunAtFixedRateMethod;
     private Method globalSchedulerRunMethod;
+    private Method globalSchedulerRunDelayedMethod;
     private Method globalSchedulerRunAtFixedRateMethod;
-    private Method bukkitGetRegionSchedulerMethod;
     private Method regionSchedulerRunLocationMethod;
     private Method regionSchedulerRunLocationDelayedMethod;
     private Method regionSchedulerRunChunkMethod;
     private Method regionSchedulerRunChunkDelayedMethod;
-    private Method bukkitGetAsyncSchedulerMethod;
     private Method asyncSchedulerRunAtFixedRateMethod;
     private Method asyncSchedulerRunNowMethod;
     private Method asyncSchedulerRunDelayedMethod;
+
+    /**
+     * The three Folia schedulers, resolved once.
+     *
+     * <p>They are singletons, so asking {@link Bukkit} for them reflectively on every single
+     * scheduling call was half the reflection this class performs — for a value that never changes.
+     * Resolved here, every {@code runX} below is left with a single {@code invoke}.</p>
+     */
+    private Object globalScheduler;
+    private Object regionScheduler;
+    private Object asyncScheduler;
+
+    /**
+     * {@code cancel()} per ScheduledTask implementation class.
+     *
+     * <p>Looking the method up on every cancellation meant a reflective lookup plus a
+     * {@code setAccessible} call each time a GUI closed or a blink task stopped.</p>
+     */
+    private final java.util.Map<Class<?>, Method> cancelMethods = new java.util.concurrent.ConcurrentHashMap<>();
 
 	/**
 	 * Creates a new SchedulerAdapter and resolves all Folia scheduler methods via reflection
@@ -77,24 +94,28 @@ public class SchedulerAdapter {
                 Class<?> entitySchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.EntityScheduler");
                 entitySchedulerRunMethod = entitySchedulerClass.getMethod("run", Plugin.class, Consumer.class, Runnable.class);
                 entitySchedulerRunDelayedMethod = entitySchedulerClass.getMethod("runDelayed", Plugin.class, Consumer.class, Runnable.class, long.class);
+                entitySchedulerRunAtFixedRateMethod = entitySchedulerClass.getMethod("runAtFixedRate", Plugin.class, Consumer.class, Runnable.class, long.class, long.class);
 
-                bukkitGetGlobalRegionSchedulerMethod = Bukkit.class.getMethod("getGlobalRegionScheduler");
                 Class<?> globalSchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler");
                 globalSchedulerRunMethod = globalSchedulerClass.getMethod("run", Plugin.class, Consumer.class);
+                globalSchedulerRunDelayedMethod = globalSchedulerClass.getMethod("runDelayed", Plugin.class, Consumer.class, long.class);
                 globalSchedulerRunAtFixedRateMethod = globalSchedulerClass.getMethod("runAtFixedRate", Plugin.class, Consumer.class, long.class, long.class);
 
-                bukkitGetRegionSchedulerMethod = Bukkit.class.getMethod("getRegionScheduler");
                 Class<?> regionSchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.RegionScheduler");
                 regionSchedulerRunLocationMethod = regionSchedulerClass.getMethod("run", Plugin.class, Location.class, Consumer.class);
                 regionSchedulerRunLocationDelayedMethod = regionSchedulerClass.getMethod("runDelayed", Plugin.class, Location.class, Consumer.class, long.class);
                 regionSchedulerRunChunkMethod = regionSchedulerClass.getMethod("run", Plugin.class, World.class, int.class, int.class, Consumer.class);
                 regionSchedulerRunChunkDelayedMethod = regionSchedulerClass.getMethod("runDelayed", Plugin.class, World.class, int.class, int.class, Consumer.class, long.class);
 
-                bukkitGetAsyncSchedulerMethod = Bukkit.class.getMethod("getAsyncScheduler");
                 Class<?> asyncSchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.AsyncScheduler");
                 asyncSchedulerRunNowMethod = asyncSchedulerClass.getMethod("runNow", Plugin.class, Consumer.class);
                 asyncSchedulerRunAtFixedRateMethod = asyncSchedulerClass.getMethod("runAtFixedRate", Plugin.class, Consumer.class, long.class, long.class, TimeUnit.class);
                 asyncSchedulerRunDelayedMethod = asyncSchedulerClass.getMethod("runDelayed", Plugin.class, Consumer.class, long.class, TimeUnit.class);
+
+                // The schedulers themselves are singletons: fetched once here instead of on every call.
+                globalScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
+                regionScheduler = Bukkit.class.getMethod("getRegionScheduler").invoke(null);
+                asyncScheduler = Bukkit.class.getMethod("getAsyncScheduler").invoke(null);
 
             } catch (Exception e) {
                 main.logger().sendWarning("Failed to initialize Folia scheduler, falling back to Bukkit : " + e.getMessage());
@@ -126,16 +147,11 @@ public class SchedulerAdapter {
 	 * @return A proxied Consumer that executes the runnable on {@code accept()}.
 	 */
     private Consumer<Object> wrapConsumer(Runnable task) {
-        return (Consumer<Object>) Proxy.newProxyInstance(
-            Consumer.class.getClassLoader(),
-            new Class<?>[]{ Consumer.class },
-            (proxy, method, args) -> {
-                if ("accept".equals(method.getName())) {
-                    task.run();
-                    return null;
-                }
-                throw new UnsupportedOperationException("Unsupported method: " + method.getName());
-            });
+        // Folia's schedulers take a Consumer<ScheduledTask>. ScheduledTask is not on the compile
+        // classpath, but Consumer is — and generics are erased, so a plain Consumer<Object> is
+        // accepted by the reflective call. This used to allocate a JDK dynamic Proxy per task and
+        // dispatch every accept() reflectively; a single per-chunk sweep schedules thousands.
+        return ignored -> task.run();
     }
 
 	/**
@@ -221,6 +237,35 @@ public class SchedulerAdapter {
 	}
 
 	/**
+	 * Runs a repeating task on an entity's owning region thread.
+	 *
+	 * <p>The entity variant of {@link #runGlobalTaskTimer(Runnable, long, long)}: on Folia the task
+	 * follows the entity from region to region, and stops on its own when the entity is removed.
+	 * Without it, a per-entity loop had to be driven from the global thread and hop to the entity's
+	 * region on every tick.</p>
+	 *
+	 * @param entity      The entity whose region thread should execute the task.
+	 * @param task        The task to run.
+	 * @param startTicks  The initial delay in ticks.
+	 * @param periodTicks The period in ticks between executions.
+	 * @return The task handle, or {@code null} on error.
+	 */
+	public Object runEntityTaskTimer(Entity entity, Runnable task, long startTicks, long periodTicks) {
+	    if (entity == null) return runGlobalTaskTimer(task, startTicks, periodTicks);
+	    if (isFolia) {
+	        try {
+	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
+	            return entitySchedulerRunAtFixedRateMethod.invoke(scheduler, main, wrapConsumer(task), null,
+	                    Math.max(1L, startTicks), Math.max(1L, periodTicks));
+	        } catch (Exception e) {
+	            main.logger().sendError("Failed to schedule Folia entity task timer : " + e.getMessage());
+	            return null;
+	        }
+	    }
+	    return Bukkit.getScheduler().runTaskTimer(main, task, startTicks, periodTicks);
+	}
+
+	/**
 	 * Teleports a player asynchronously.
 	 * On Folia, uses the native async teleport API. On Bukkit, teleports synchronously
 	 * via the global scheduler.
@@ -265,14 +310,36 @@ public class SchedulerAdapter {
     public void runGlobalTask(Runnable task) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetGlobalRegionSchedulerMethod.invoke(null);
-                globalSchedulerRunMethod.invoke(scheduler, main, wrapConsumer(task));
+                globalSchedulerRunMethod.invoke(globalScheduler, main, wrapConsumer(task));
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia global task : " + e.getMessage());
             }
         } else {
             Bukkit.getScheduler().runTask(main, task);
         }
+    }
+
+    /**
+     * Runs a task on the global region thread (Folia) or the main thread (Bukkit) after a delay.
+     *
+     * <p>The missing counterpart of {@link #runGlobalTask(Runnable)}: without it, callers needing a
+     * delayed main-thread task had to write {@code runAsyncTaskLater(() -> runGlobalTask(...))},
+     * which costs two scheduler dispatches and a thread hop for every single delay.</p>
+     *
+     * @param task       The task to run.
+     * @param delayTicks The delay in server ticks before execution.
+     * @return The task handle, or {@code null} on error.
+     */
+    public Object runGlobalTaskLater(Runnable task, long delayTicks) {
+        if (isFolia) {
+            try {
+                return globalSchedulerRunDelayedMethod.invoke(globalScheduler, main, wrapConsumer(task), Math.max(1L, delayTicks));
+            } catch (Exception e) {
+                main.logger().sendError("Failed to schedule Folia delayed global task : " + e.getMessage());
+                return null;
+            }
+        }
+        return Bukkit.getScheduler().runTaskLater(main, task, Math.max(1L, delayTicks));
     }
 
 	/**
@@ -286,8 +353,7 @@ public class SchedulerAdapter {
     public Object runGlobalTaskTimer(Runnable task, long startTicks, long periodTicks) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetGlobalRegionSchedulerMethod.invoke(null);
-                return globalSchedulerRunAtFixedRateMethod.invoke(scheduler, main, wrapConsumer(task), Math.max(1, startTicks), Math.max(1, periodTicks));
+                return globalSchedulerRunAtFixedRateMethod.invoke(globalScheduler, main, wrapConsumer(task), Math.max(1, startTicks), Math.max(1, periodTicks));
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia global task timer : " + e.getMessage());
                 return null;
@@ -306,8 +372,7 @@ public class SchedulerAdapter {
     public void runLocationTask(Runnable task, Location location) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetRegionSchedulerMethod.invoke(null);
-                regionSchedulerRunLocationMethod.invoke(scheduler, main, location, wrapConsumer(task));
+                regionSchedulerRunLocationMethod.invoke(regionScheduler, main, location, wrapConsumer(task));
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia located task : " + e.getMessage());
             }
@@ -326,8 +391,7 @@ public class SchedulerAdapter {
     public void runLocationTaskLater(Runnable task, Location location, long delayTicks) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetRegionSchedulerMethod.invoke(null);
-                regionSchedulerRunLocationDelayedMethod.invoke(scheduler, main, location, wrapConsumer(task), delayTicks);
+                regionSchedulerRunLocationDelayedMethod.invoke(regionScheduler, main, location, wrapConsumer(task), delayTicks);
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia located task : " + e.getMessage());
             }
@@ -347,8 +411,7 @@ public class SchedulerAdapter {
     public void runChunkTask(Runnable task, World world, int chunkX, int chunkZ) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetRegionSchedulerMethod.invoke(null);
-                regionSchedulerRunChunkMethod.invoke(scheduler, main, world, chunkX, chunkZ, wrapConsumer(task));
+                regionSchedulerRunChunkMethod.invoke(regionScheduler, main, world, chunkX, chunkZ, wrapConsumer(task));
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia chunk task : " + e.getMessage());
             }
@@ -369,8 +432,7 @@ public class SchedulerAdapter {
     public void runChunkTaskLater(Runnable task, World world, int chunkX, int chunkZ, long delayTicks) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetRegionSchedulerMethod.invoke(null);
-                regionSchedulerRunChunkDelayedMethod.invoke(scheduler, main, world, chunkX, chunkZ, wrapConsumer(task), delayTicks);
+                regionSchedulerRunChunkDelayedMethod.invoke(regionScheduler, main, world, chunkX, chunkZ, wrapConsumer(task), delayTicks);
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia chunk task : " + e.getMessage());
             }
@@ -391,10 +453,9 @@ public class SchedulerAdapter {
     public Object runAsyncTaskTimer(Runnable task, long startTicks, long periodTicks) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetAsyncSchedulerMethod.invoke(null);
                 long initialDelayMs = Math.max(1L, startTicks * 50L);
                 long periodMs = Math.max(1L, periodTicks * 50L);
-                return asyncSchedulerRunAtFixedRateMethod.invoke(scheduler, main, wrapConsumer(task), initialDelayMs, periodMs, TimeUnit.MILLISECONDS);
+                return asyncSchedulerRunAtFixedRateMethod.invoke(asyncScheduler, main, wrapConsumer(task), initialDelayMs, periodMs, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia async task timer: " + e);
                 return null;
@@ -415,9 +476,8 @@ public class SchedulerAdapter {
 	public Object runAsyncTaskLater(Runnable task, long delayTicks) {
 	    if (isFolia) {
 	        try {
-	        	Object scheduler = bukkitGetAsyncSchedulerMethod.invoke(null);
 	            long delayMs = Math.max(1L, delayTicks * 50L);
-	            return asyncSchedulerRunDelayedMethod.invoke(scheduler, main, wrapConsumer(task), delayMs, TimeUnit.MILLISECONDS);
+	            return asyncSchedulerRunDelayedMethod.invoke(asyncScheduler, main, wrapConsumer(task), delayMs, TimeUnit.MILLISECONDS);
 	        } catch (Exception e) {
 	            main.logger().sendError("Failed to schedule delayed async task: " + e.getMessage());
 	            return null;
@@ -441,14 +501,39 @@ public class SchedulerAdapter {
             return;
         }
 
-        if (taskHandle.getClass().getSimpleName().contains("ScheduledTask")) {
-            try {
-                Method cancelMethod = taskHandle.getClass().getMethod("cancel");
-                cancelMethod.setAccessible(true);
+        // Folia's handle, by type rather than by the spelling of its name. The interface lives in
+        // paper-api, so this compiles and resolves on plain Paper too — it simply never matches
+        // there. Recognising it by getSimpleName().contains("ScheduledTask") meant that the day the
+        // class was renamed, cancellation would quietly become a no-op: no exception, no log, and a
+        // repeating task left running for the lifetime of the server. That is the one failure mode
+        // a canceller must not have.
+        if (taskHandle instanceof io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduled) {
+            scheduled.cancel();
+            return;
+        }
+
+        // Anything else that offers cancel(): a fork with its own handle type, or a future Paper
+        // one. Reflection is the fallback now, not the primary path.
+        try {
+            Method cancelMethod = cancelMethods.computeIfAbsent(taskHandle.getClass(), type -> {
+                try {
+                    Method m = type.getMethod("cancel");
+                    m.setAccessible(true);
+                    return m;
+                } catch (Exception e) {
+                    return null;
+                }
+            });
+            if (cancelMethod != null) {
                 cancelMethod.invoke(taskHandle);
-            } catch (Exception e) {
-                main.logger().sendError("Failed to cancel ScheduledTask : " + e.getMessage());
+            } else {
+                // Saying so is the whole point: a task nobody can cancel is a leak, and silence
+                // about it is how it goes unnoticed.
+                main.logger().sendWarning("Cannot cancel a task handle of type "
+                        + taskHandle.getClass().getName() + " — it offers no cancel() method.");
             }
+        } catch (Exception e) {
+            main.logger().sendError("Failed to cancel task : " + e.getMessage());
         }
     }
 
@@ -461,8 +546,7 @@ public class SchedulerAdapter {
     public Object runAsyncTask(Runnable task) {
         if (isFolia) {
             try {
-                Object scheduler = bukkitGetAsyncSchedulerMethod.invoke(null);
-                return asyncSchedulerRunNowMethod.invoke(scheduler, main, wrapConsumer(task));
+                return asyncSchedulerRunNowMethod.invoke(asyncScheduler, main, wrapConsumer(task));
             } catch (Exception e) {
                 main.logger().sendError("Failed to schedule Folia async task : " + e);
                 return null;
@@ -482,19 +566,15 @@ public class SchedulerAdapter {
 	 *         On Folia failure, returns a failed future.
 	 */
     public CompletableFuture<org.bukkit.Chunk> getChunkAtAsync(World world, int x, int z) {
-        if (isFolia) {
-            try {
-                Method getChunkAtAsyncMethod = world.getClass().getMethod("getChunkAtAsync", int.class, int.class);
-                Object result = getChunkAtAsyncMethod.invoke(world, x, z);
-                if (result instanceof CompletableFuture<?> cf) {
-                    return (CompletableFuture<org.bukkit.Chunk>) cf;
-                }
-            } catch (Exception e) {
-                main.logger().sendError("Failed to call Folia getChunkAtAsync: " + e.getMessage());
-            }
-            return CompletableFuture.failedFuture(new RuntimeException("Folia getChunkAtAsync failed"));
+        // Paper has declared World#getChunkAtAsync in the API since 1.13, Folia included — there is
+        // nothing to look up reflectively. The old non-Folia branch loaded the chunk *synchronously*,
+        // which is a main-thread stall on Paper and illegal from any other thread.
+        try {
+            return world.getChunkAtAsync(x, z);
+        } catch (Throwable t) {
+            main.logger().sendError("Failed to load chunk asynchronously: " + t.getMessage());
+            return CompletableFuture.failedFuture(t);
         }
-        return CompletableFuture.completedFuture(world.getChunkAt(x, z));
     }
 
 }

@@ -9,7 +9,7 @@ import com.mojang.brigadier.suggestion.SuggestionProvider;
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.API.XCoreApi;
 import fr.xyness.XCore.API.XCoreApiProvider;
-import fr.xyness.XCore.Lang.LangNamespace;
+import fr.xyness.XCore.Utils.LangManager;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
@@ -21,15 +21,15 @@ import org.bukkit.entity.Player;
 import java.util.stream.Collectors;
 
 /**
- * Registers the {@code /coins} command using Paper's Brigadier lifecycle API.
+ * Registers the {@code /eco} command using Paper's Brigadier lifecycle API.
  */
-public class CoinsCommand {
+public class EcoCommand {
 
     private final XCore plugin;
     private final CoinsManager coinsManager;
-    private final LangNamespace lang;
+    private final LangManager lang;
 
-    public CoinsCommand(XCore plugin, CoinsManager coinsManager, LangNamespace lang) {
+    public EcoCommand(XCore plugin, CoinsManager coinsManager, LangManager lang) {
         this.plugin = plugin;
         this.coinsManager = coinsManager;
         this.lang = lang;
@@ -75,10 +75,10 @@ public class CoinsCommand {
         plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             final Commands commands = event.registrar();
             commands.register(
-                Commands.literal("coins")
+                Commands.literal("eco")
                     .executes(ctx -> { handleBalanceSelf(ctx.getSource().getSender(), null); return Command.SINGLE_SUCCESS; })
 
-                    // /coins balance [player] [currency]
+                    // /eco balance [player] [currency]
                     .then(Commands.literal("balance")
                         .executes(ctx -> { handleBalanceSelf(ctx.getSource().getSender(), null); return Command.SINGLE_SUCCESS; })
                         .then(Commands.argument("player", StringArgumentType.word())
@@ -101,7 +101,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins pay <player> <amount> [currency]
+                    // /eco pay <player> <amount> [currency]
                     .then(Commands.literal("pay")
                         .requires(src -> src.getSender() instanceof Player)
                         .then(Commands.argument("target", StringArgumentType.word())
@@ -127,7 +127,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins set <player> <amount> [currency]
+                    // /eco set <player> <amount> [currency]
                     .then(Commands.literal("set")
                         .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.set"))
                         .then(Commands.argument("player", StringArgumentType.word())
@@ -153,7 +153,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins add <player> <amount> [currency]
+                    // /eco add <player> <amount> [currency]
                     .then(Commands.literal("add")
                         .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.add"))
                         .then(Commands.argument("player", StringArgumentType.word())
@@ -179,7 +179,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins remove <player> <amount> [currency]
+                    // /eco remove <player> <amount> [currency]
                     .then(Commands.literal("remove")
                         .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.remove"))
                         .then(Commands.argument("player", StringArgumentType.word())
@@ -205,7 +205,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins reset <player> [currency]
+                    // /eco reset <player> [currency]
                     .then(Commands.literal("reset")
                         .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.reset"))
                         .then(Commands.argument("player", StringArgumentType.word())
@@ -227,7 +227,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins resetall confirm [currency]
+                    // /eco resetall confirm [currency]
                     .then(Commands.literal("resetall")
                         .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.resetall"))
                         .executes(ctx -> { handleResetAllWarning(ctx.getSource().getSender(), null); return Command.SINGLE_SUCCESS; })
@@ -248,7 +248,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins exchange <from> <to> <amount>
+                    // /eco exchange <from> <to> <amount>
                     .then(Commands.literal("exchange")
                         .requires(src -> src.getSender() instanceof Player)
                         .then(Commands.argument("from", StringArgumentType.word())
@@ -268,7 +268,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins history [player] [currency] [page]
+                    // /eco history [player] [currency] [page]
                     .then(Commands.literal("history")
                         .executes(ctx -> { handleHistory(ctx.getSource().getSender(), null, null, 1); return Command.SINGLE_SUCCESS; })
                         .then(Commands.argument("player", StringArgumentType.word())
@@ -299,7 +299,7 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins top [currency]
+                    // /eco top [currency]
                     .then(Commands.literal("top")
                         .executes(ctx -> { handleTop(ctx.getSource().getSender(), null); return Command.SINGLE_SUCCESS; })
                         .then(Commands.argument("currency", StringArgumentType.word())
@@ -312,12 +312,12 @@ public class CoinsCommand {
                         )
                     )
 
-                    // /coins help
+                    // /eco help
                     .then(Commands.literal("help")
                         .executes(ctx -> { handleHelp(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
                     )
 
-                    // /coins reload
+                    // /eco reload
                     .then(Commands.literal("reload")
                         .requires(src -> src.getSender().hasPermission("xcore.economy.admin") || src.getSender().hasPermission("xcore.economy.admin.reload"))
                         .executes(ctx -> { handleReload(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
@@ -325,12 +325,14 @@ public class CoinsCommand {
 
                     .build(),
                 "Economy commands",
-                java.util.List.of("coin", "money")
+                // /bal is deliberately absent: it belongs to EssentialsX on most servers and
+                // claiming it would break their setup.
+                java.util.List.of("economy", "money")
             );
         });
     }
 
-    private LangNamespace lang() { return lang; }
+    private LangManager lang() { return lang; }
     private CoinsManager coins() { return coinsManager; }
     private XCoreApi api() { return XCoreApiProvider.get(); }
 
@@ -343,7 +345,7 @@ public class CoinsCommand {
         String available = coins().getCurrencies().stream()
             .map(Currency::getId)
             .collect(Collectors.joining(", "));
-        sender.sendMessage(lang().getComponent("invalid-currency", "currency", input, "currencies", available));
+        sender.sendMessage(lang().getComponent("eco-invalid-currency", "currency", input, "currencies", available));
         return null;
     }
 
@@ -358,19 +360,19 @@ public class CoinsCommand {
             String resolved = resolveCurrency(sender, currencyId);
             if (resolved == null) return;
             double balance = coins().getBalance(player.getUniqueId(), resolved);
-            sender.sendMessage(lang().getComponent("balance-self-single",
+            sender.sendMessage(lang().getComponent("eco-balance-self-single",
                 "balance", coins().format(resolved, balance), "currency", resolved));
             return;
         }
 
         // All currencies
-        sender.sendMessage(lang().getComponent("balance-title"));
+        sender.sendMessage(lang().getComponent("eco-balance-title"));
         for (Currency c : coins().getCurrencies()) {
             double balance = coins().getBalance(player.getUniqueId(), c.getId());
-            sender.sendMessage(lang().getComponent("balance-entry",
+            sender.sendMessage(lang().getComponent("eco-balance-entry",
                 "balance", c.format(balance), "currency", c.getId()));
         }
-        sender.sendMessage(lang().getComponent("balance-end"));
+        sender.sendMessage(lang().getComponent("eco-balance-end"));
     }
 
     private void handleBalanceOther(CommandSender sender, String name, String currencyId) {
@@ -378,7 +380,7 @@ public class CoinsCommand {
             String resolved = resolveCurrency(sender, currencyId);
             if (resolved == null) return;
             coins().getBalanceAsync(name, resolved).thenAccept(balance ->
-                sender.sendMessage(lang().getComponent("balance-other-single",
+                sender.sendMessage(lang().getComponent("eco-balance-other-single",
                     "name", name, "balance", coins().format(resolved, balance), "currency", resolved))
             ).exceptionally(ex -> {
                 plugin.logger().sendWarning("Failed to fetch balance for " + name + ": " + ex.getMessage());
@@ -395,14 +397,14 @@ public class CoinsCommand {
                 return;
             }
             var data = opt.get();
-            sender.sendMessage(lang().getComponent("balance-title"));
+            sender.sendMessage(lang().getComponent("eco-balance-title"));
             for (Currency c : coins().getCurrencies()) {
                 Double value = data.getTargetData(coinsManager.col(c.getId()), Double.class);
                 double balance = value != null ? value : c.getStartingBalance();
-                sender.sendMessage(lang().getComponent("balance-entry",
+                sender.sendMessage(lang().getComponent("eco-balance-entry",
                     "balance", c.format(balance), "currency", c.getId()));
             }
-            sender.sendMessage(lang().getComponent("balance-end"));
+            sender.sendMessage(lang().getComponent("eco-balance-end"));
         }).exceptionally(ex -> {
             plugin.logger().sendWarning("Failed to fetch balances for " + name + ": " + ex.getMessage());
             sender.sendMessage(lang().getComponent("error"));
@@ -416,7 +418,7 @@ public class CoinsCommand {
         if (resolved == null) return;
 
         if (targetName.equalsIgnoreCase(player.getName())) {
-            sender.sendMessage(lang().getComponent("pay-self"));
+            sender.sendMessage(lang().getComponent("eco-pay-self"));
             return;
         }
 
@@ -428,7 +430,7 @@ public class CoinsCommand {
 
             // Check balance right before modifying to avoid race conditions
             if (!coins().has(player.getUniqueId(), resolved, amount)) {
-                sender.sendMessage(lang().getComponent("insufficient-funds",
+                sender.sendMessage(lang().getComponent("eco-insufficient-funds",
                     "balance", coins().format(resolved, coins().getBalance(player.getUniqueId(), resolved))));
                 return;
             }
@@ -451,12 +453,12 @@ public class CoinsCommand {
                                 })))
                         .thenRun(() -> {
                             String formatted = coins().format(resolved, amount);
-                            sender.sendMessage(lang().getComponent("pay-sent",
+                            sender.sendMessage(lang().getComponent("eco-pay-sent",
                                 "amount", formatted, "target", targetData.getName(), "currency", resolved));
 
                             Player target = Bukkit.getPlayer(targetData.getUuid());
                             if (target != null && target.isOnline()) {
-                                target.sendMessage(lang().getComponent("pay-received",
+                                target.sendMessage(lang().getComponent("eco-pay-received",
                                     "amount", formatted, "sender", player.getName(), "currency", resolved));
                             }
 
@@ -488,10 +490,10 @@ public class CoinsCommand {
             }
             var data = opt.get();
             coins().setBalanceWithEvent(data.getUuid(), resolved, amount, BalanceChangeEvent.ChangeType.SET).thenAccept(capped -> {
-                sender.sendMessage(lang().getComponent("set-success",
+                sender.sendMessage(lang().getComponent("eco-set-success",
                     "name", data.getName(), "amount", coins().format(resolved, amount), "currency", resolved));
                 if (capped) {
-                    sender.sendMessage(lang().getComponent("balance-capped", "currency", resolved,
+                    sender.sendMessage(lang().getComponent("eco-balance-capped", "currency", resolved,
                         "max", coins().format(resolved, coins().getCurrency(resolved).getMaxBalance())));
                 }
 
@@ -524,11 +526,11 @@ public class CoinsCommand {
                 return coins().setBalanceWithEvent(data.getUuid(), resolved, newAmount, BalanceChangeEvent.ChangeType.ADD);
             }).thenCompose(capped ->
                 coins().getBalanceAsync(data.getUuid(), resolved).thenAccept(newBalance -> {
-                    sender.sendMessage(lang().getComponent("add-success",
+                    sender.sendMessage(lang().getComponent("eco-add-success",
                         "name", data.getName(), "amount", coins().format(resolved, amount),
                         "balance", coins().format(resolved, newBalance), "currency", resolved));
                     if (capped) {
-                        sender.sendMessage(lang().getComponent("balance-capped", "currency", resolved,
+                        sender.sendMessage(lang().getComponent("eco-balance-capped", "currency", resolved,
                             "max", coins().format(resolved, coins().getCurrency(resolved).getMaxBalance())));
                     }
 
@@ -562,7 +564,7 @@ public class CoinsCommand {
                 return coins().setBalanceWithEvent(data.getUuid(), resolved, newAmount, BalanceChangeEvent.ChangeType.REMOVE);
             }).thenCompose(capped ->
                 coins().getBalanceAsync(data.getUuid(), resolved).thenAccept(newBalance -> {
-                    sender.sendMessage(lang().getComponent("remove-success",
+                    sender.sendMessage(lang().getComponent("eco-remove-success",
                         "name", data.getName(), "amount", coins().format(resolved, amount),
                         "balance", coins().format(resolved, newBalance), "currency", resolved));
 
@@ -591,7 +593,7 @@ public class CoinsCommand {
         if (input == null) {
             Currency vault = coins().getVaultCurrency();
             if (vault == null) {
-                sender.sendMessage(lang().getComponent("reload-warning-no-vault"));
+                sender.sendMessage(lang().getComponent("eco-reload-warning-no-vault"));
                 return null;
             }
             return java.util.List.of(vault.getId());
@@ -615,7 +617,7 @@ public class CoinsCommand {
             var data = opt.get();
             for (String currency : targets) {
                 coins().resetBalance(data.getUuid(), currency).thenAccept(start -> {
-                    sender.sendMessage(lang().getComponent("reset-success",
+                    sender.sendMessage(lang().getComponent("eco-reset-success",
                         "name", data.getName(), "currency", currency,
                         "amount", coins().format(currency, start)));
                     coins().logTransaction(data.getUuid(), data.getName(), currency, start, "RESET",
@@ -633,22 +635,22 @@ public class CoinsCommand {
         java.util.List<String> targets = resolveResetCurrencies(sender, currencyId);
         if (targets == null) return;
         String label = currencyId != null ? currencyId : targets.get(0);
-        sender.sendMessage(lang().getComponent("resetall-warning",
+        sender.sendMessage(lang().getComponent("eco-resetall-warning",
             "currency", String.join(", ", targets)));
-        sender.sendMessage(lang().getComponent("resetall-confirm-usage", "currency", label));
+        sender.sendMessage(lang().getComponent("eco-resetall-confirm-usage", "currency", label));
     }
 
     private void handleResetAll(CommandSender sender, String currencyId) {
         java.util.List<String> targets = resolveResetCurrencies(sender, currencyId);
         if (targets == null) return;
 
-        sender.sendMessage(lang().getComponent("resetall-started", "currency", String.join(", ", targets)));
+        sender.sendMessage(lang().getComponent("eco-resetall-started", "currency", String.join(", ", targets)));
         coins().resetAllBalances(targets).thenAccept(rows -> {
             if (rows < 0) {
                 sender.sendMessage(lang().getComponent("error"));
                 return;
             }
-            sender.sendMessage(lang().getComponent("resetall-success",
+            sender.sendMessage(lang().getComponent("eco-resetall-success",
                 "count", String.valueOf(rows), "currency", String.join(", ", targets)));
             plugin.logger().sendInfo("Economy: " + sender.getName() + " reset " + rows
                 + " player balance(s) for [" + String.join(", ", targets) + "].");
@@ -663,7 +665,7 @@ public class CoinsCommand {
         Player player = (Player) sender;
 
         if (!coins().isExchangeEnabled()) {
-            sender.sendMessage(lang().getComponent("exchange-disabled"));
+            sender.sendMessage(lang().getComponent("eco-exchange-disabled"));
             return;
         }
 
@@ -673,24 +675,24 @@ public class CoinsCommand {
         if (resolvedTo == null) return;
 
         if (resolvedFrom.equals(resolvedTo)) {
-            sender.sendMessage(lang().getComponent("exchange-no-rate"));
+            sender.sendMessage(lang().getComponent("eco-exchange-no-rate"));
             return;
         }
 
         double rate = coins().getExchangeRate(resolvedFrom, resolvedTo);
         if (rate <= 0) {
-            sender.sendMessage(lang().getComponent("exchange-no-rate"));
+            sender.sendMessage(lang().getComponent("eco-exchange-no-rate"));
             return;
         }
 
         double destinationAmount = Math.floor(amount / rate);
         if (destinationAmount <= 0) {
-            sender.sendMessage(lang().getComponent("exchange-no-rate"));
+            sender.sendMessage(lang().getComponent("eco-exchange-no-rate"));
             return;
         }
 
         if (!coins().has(player.getUniqueId(), resolvedFrom, amount)) {
-            sender.sendMessage(lang().getComponent("insufficient-funds",
+            sender.sendMessage(lang().getComponent("eco-insufficient-funds",
                 "balance", coins().format(resolvedFrom, coins().getBalance(player.getUniqueId(), resolvedFrom))));
             return;
         }
@@ -711,7 +713,7 @@ public class CoinsCommand {
                     .thenRun(() -> {
                         String formattedFrom = coins().format(resolvedFrom, amount);
                         String formattedTo = coins().format(resolvedTo, destinationAmount);
-                        sender.sendMessage(lang().getComponent("exchange-success",
+                        sender.sendMessage(lang().getComponent("eco-exchange-success",
                             "from_amount", formattedFrom, "from_currency", resolvedFrom,
                             "to_amount", formattedTo, "to_currency", resolvedTo));
 
@@ -762,13 +764,13 @@ public class CoinsCommand {
             int safePage = Math.min(page, maxPage);
 
             return coins().getTransactions(targetName, finalCurrency, safePage, limit).thenAccept(records -> {
-                sender.sendMessage(lang().getComponent("history-title", "name", targetName, "page", String.valueOf(safePage), "max_page", String.valueOf(maxPage)));
+                sender.sendMessage(lang().getComponent("eco-history-title", "name", targetName, "page", String.valueOf(safePage), "max_page", String.valueOf(maxPage)));
 
                 if (records.isEmpty()) {
-                    sender.sendMessage(lang().getComponent("history-empty"));
+                    sender.sendMessage(lang().getComponent("eco-history-empty"));
                 } else {
                     for (var record : records) {
-                        sender.sendMessage(lang().getComponent("history-entry",
+                        sender.sendMessage(lang().getComponent("eco-history-entry",
                             "type", record.type(),
                             "currency", record.currency(),
                             "amount", String.valueOf(record.amount()),
@@ -777,7 +779,7 @@ public class CoinsCommand {
                     }
                 }
 
-                sender.sendMessage(lang().getComponent("history-end"));
+                sender.sendMessage(lang().getComponent("eco-history-end"));
             });
         }).exceptionally(ex -> {
             plugin.logger().sendWarning("History command failed: " + ex.getMessage());
@@ -787,7 +789,7 @@ public class CoinsCommand {
     }
 
     private void handleHelp(CommandSender sender) {
-        String raw = lang().getMessageString("help-message");
+        String raw = lang().getMessageString("eco-help-message");
         if (raw == null || raw.isBlank()) return;
         for (String line : raw.split("\n")) {
             sender.sendMessage(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(line));
@@ -801,7 +803,7 @@ public class CoinsCommand {
         api().getPlayersAsync(
             Bukkit.getOnlinePlayers().stream().map(Player::getUniqueId).toList()
         ).thenAccept(map -> {
-            sender.sendMessage(lang().getComponent("top-title", "currency", resolved));
+            sender.sendMessage(lang().getComponent("eco-top-title", "currency", resolved));
 
             String colName = coinsManager.col(resolved);
             var sorted = map.entrySet().stream()
@@ -816,19 +818,19 @@ public class CoinsCommand {
                 .toList();
 
             if (sorted.isEmpty()) {
-                sender.sendMessage(lang().getComponent("top-empty"));
+                sender.sendMessage(lang().getComponent("eco-top-empty"));
             } else {
                 for (int i = 0; i < sorted.size(); i++) {
                     var data = sorted.get(i);
                     Double c = data.getTargetData(colName, Double.class);
-                    sender.sendMessage(lang().getComponent("top-entry",
+                    sender.sendMessage(lang().getComponent("eco-top-entry",
                         "rank", String.valueOf(i + 1),
                         "name", data.getName(),
                         "balance", coins().format(resolved, c != null ? c : 0)));
                 }
             }
 
-            sender.sendMessage(lang().getComponent("top-end"));
+            sender.sendMessage(lang().getComponent("eco-top-end"));
         }).exceptionally(ex -> {
             plugin.logger().sendWarning("Top command failed: " + ex.getMessage());
             sender.sendMessage(lang().getComponent("error"));
@@ -842,8 +844,8 @@ public class CoinsCommand {
         lang.reload();
         if (coins().getVaultCurrency() == null) {
             plugin.logger().sendWarning("No vault currency found after reload! Check your economy currencies config.");
-            sender.sendMessage(lang().getComponent("reload-warning-no-vault"));
+            sender.sendMessage(lang().getComponent("eco-reload-warning-no-vault"));
         }
-        sender.sendMessage(lang().getComponent("reload-success"));
+        sender.sendMessage(lang().getComponent("eco-reload-success"));
     }
 }

@@ -14,10 +14,10 @@ import org.yaml.snakeyaml.Yaml;
 
 /**
  * Checks for addon updates by fetching a remote {@code version.yml} file.
- * <p>
- * The remote file is expected at:
- * {@code https://raw.githubusercontent.com/Xyness/<addonName>/refs/heads/main/version.yml}
- * </p>
+ *
+ * <p>The address comes from the addon itself ({@code update-url} in {@code addon.yml}), so an
+ * addon published anywhere — another organisation, a private host, a marketplace mirror — is
+ * checked where it actually lives.</p>
  */
 public class Updater {
 
@@ -42,17 +42,21 @@ public class Updater {
 
 
     /**
-     * Creates an Updater for the given addon.
+     * Creates an Updater pointing at an explicit address.
      *
-     * @param addonName The addon name (used in the GitHub URL).
-     * @param version   The current version of the addon.
-     * @param logger    The logger to use for error messages.
+     * @param url     Full URL of the remote {@code version.yml}.
+     * @param version The current version of the addon.
+     * @param logger  The logger to use for error messages.
      */
-    public Updater(String addonName, String version, Logger logger) {
+    public Updater(String url, String version, Logger logger) {
         this.logger = logger;
         this.version = version;
-        this.url = "https://raw.githubusercontent.com/Xyness/" + addonName + "/refs/heads/main/version.yml";
+        this.url = url;
     }
+
+
+    /** @return The address this updater reads. */
+    public String getUrl() { return url; }
 
 
     // *************
@@ -79,7 +83,10 @@ public class Updater {
                 Yaml yaml = new Yaml();
                 Map<String, Object> data = yaml.load(reader);
                 String response = data.get("version").toString();
-                boolean final_answer = !version.equalsIgnoreCase(response);
+                // Only a *newer* remote version is an update. Comparing for inequality announced
+                // one whenever the numbers differed — including when the installed build was
+                // ahead of what is published, which is the normal state while developing.
+                boolean final_answer = isNewerThanInstalled(response);
                 if (final_answer) {
                     this.new_version_available = response;
                     Object notes = data.get("update-notes");
@@ -98,6 +105,40 @@ public class Updater {
         } catch (Exception e) {
             logger.sendError("Error when checking for updates: " + e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Whether {@code remote} is a later version than the one installed.
+     *
+     * <p>Compares the numeric segments in order, so 1.0.17 is correctly newer than 1.0.9. A
+     * segment that is not a number (a {@code -beta} suffix, say) counts as 0, and a version with
+     * more segments wins a tie: 1.2.1 beats 1.2.</p>
+     *
+     * @param remote The version published at the update URL.
+     * @return {@code true} when the server should be told to update.
+     */
+    private boolean isNewerThanInstalled(String remote) {
+        if (remote == null || remote.isBlank()) return false;
+        if (version == null || version.isBlank()) return true;
+
+        String[] mine = version.trim().split("[^0-9]+");
+        String[] theirs = remote.trim().split("[^0-9]+");
+        for (int i = 0; i < Math.max(mine.length, theirs.length); i++) {
+            int a = segment(mine, i);
+            int b = segment(theirs, i);
+            if (b != a) return b > a;
+        }
+        return false;
+    }
+
+    /** Reads one numeric segment, treating anything missing or unparsable as 0. */
+    private static int segment(String[] parts, int index) {
+        if (index >= parts.length || parts[index].isEmpty()) return 0;
+        try {
+            return Integer.parseInt(parts[index]);
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 

@@ -129,9 +129,10 @@ public class PlayerData {
 	 * @return An unmodifiable map of extra column key-value pairs.
 	 */
     public Map<String, Object> getData() {
-    	synchronized (data) {
-    	    return Map.copyOf(data);
-    	}
+    	// No lock: the map is already a ConcurrentHashMap, and copyOf iterates it safely. The
+    	// synchronized block that used to wrap every accessor here turned a lock-free structure into
+    	// a single global monitor — contended by every balance read, every placeholder and every GUI.
+    	return Map.copyOf(data);
     }
 
 	/**
@@ -141,9 +142,7 @@ public class PlayerData {
 	 * @return The value, or {@code null} if not present.
 	 */
     public Object getTargetData(String key) {
-    	synchronized (data) {
-    	    return data.get(key);
-    	}
+    	return data.get(key);
     }
 
 	/**
@@ -177,9 +176,8 @@ public class PlayerData {
 	 * @return {@code true} if a previous value was replaced, {@code false} if this is a new entry.
 	 */
     public boolean setTargetData(String key, Object value) {
-    	synchronized (data) {
-    	    return data.put(key, value) != null;
-    	}
+    	if (value == null) return data.remove(key) != null;
+    	return data.put(key, value) != null;
     }
 
 	/**

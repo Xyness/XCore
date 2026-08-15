@@ -45,6 +45,12 @@ class DatabaseSyncTransport implements SyncManager.SyncTransport {
     private final AtomicLong lastSeenId = new AtomicLong(0);
     private volatile ScheduledExecutorService pollScheduler;
 
+    /** Wall-clock of the last retention sweep. */
+    private volatile long lastCleanup = 0L;
+
+    /** How often the retention sweep may run, whatever the poll interval is. */
+    private static final long CLEANUP_INTERVAL_MS = 60_000L;
+
     DatabaseSyncTransport(DataSource dataSource, DatabaseType databaseType,
                           SyncManager.TransportCallback callback, Executor handlerExecutor,
                           int pollIntervalTicks, int retentionSeconds,
@@ -118,7 +124,14 @@ class DatabaseSyncTransport implements SyncManager.SyncTransport {
                 }
             }
 
-            cleanup(c);
+            // Retention is a housekeeping concern, not a per-poll one. Running the DELETE on every
+            // sondage meant a scan of the whole table every three seconds, from every server of the
+            // network at once, for rows that only need to disappear eventually.
+            long now = System.currentTimeMillis();
+            if (now - lastCleanup >= CLEANUP_INTERVAL_MS) {
+                lastCleanup = now;
+                cleanup(c);
+            }
 
         } catch (SQLException e) {
             logError.log("DB sync poll error : " + e.getMessage());
@@ -160,6 +173,14 @@ class DatabaseSyncTransport implements SyncManager.SyncTransport {
                     )""";
             };
             stmt.executeUpdate(sql);
+            // The retention sweep filters on created_at; without this index it is a full scan.
+            try {
+                stmt.executeUpdate(databaseType == DatabaseType.MYSQL
+                        ? "CREATE INDEX idx_xcs_created ON xcore_sync (created_at)"
+                        : "CREATE INDEX IF NOT EXISTS idx_xcs_created ON xcore_sync (created_at)");
+            } catch (SQLException ignored) {
+                // MySQL has no IF NOT EXISTS for indexes: a duplicate is exactly what we want here.
+            }
         } catch (SQLException e) {
             logError.log("Failed to create xcore_sync table : " + e.getMessage());
         }

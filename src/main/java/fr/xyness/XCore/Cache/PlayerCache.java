@@ -194,10 +194,20 @@ public class PlayerCache<P> {
                         Map<UUID, Optional<P>> result = new HashMap<>();
                         java.util.List<String> dbMisses = new java.util.ArrayList<>();
 
-                        for (UUID key : keys) {
-                            Optional<P> fromRedis = getPlayerFromRedis(REDIS_PREFIX_UUID + key);
-                            if (fromRedis != null) {
-                                result.put(key, fromRedis);
+                        // One MGET rather than one GET per key: prefetching the online players used
+                        // to cost one Redis round trip per player, run back to back.
+                        java.util.List<UUID> keyList = new java.util.ArrayList<>(keys);
+                        java.util.List<String> payloads = mgetPlayers(keyList);
+                        for (int i = 0; i < keyList.size(); i++) {
+                            UUID key = keyList.get(i);
+                            String json = (payloads == null || i >= payloads.size()) ? null : payloads.get(i);
+                            P value = null;
+                            if (json != null) {
+                                try { value = deserializer.apply(json); }
+                                catch (Exception e) { logDebug.log("Bad L2 payload for " + key + " : " + e.getMessage()); }
+                            }
+                            if (value != null) {
+                                result.put(key, Optional.of(value));
                             } else {
                                 dbMisses.add(key.toString());
                             }
@@ -283,13 +293,46 @@ public class PlayerCache<P> {
         } catch (Exception e) { logError.log("Redis read error : " + e.getMessage()); return null; }
     }
 
+    /**
+     * Writes a player to L2 under both its keys.
+     *
+     * <p>Off the calling thread and pipelined. This is reached from
+     * {@code updatePlayerDataAsync}, which addons call from ordinary events — so the two round trips
+     * it used to perform inline were two blocking network calls on the server thread, for a method
+     * whose name promises the opposite.</p>
+     */
     private void putToRedis(P data) {
         if (jedisPool == null) return;
+        String uuidKey = REDIS_PREFIX_UUID + uuidExtractor.apply(data);
+        String nameKey = REDIS_PREFIX_NAME + nameExtractor.apply(data).toLowerCase();
+        executor.execute(() -> {
+            try (Jedis jedis = jedisPool.getResource()) {
+                String json = serializer.apply(data);
+                var pipeline = jedis.pipelined();
+                pipeline.setex(uuidKey, redisTTL, json);
+                pipeline.setex(nameKey, redisTTL, json);
+                pipeline.sync();
+            } catch (Exception e) { logError.log("Redis write error : " + e.getMessage()); }
+        });
+    }
+
+    /**
+     * Reads several players from L2 in a single round trip.
+     *
+     * @param keys The player UUIDs, in order.
+     * @return The JSON payloads in the same order ({@code null} for a miss), or {@code null} when
+     *         Redis is unavailable.
+     */
+    private List<String> mgetPlayers(List<UUID> keys) {
+        if (jedisPool == null || keys.isEmpty()) return null;
+        String[] redisKeys = new String[keys.size()];
+        for (int i = 0; i < keys.size(); i++) redisKeys[i] = REDIS_PREFIX_UUID + keys.get(i);
         try (Jedis jedis = jedisPool.getResource()) {
-            String json = serializer.apply(data);
-            jedis.setex(REDIS_PREFIX_UUID + uuidExtractor.apply(data), redisTTL, json);
-            jedis.setex(REDIS_PREFIX_NAME + nameExtractor.apply(data).toLowerCase(), redisTTL, json);
-        } catch (Exception e) { logError.log("Redis write error : " + e.getMessage()); }
+            return jedis.mget(redisKeys);
+        } catch (Exception e) {
+            logError.log("Redis batch read error : " + e.getMessage());
+            return null;
+        }
     }
 
     private void removeFromRedis(P data) {

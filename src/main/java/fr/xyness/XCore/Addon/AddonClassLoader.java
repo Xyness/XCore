@@ -32,6 +32,19 @@ import org.bukkit.plugin.Plugin;
  */
 public class AddonClassLoader extends URLClassLoader {
 
+    /**
+     * Every live addon loader.
+     *
+     * <p>An addon that publishes an API — a set of interfaces and events other addons compile
+     * against — is useless if nobody can reach those classes at runtime: each addon loads from its
+     * own JAR with XCore as parent, so siblings are invisible to each other. Worse than invisible,
+     * silently wrong: an addon shading the API itself would register a listener for a
+     * <i>different</i> {@code Class} object than the one the publisher fires, and the event would
+     * simply never arrive. Looking classes up across siblings keeps one identity per class, which is
+     * what makes cross-addon APIs work at all.</p>
+     */
+    private static final java.util.List<AddonClassLoader> LOADERS = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     private final AddonDescriptor descriptor;
     private final java.util.Set<String> missCache = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -47,6 +60,23 @@ public class AddonClassLoader extends URLClassLoader {
     public AddonClassLoader(File jarFile, ClassLoader parent) throws IOException {
         super(new URL[]{jarFile.toURI().toURL()}, parent);
         this.descriptor = parseDescriptor(jarFile);
+        LOADERS.add(this);
+    }
+
+    /** Leaves the sibling registry before releasing the JAR. */
+    @Override
+    public void close() throws IOException {
+        LOADERS.remove(this);
+        super.close();
+    }
+
+    /**
+     * Loads a class from this addon's own JAR only — no parent, no siblings.
+     *
+     * <p>What siblings call, so a lookup can never bounce back and forth between two loaders.</p>
+     */
+    private Class<?> findLocalClass(String name) throws ClassNotFoundException {
+        return super.findClass(name);
     }
 
     /**
@@ -120,6 +150,20 @@ public class AddonClassLoader extends URLClassLoader {
                 throw primary;
             }
             if (missCache.contains(name)) throw primary;
+
+            // Siblings first: an addon's published API is far more likely to be what is missing
+            // here than a third-party plugin's class, and the scan is a handful of loaders.
+            for (AddonClassLoader other : LOADERS) {
+                if (other == this) continue;
+                try {
+                    return other.findLocalClass(name);
+                } catch (ClassNotFoundException | NoClassDefFoundError ignored) {
+                    // Not this one's either.
+                } catch (Throwable ignored) {
+                    // A loader being closed underneath us is not worth failing the lookup.
+                }
+            }
+
             Plugin[] plugins;
             try {
                 plugins = Bukkit.getPluginManager().getPlugins();

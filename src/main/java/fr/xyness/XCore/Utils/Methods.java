@@ -35,7 +35,9 @@ public class Methods {
 	    "|DATE|TIME|DATETIME|TIMESTAMP)" +
 	    "(\\(\\d+(?:,\\s*\\d+)?\\))?" +
 	    "(\\s+NOT\\s+NULL)?" +
-	    "(\\s+DEFAULT\\s+('([^']*)'|\\d+(?:\\.\\d+)?|NULL|TRUE|FALSE|0|1))?" +
+	    // The minus sign matters: a column whose "not set yet" value is -1 is an ordinary thing to
+	    // want, and without it the definition was refused and the column silently never created.
+	    "(\\s+DEFAULT\\s+('([^']*)'|-?\\d+(?:\\.\\d+)?|NULL|TRUE|FALSE))?" +
 	    "$", java.util.regex.Pattern.CASE_INSENSITIVE
 	);
 
@@ -124,19 +126,73 @@ public class Methods {
             return false;
         }
 
-        boolean exists = false;
+        if (columnExists(table, column)) return false;
+
+        try (Connection connection = main.getDataSource().getConnection();
+             Statement stmt = connection.createStatement()) {
+            stmt.executeUpdate("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition + ";");
+            return true;
+        } catch (SQLException e) {
+            main.logger().sendError("Error adding column " + column + " to " + table + " : " + e.getMessage());
+        }
+        return false;
+    }
+
+	/**
+	 * Drops a column from a database table if it is still there.
+	 * <p>
+	 * The counterpart of {@link #addColumnIfMissing(String, String, String)}, for an addon that has
+	 * moved a value out of the shared {@code players} table. Dropping matters: as long as the column
+	 * exists, {@code PlayerData} keeps loading it and Redis keeps carrying it for every addon.
+	 * </p>
+	 * <p>
+	 * {@code ALTER TABLE ... DROP COLUMN} is understood by MySQL, PostgreSQL and SQLite 3.35+. On an
+	 * older SQLite — or on a column an index still points at — the statement fails; that is reported
+	 * as a warning and left alone, because a table rebuild behind the addon's back is not something
+	 * this method should be doing.
+	 * </p>
+	 *
+	 * @param table  The table name.
+	 * @param column The column name to drop.
+	 * @return {@code true} if the column was dropped, {@code false} if it was already gone or on error.
+	 */
+    public boolean dropColumnIfPresent(String table, String column) {
+        if (!SAFE_IDENTIFIER.matcher(table).matches() || !SAFE_IDENTIFIER.matcher(column).matches()) {
+            main.logger().sendError("Invalid table or column name: table=" + table + ", column=" + column);
+            return false;
+        }
+
+        if (!columnExists(table, column)) return false;
+
+        try (Connection connection = main.getDataSource().getConnection();
+             Statement stmt = connection.createStatement()) {
+            stmt.executeUpdate("ALTER TABLE " + table + " DROP COLUMN " + column + ";");
+            main.logger().sendInfo("Dropped column " + column + " from " + table + ".");
+            return true;
+        } catch (SQLException e) {
+            main.logger().sendWarning("Could not drop column " + column + " from " + table
+                    + " (it stays in place, harmlessly) : " + e.getMessage());
+        }
+        return false;
+    }
+
+	/**
+	 * Tells whether a column exists on a table.
+	 *
+	 * @param table  The table name.
+	 * @param column The column name.
+	 * @return {@code true} if the column is present.
+	 */
+    public boolean columnExists(String table, String column) {
+        if (!SAFE_IDENTIFIER.matcher(table).matches() || !SAFE_IDENTIFIER.matcher(column).matches()) return false;
+
         DatabaseType dbType = main.getDatabaseType();
-
         try (Connection connection = main.getDataSource().getConnection()) {
-
             if (dbType.equals(DatabaseType.SQLITE)) {
                 try (Statement stmt = connection.createStatement();
                      ResultSet rs = stmt.executeQuery("PRAGMA table_info(" + table + ");")) {
                     while (rs.next()) {
-                        if (column.equalsIgnoreCase(rs.getString("name"))) {
-                            exists = true;
-                            break;
-                        }
+                        if (column.equalsIgnoreCase(rs.getString("name"))) return true;
                     }
                 }
             } else {
@@ -146,20 +202,12 @@ public class Methods {
                     ps.setString(1, table);
                     ps.setString(2, column);
                     try (ResultSet rs = ps.executeQuery()) {
-                        exists = rs.next();
+                        return rs.next();
                     }
                 }
             }
-
-            if (!exists) {
-                try (Statement stmt = connection.createStatement()) {
-                    stmt.executeUpdate("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition + ";");
-                }
-                return true;
-            }
-
         } catch (SQLException e) {
-            main.logger().sendError("Error adding column " + column + " to " + table + " : " + e.getMessage());
+            main.logger().sendError("Error checking column " + column + " on " + table + " : " + e.getMessage());
         }
         return false;
     }

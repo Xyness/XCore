@@ -1,10 +1,37 @@
 # XCore Configuration
 
-# Enable debug logging (verbose cache/database/API messages)
+# Enable debug logging (verbose cache/database/API messages).
+# It also turns on the tick-thread watchdog: any addon querying the database from a tick thread is
+# named in the console, once per call site.
 debug: false
+
+# Measure how long each addon spends in each event handler, readable with /xcore profile.
+# Addons run under XCore's plugin identity, so a timings report blames XCore for all of them —
+# this is what tells you which addon is actually costing tick time.
+# Costs one boolean read per event when off; leave it off unless you are investigating.
+profiling: false
+
+# Language for XCore AND every addon, so the choice is made once instead of in a dozen files.
+# Bundled: en, fr. Files live in plugins/XCore/lang/ and plugins/XCore/addons/<addon>/lang/ —
+# edit them freely, they are never overwritten.
+# An addon can override this with its own `language` key; without one it follows this.
+# An addon that ships no translation for the chosen language falls back to English.
+# Console logs stay in English.
+language: "en"
 
 # Database type: sqlite, mysql, postgresql
 database-type: sqlite
+
+# Server name
+server-name: "default"
+
+# Recognise a returning player whose UUID changed.
+# server_uuid is derived from the name in offline mode and comes from Mojang in online mode, so
+# switching that setting — or moving the server behind a proxy that changes it — makes every player
+# look brand new. With this on, their existing row is moved onto the new UUID instead of a second
+# one being created: balances, per-addon columns and history follow them.
+# Matching is by Mojang UUID first, and by name only for accounts that have no Mojang UUID at all.
+migrate-uuid-changes: true
 
 # MySQL / PostgreSQL settings (ignored for sqlite)
 database:
@@ -20,7 +47,6 @@ database:
 # Requires MySQL or PostgreSQL (not compatible with SQLite).
 cross-server:
   enabled: false
-  server-name: "default"
 
   # Redis (optional, used for L2 cache and Pub/Sub sync)
   # If disabled, sync falls back to database polling.
@@ -60,27 +86,31 @@ cache:
 
 # Web dashboard
 web-dashboard:
-  enabled: false
+  enabled: true
   port: 8085
-  token: "CHANGE_ME_TO_A_SECURE_TOKEN"
+  # How long a link from /xcore dashboard stays valid, in hours. 0 = until the token is revoked.
+  session-ttl-hours: 24
   # Whether the /api/metrics endpoint is publicly accessible (no auth required)
   metrics-public: true
   # Allowed browser origin for the API. Keep "*" only if the dashboard is not
   # reachable from the internet; otherwise set your panel URL (e.g. https://panel.example.com)
   cors-origin: "*"
+  # Address /xcore dashboard links to. Leave empty to build it from the server address and the
+  # port above; set it when a reverse proxy or a domain sits in front (e.g. https://panel.example.com)
+  public-url: ""
 
 # Economy system (built-in, requires Vault)
 # Automatically enabled if Vault is installed, disabled otherwise.
 economy:
-  enabled: false
+  enabled: true
 
   # Cross-server support (per-server balances)
-  # Uses the cross-server.server-name above for isolation
+  # Uses the server-name above for isolation
   per-server-balances: false
 
   # Define currencies
   currencies:
-    coins:
+    dollar:
       symbol: "$"
       symbol-position: BEFORE
       decimals: 2
@@ -90,25 +120,19 @@ economy:
 
   # Currency exchange
   exchange:
-    enabled: true
-    rates:
-      coins-to-gems: 100
-      coins-to-tokens: 50
-      gems-to-coins: 80
-      gems-to-tokens: 2
-      tokens-to-coins: 40
-      tokens-to-gems: 0.5
+    enabled: false
+    rates: {}
 
   # Scheduled payouts
   scheduled-payouts:
     enabled: false
     interval-minutes: 60
     amount: 10.0
-    currency: "coins"
+    currency: "dollar"
 
   # Interest on balances
   interest:
     enabled: false
     rate: 0.01
     interval-minutes: 1440
-    currency: "coins"
+    currency: "dollar"

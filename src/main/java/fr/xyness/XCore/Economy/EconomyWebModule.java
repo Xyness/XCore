@@ -14,6 +14,7 @@ import com.sun.net.httpserver.HttpServer;
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Web.WebModule;
 import fr.xyness.XCore.Web.WebPage;
+import fr.xyness.XCore.Web.WebPageSpec;
 import fr.xyness.XCore.Web.WebPanel;
 
 /**
@@ -59,8 +60,17 @@ public class EconomyWebModule implements WebModule {
     @Override
     public List<WebPage> getPages() {
         return List.of(
-            new WebPage("Balances", "balances", "coins"),
-            new WebPage("Transactions", "transactions", "scroll-text")
+            new WebPage("balances", "balances", "coins", WebPageSpec.table("/api/economy/balances")
+                .titleKey("economy-balances")
+                .dataKeys("balances")
+                .emptyKey("no-data-found")),
+            new WebPage("transactions", "transactions", "scroll-text",
+                WebPageSpec.table("/api/economy/transactions")
+                    .titleKey("economy-transactions")
+                    .dataKeys("transactions")
+                    .emptyKey("no-transactions-found")
+                    .search("search-by-player")
+                    .paged(50))
         );
     }
 
@@ -166,20 +176,19 @@ public class EconomyWebModule implements WebModule {
                 String[] kv = param.split("=", 2);
                 if (kv.length == 2) {
                     switch (kv[0]) {
-                        case "player" -> playerName = kv[1];
-                        case "page" -> { try { page = Integer.parseInt(kv[1]); } catch (NumberFormatException ignored) {} }
-                        case "limit" -> { try { limit = Math.min(100, Integer.parseInt(kv[1])); } catch (NumberFormatException ignored) {} }
+                        case "player", "search" ->
+                            playerName = java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8);
+                        case "page" -> { try { page = Math.max(1, Integer.parseInt(kv[1])); } catch (NumberFormatException ignored) {} }
+                        case "limit" -> { try { limit = Math.clamp(Integer.parseInt(kv[1]), 1, 100); } catch (NumberFormatException ignored) {} }
                     }
                 }
             }
         }
 
-        if (playerName == null || playerName.isBlank()) {
-            webPanel.sendJson(exchange, 400, "{\"error\":\"Missing player parameter\"}");
-            return;
-        }
-
-        if (!playerName.matches("[a-zA-Z0-9_]+")) {
+        // No player means the whole ledger, newest first — which is what the page opens on. The
+        // filter narrows it; requiring it made the page useless until something was typed.
+        boolean filtered = playerName != null && !playerName.isBlank();
+        if (filtered && !playerName.matches("[a-zA-Z0-9_]{1,16}")) {
             webPanel.sendJson(exchange, 400, "{\"error\":\"Invalid player name\"}");
             return;
         }
@@ -187,12 +196,13 @@ public class EconomyWebModule implements WebModule {
         int offset = (page - 1) * limit;
         JsonObject response = new JsonObject();
         JsonArray arr = new JsonArray();
+        String where = filtered ? " WHERE player_name = ?" : "";
 
         try (Connection conn = plugin.getDataSource().getConnection()) {
             // Get total count
             try (PreparedStatement countPs = conn.prepareStatement(
-                    "SELECT COUNT(*) FROM xcore_transactions WHERE player_name = ?")) {
-                countPs.setString(1, playerName);
+                    "SELECT COUNT(*) FROM xcore_transactions" + where)) {
+                if (filtered) countPs.setString(1, playerName);
                 try (ResultSet rs = countPs.executeQuery()) {
                     if (rs.next()) {
                         response.addProperty("total", rs.getInt(1));
@@ -202,10 +212,11 @@ public class EconomyWebModule implements WebModule {
 
             // Get transactions
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT * FROM xcore_transactions WHERE player_name = ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
-                ps.setString(1, playerName);
-                ps.setInt(2, limit);
-                ps.setInt(3, offset);
+                    "SELECT * FROM xcore_transactions" + where + " ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                int idx = 1;
+                if (filtered) ps.setString(idx++, playerName);
+                ps.setInt(idx++, limit);
+                ps.setInt(idx, offset);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         JsonObject obj = new JsonObject();
