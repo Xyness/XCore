@@ -43,7 +43,7 @@ Core framework for the X ecosystem of Minecraft plugins. Provides centralized da
 | [XBans](https://builtbybit.com/resources/xbans.102982/) | Sanctions, IP security, alt detection, AI moderation, warden |
 | [XLogin](https://builtbybit.com/resources/xlogin.103391/) | Login/register authentication, auto-premium login, sessions, player protection, proxy & Bedrock support |
 | [XAuctionHouse](https://builtbybit.com/resources/xauctionhouse.103084/) | Advanced auction house system with bid system, search, favorites, filters |
-| XAntiLag | Chunk caps, mob and item stackers, clearlag, AFK detection, a TPS/MSPT monitor and a dashboard |
+| [XAntiLag](https://builtbybit.com/resources/xantilag.105658/) | Chunk caps, mob and item stackers, clearlag, AFK detection, a TPS/MSPT monitor and a dashboard |
 
 ## Installation
 
