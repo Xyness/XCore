@@ -15,12 +15,8 @@ import java.util.regex.Pattern;
 import fr.xyness.XCore.XCore;
 
 /**
- * Keeps the rankings addons declare up to date.
- *
- * <p>Every addon ended up writing the same thing: a query ordered by one column, a cache so the
- * scoreboard does not hit the database sixty times a second, and a task to refresh it. Declaring it
- * here means one refresh task for all of them, and the values are available as placeholders without
- * any extra work.</p>
+ * Keeps the rankings addons declare up to date: one refresh task for all of them, and the values
+ * available as placeholders without extra work.
  *
  * <pre>{@code
  * core().leaderboards().define("kills")

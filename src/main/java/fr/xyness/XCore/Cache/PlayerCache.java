@@ -296,9 +296,8 @@ public class PlayerCache<P> {
     /**
      * Writes a player to L2, off the calling thread and pipelined.
      *
-     * <p>The name key holds the UUID rather than a second copy of the player. Two copies meant every
-     * write carried the whole row twice — and with two dozen addons adding columns to it, that row
-     * is not small — and left two versions that could disagree.</p>
+     * <p>The name key holds the UUID, not a second copy of the player: two copies double the write
+     * and can disagree with each other.</p>
      */
     private void putToRedis(P data) {
         if (jedisPool == null) return;
@@ -502,8 +501,8 @@ public class PlayerCache<P> {
     /**
      * Drops the local copy of a player, by UUID alone.
      *
-     * <p>What another server's "this row changed" notice ends up calling. Redis is left as it is:
-     * it holds the new value, and the next read will pick it up from there.</p>
+     * <p>Called when another server says the row changed. Redis is left alone: it holds the new
+     * value and the next read picks it up.</p>
      *
      * @param uuid The player's server UUID.
      */

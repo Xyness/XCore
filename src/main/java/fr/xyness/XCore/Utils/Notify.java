@@ -9,11 +9,8 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
 
 /**
- * Titles, action bars and boss bars, without the ceremony.
- *
- * <p>Adventure's own API is fine; what kept being copied around is the plumbing next to it — turning
- * ticks into {@link Duration}, remembering to hide a boss bar when the player leaves, running the
- * call on the player's region thread.</p>
+ * Titles, action bars and boss bars. Wraps the plumbing around Adventure's API: ticks into
+ * {@link Duration}, and hiding a bar from a player who has already left.
  */
 public final class Notify {
 

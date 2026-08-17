@@ -15,11 +15,9 @@ import fr.xyness.XCore.Lang.LangNamespace;
 import fr.xyness.XCore.Utils.SchedulerAdapter;
 
 /**
- * The paginated screen every addon has been writing by hand.
- *
- * <p>Page maths, the bottom bar at 48 / 49 / 50, the blink task and its cancellation, the item cache
- * and the sound, permission and action keys from the YAML definition are all handled here. A
- * subclass supplies the list and how to draw one entry.</p>
+ * Base class for a paginated screen: pages, the bar at 48 / 49 / 50, the blink task and its
+ * cancellation, and the sound, permission and action keys of the YAML definition. A subclass
+ * supplies the list and how to draw one entry.
  *
  * <pre>{@code
  * public class WarpGui extends PagedGui<Warp> {
@@ -36,8 +34,7 @@ import fr.xyness.XCore.Utils.SchedulerAdapter;
  * }
  * }</pre>
  *
- * <p>Clicks reach the subclass on their own: XCore listens for screens whose holder is a
- * {@code PagedGui}, so nothing has to be registered.</p>
+ * <p>XCore listens for these screens itself, so clicks arrive without registering anything.</p>
  *
  * @param <T> What one page slot shows.
  */

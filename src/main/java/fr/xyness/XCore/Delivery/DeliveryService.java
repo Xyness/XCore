@@ -20,15 +20,11 @@ import fr.xyness.XCore.Database.SqlUtils;
 import fr.xyness.XCore.Utils.Items;
 
 /**
- * A mailbox: things a player is owed but could not be handed straight away.
+ * A mailbox: things a player is owed but could not be handed straight away, because they were
+ * offline or their inventory was full.
  *
- * <p>Every addon that gives something out ends up needing this — the buyer was offline, the
- * inventory was full, the reward came from a vote that landed at three in the morning. The auction
- * house had a full implementation of it for its own use; this is the same idea available to
- * everyone, so a crate, a battle pass or a contest does not have to write it again.</p>
- *
- * <p>Deliveries are handed over on join, oldest first, and whatever does not fit stays in the
- * mailbox for next time.</p>
+ * <p>Deliveries are handed over on join, oldest first, and whatever does not fit stays for next
+ * time.</p>
  */
 public class DeliveryService {
 
@@ -205,8 +201,7 @@ public class DeliveryService {
             if (list.isEmpty()) return CompletableFuture.completedFuture(0);
 
             // Money first, off the server thread. A delivery is only closed once the deposit has
-            // actually gone through, otherwise a failed payment would be marked as delivered and
-            // the player would simply never see it.
+            // gone through, otherwise a failed payment counts as delivered and is lost.
             List<CompletableFuture<Long>> money = new ArrayList<>();
             List<Delivery> items = new ArrayList<>();
             for (Delivery delivery : list) {

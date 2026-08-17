@@ -18,15 +18,11 @@ import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Sync.SyncMessage;
 
 /**
- * Who else is up, and where each player is.
+ * Who else is up, and where each player is. Each server announces itself on a timer, and its
+ * players as they come and go.
  *
- * <p>The sync manager could carry messages between servers but had no idea which servers existed,
- * so anything needing that — a message sent to one server, a cross-server teleport, knowing whether
- * a player is online somewhere at all — had to guess. Each server announces itself on a timer here
- * and announces its players as they come and go.</p>
- *
- * <p>Everything is in memory and expires on its own: a server that stops talking disappears from the
- * list, and so do the players it was holding.</p>
+ * <p>Everything is in memory and expires on its own: a server that stops talking disappears from
+ * the list, and so do the players it was holding.</p>
  */
 public class NetworkRegistry {
 

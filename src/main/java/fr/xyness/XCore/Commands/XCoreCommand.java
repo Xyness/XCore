@@ -470,12 +470,9 @@ public class XCoreCommand {
     }
 
     /**
-     * Measures how wide each column of {@code players} really is, and says which ones are worth
-     * moving out.
-     *
-     * <p>Every addon adds its columns to this one table, and the whole row is read and written back
-     * to Redis on every change, for every addon. A column holding a serialised list is therefore
-     * paid for by everyone. The rule is written down; nothing measured it until now.</p>
+     * Measures how wide each column of {@code players} really is, and names the ones worth moving
+     * to their own table. The whole row is read and pushed to Redis on every change, by every
+     * addon, so a wide column is paid for by all of them.
      *
      * @param out The report being built.
      */

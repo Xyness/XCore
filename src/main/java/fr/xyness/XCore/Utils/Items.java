@@ -13,9 +13,8 @@ import org.bukkit.inventory.ItemStack;
 /**
  * Turning items into strings and back, and handing them to a player without losing any.
  *
- * <p>Every addon that stores an item — an auction listing, a kit, a crate reward, a delivery —
- * needs the same two methods, and every addon wrote them again. The format is Paper's own
- * {@code serializeAsBytes}, so it survives version upgrades the way the server's own data does.</p>
+ * <p>The format is Paper's own {@code serializeAsBytes}, so stored items survive a version upgrade
+ * the way the server's own data does.</p>
  */
 public final class Items {
 
@@ -79,11 +78,8 @@ public final class Items {
     }
 
     /**
-     * Gives an item to a player, dropping at their feet whatever does not fit.
-     *
-     * <p>{@code addItem} splits its leftovers by the container's stack size rather than the item's,
-     * so a plain "add and forget" quietly destroys part of a delivery when the inventory is nearly
-     * full. Must be called on the player's own thread.</p>
+     * Gives an item to a player, dropping at their feet whatever does not fit. Must run on the
+     * player's own thread.
      *
      * @param player The receiver.
      * @param item   The item to hand over.

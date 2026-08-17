@@ -10,14 +10,9 @@ import org.bukkit.Bukkit;
 /**
  * What to do with a task when the pool queue is full.
  *
- * <p>{@code CallerRunsPolicy} is the usual answer and it is right most of the time: the thread that
- * submitted the work does it instead, which slows the producer down until the pool catches up. It
- * is wrong for exactly one caller, the server thread, because "slow the producer down" there means
- * running a database query mid-tick.</p>
- *
- * <p>So: caller runs, unless the caller is a tick thread, in which case a single overflow thread
- * takes it. Rejections are counted and reported once, since a pool that saturates is a symptom
- * worth seeing rather than a thing to absorb silently.</p>
+ * <p>Caller runs, like {@code CallerRunsPolicy}, except when the caller is a tick thread: running a
+ * query there would stall the server, so a single overflow thread takes it instead. Rejections are
+ * counted and warned about once.</p>
  */
 public class RejectedTaskPolicy implements RejectedExecutionHandler {
 

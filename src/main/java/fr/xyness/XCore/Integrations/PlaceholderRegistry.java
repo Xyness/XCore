@@ -9,10 +9,6 @@ import org.bukkit.OfflinePlayer;
 /**
  * Lets an addon publish placeholders without writing an expansion class.
  *
- * <p>Every addon had the same forty lines: extend {@code PlaceholderExpansion}, return an
- * identifier, a version and an author, then a {@code switch} over the parameter. Only the switch
- * ever differed.</p>
- *
  * <pre>{@code
  * placeholders()
  *     .register("balance", (player, arg) -> format(balanceOf(player)))

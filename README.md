@@ -68,7 +68,7 @@ language system, Vault integration, web dashboard and addon loader.
 | `/xcore dashboard revoke` | Close every session you opened | `xcore.admin` |
 | `/xcore reload` | Reload the core config, language files, economy and addons | `xcore.admin` |
 | `/xcore reload <addon>` | Reload one addon | `xcore.admin` |
-| `/xcore clear-cache` | Invalidate every cache region | `xcore.admin` |
+| `/xcore clear-cache` | Empty the player cache and the head cache | `xcore.admin` |
 | `/xcore player <name>` | Player details | `xcore.admin` |
 | `/xcore profile` | Time per addon and per event handler | `xcore.admin` |
 | `/xcore profile on\|off\|reset` | Toggle sampling | `xcore.admin` |
@@ -332,7 +332,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    compileOnly 'com.github.Xyness:XCore:1.0.7'
+    compileOnly 'com.github.Xyness:XCore:1.0.9'
 }
 ```
 
@@ -736,7 +736,7 @@ cd XCore
 ./gradlew clean shadowJar
 ```
 
-Output: `build/libs/XCore-1.0.7.jar`.
+Output: `build/libs/XCore-1.0.9.jar`.
 
 ## License
 

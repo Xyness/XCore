@@ -99,13 +99,9 @@ public class XCore extends JavaPlugin {
     private final ExecutorService executor = buildPool("XCore-Work", Math.max(4, Runtime.getRuntime().availableProcessors()) * 2);
 
     /**
-     * Database pool, kept apart from the one above.
-     * <p>
-     * With a single pool, a task that waits on a query is waiting on a task queued behind itself:
-     * with enough of them, every thread is blocked on work that cannot start. Two pools make that
-     * impossible, and this one is sized after the connection pool because more threads than
+     * Database pool, kept apart from the one above so a task waiting on a query is never waiting
+     * on a task queued behind itself. Sized after the connection pool: more threads than
      * connections only means more threads waiting for one.
-     * </p>
      */
     private ExecutorService dbExecutor;
 
@@ -481,11 +477,8 @@ public class XCore extends JavaPlugin {
             logger::sendDebug, logger::sendWarning, logger::sendError
         );
 
-        // XCore's own channel. CACHE_CLEAR follows a bulk write such as /eco resetall; PLAYER_UPDATE
-        // names the players whose row has just changed, so the other servers stop serving the copy
-        // they still hold. Without the second one, a balance changed on one server stayed wrong
-        // everywhere else until the entry fell out of the cache, which for an active player never
-        // happens.
+        // XCore's own channel. CACHE_CLEAR follows a bulk write such as /eco resetall, PLAYER_UPDATE
+        // names the players whose row just changed so the other servers drop their copy.
         syncManager.registerChannel(SYNC_CHANNEL, message -> {
             switch (message.action()) {
                 case "CACHE_CLEAR" -> {
@@ -497,8 +490,8 @@ public class XCore extends JavaPlugin {
             }
         });
 
-        // Told by the write buffer which players actually reached the database, so the message goes
-        // out after the value is readable and never before it.
+        // The write buffer says which players reached the database, so the notice never goes out
+        // before the value is readable.
         playerDAO.setFlushListener(uuids -> {
             if (syncManager == null || !syncManager.isRunning()) return;
             pendingInvalidations.addAll(uuids);
@@ -656,11 +649,15 @@ public class XCore extends JavaPlugin {
         this.network = new fr.xyness.XCore.Network.NetworkRegistry(this);
         network.start();
 
-        // XCore's own placeholders. The expansion existed and nothing ever registered it, so
-        // %xcore_...% quietly resolved to nothing.
+        // Call register() on the expansion itself. Passing it to a method typed on
+        // PlaceholderExpansion makes the JVM load that class while XCore is loading, which is
+        // before PlaceholderAPI exists.
         if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
-            new fr.xyness.XCore.Integrations.PlaceholderHook()
-                    .register(new fr.xyness.XCore.Integrations.XCoreExpansion(this));
+            try {
+                new fr.xyness.XCore.Integrations.XCoreExpansion(this).register();
+            } catch (Throwable t) {
+                logger.sendWarning("Could not register the XCore placeholders : " + t.getMessage());
+            }
         }
 
         // Buffered column writes reach the database once a second; the invalidation that follows
@@ -767,10 +764,8 @@ public class XCore extends JavaPlugin {
     /**
      * Adds the settings a new version introduces, leaving everything else alone.
      *
-     * <p>The currency list is named by whoever configures it: renaming {@code dollar} to
-     * {@code euro} used to bring {@code dollar} straight back, because a key-by-key comparison
-     * cannot tell a renamed entry from a missing setting. {@link ConfigMerger} handles that, and the
-     * exchange rates are declared here as well since they are a map of user-invented keys.</p>
+     * <p>The currencies and the exchange rates are named by whoever configures them, so they are
+     * declared as protected: a renamed entry must not come back on the next start.</p>
      */
     private void updateConfigWithDefaults() {
         saveDefaultConfig();
