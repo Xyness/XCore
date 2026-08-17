@@ -1,11 +1,12 @@
 # Version
-version: 1.0.8
+version: 1.0.9
 
 # Update date
 date: 17/08/2026
 
 # Update notes
 update-notes:
+- "Fixed the plugin refusing to start when PlaceholderAPI loads after it"
 - "Fixed player data staying stale on the other servers after a change, balances included"
 - "Fixed the currency list coming back after a rename, and any other section you name yourself"
 - "Fixed teleports loading their chunk on the main thread outside Folia"

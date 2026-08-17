@@ -15,16 +15,11 @@ import java.util.function.Consumer;
 import fr.xyness.XCore.XCore;
 
 /**
- * Collects column writes and sends them to the database in one statement per player.
+ * Collects column writes and sends them to the database in one statement per player, on a timer.
  *
- * <p>A write used to be one UPDATE, one borrowed connection and one round trip, per column. An
- * addon setting five values on a player paid all of that five times, and with two dozen addons
- * writing to the same row the traffic is mostly overhead. Writes are gathered here instead and
- * flushed on a timer as {@code UPDATE players SET a = ?, b = ?, c = ? WHERE server_uuid = ?}.</p>
- *
- * <p>The caller's future completes when the row actually reaches the database, so nothing that
- * waited for a write before now waits for less. Later writes to the same column replace earlier
- * ones, which is what the caller would have got anyway.</p>
+ * <p>Without this, setting five values on a player costs five UPDATEs, five borrowed connections
+ * and five round trips. The caller's future still completes only once the row is written. Later
+ * writes to the same column replace earlier ones.</p>
  *
  * <p>Anything still buffered is written on quit and on shutdown.</p>
  */
@@ -34,13 +29,9 @@ public class PlayerWriteBuffer {
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
     /**
-     * Columns that must never wait in the buffer.
-     *
-     * <p>Balances are the case this exists for. They are also written straight to the database with
-     * arithmetic the server does itself ({@code col = col - ?}, guarded on the funds being there),
-     * and a buffered {@code SET col = ?} landing a moment later would overwrite whatever those
-     * statements did in the meantime. A purchase would go through and then be refunded by a write
-     * that was already in flight.</p>
+     * Columns that must never wait in the buffer. Balances are the case this exists for: they are
+     * also updated with arithmetic done in the database, and a buffered {@code SET col = ?} landing
+     * afterwards would undo a purchase that already went through.
      */
     private final java.util.Set<String> immediate = ConcurrentHashMap.newKeySet();
 

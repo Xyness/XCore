@@ -75,9 +75,9 @@ public class TableManager {
     /**
      * Runs several statements as one transaction, off the calling thread.
      *
-     * <p>Either everything in the body is written or none of it is. That is what a purchase needs:
-     * taking the money and handing over the item are two statements, and a crash between them
-     * leaves a player robbed. Throw from the body to roll back on purpose.</p>
+     * <p>Either everything in the body is written or none of it is, which is what a purchase needs:
+     * taking the money and handing over the item are two statements. Throw from the body to roll
+     * back on purpose.</p>
      *
      * <pre>{@code
      * db.transaction(conn -> {

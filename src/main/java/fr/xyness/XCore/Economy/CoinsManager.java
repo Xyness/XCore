@@ -648,8 +648,7 @@ public class CoinsManager {
             ? Math.min(amount, currency.getMaxBalance())
             : amount;
         double rounded = currency.round(target);
-        // Chained rather than waited on: this used to block a pool thread until another task on the
-        // same pool had finished, which under load is a pool with nothing left to run.
+        // Chained, not waited on: blocking here holds a pool thread while another pool task runs.
         return api().updatePlayerDataAsync(playerId, col(currencyId), rounded)
                 .thenRun(() -> rememberBalance(playerId, currencyId, rounded));
     }

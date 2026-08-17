@@ -20,10 +20,8 @@ import fr.xyness.XCore.XCore;
 /**
  * Sends messages to Discord webhooks, one queue for the whole installation.
  *
- * <p>Three addons had their own copy of this, none of them queued anything and none handled a 429,
- * so a busy moment meant messages silently disappearing. Everything goes through here now: posts
- * are queued, sent from a background task, and a rate-limited webhook is left alone for as long as
- * Discord asks.</p>
+ * <p>Posts are queued and sent from a background task. A webhook that answers 429 is left alone for
+ * as long as Discord asks, then its messages go out.</p>
  *
  * <pre>{@code
  * core().discord().send(url, DiscordNotifier.embed()

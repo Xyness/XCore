@@ -13,12 +13,9 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 /**
  * Answers "what rank is this player", whichever permission plugin is installed.
  *
- * <p>Three addons needed this and each found its own way there: XBans reads LuckPerms for staff
- * immunity, the auction house scans permissions for a tax rate, and rank prefixes come from Vault
- * elsewhere. The lookups are cached for a few seconds because they end up inside listeners.</p>
- *
- * <p>LuckPerms is reached by reflection, so nothing here needs it at compile time and everything
- * degrades to Vault, then to plain permission checks.</p>
+ * <p>LuckPerms is reached by reflection, so nothing here needs it at compile time; it falls back to
+ * Vault, then to plain permission checks. Group lookups are cached for a few seconds because they
+ * end up being called from listeners.</p>
  */
 public class RankResolver {
 

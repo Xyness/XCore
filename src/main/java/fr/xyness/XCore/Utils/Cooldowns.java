@@ -8,10 +8,8 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 
 /**
- * Per-player cooldowns, the version every addon kept rewriting.
- *
- * <p>Entries expire on their own, so nothing has to be cleaned up when a player leaves and a
- * forgotten name cannot keep an entry alive for the lifetime of the server.</p>
+ * Per-player cooldowns. Entries expire on their own, so nothing has to be cleaned up when a player
+ * leaves.
  *
  * <pre>{@code
  * private final Cooldowns cooldowns = new Cooldowns();

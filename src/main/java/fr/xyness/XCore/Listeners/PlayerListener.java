@@ -222,9 +222,8 @@ public class PlayerListener implements Listener {
         core.playerCache().getTempPlayerData(uuid).put(SESSION_START, System.currentTimeMillis());
         if (core.network() != null) core.network().announceJoin(player);
 
-        // A second's delay so a brand new player has their row by the time this writes to it. The
-        // write goes through the cache path, otherwise the copy in memory keeps the previous date
-        // for the whole session.
+        // A second's delay so a brand new player has their row by then. Through the cache path,
+        // otherwise the copy in memory keeps the previous date all session.
         core.schedulerAdapter().runAsyncTaskLater(() -> {
             String now = LocalDateTime.now().format(XCore.FORMATTER);
             core.api().updatePlayerDataAsync(uuid, "last_login", now);

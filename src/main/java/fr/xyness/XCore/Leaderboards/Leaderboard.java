@@ -4,11 +4,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * One ranking, kept in memory and refreshed on a timer.
- *
- * <p>Reading it never touches the database: {@link #top()} hands back the last snapshot. That is the
- * whole point — a ranking is usually read from a scoreboard or a placeholder that runs several times
- * a second, and the values move slowly.</p>
+ * One ranking, kept in memory and refreshed on a timer. {@link #top()} hands back the last
+ * snapshot without touching the database, which is what a scoreboard reading it several times a
+ * second needs.
  */
 public class Leaderboard {
 

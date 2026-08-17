@@ -18,11 +18,9 @@ import fr.xyness.XCore.API.DatabaseType;
 /**
  * Runs the schema changes an addon needs, once each, in order.
  *
- * <p>{@code CREATE TABLE IF NOT EXISTS} and {@code addColumnIfMissing} cover adding things. They do
- * not cover renaming a column, backfilling a value, splitting a table or dropping something that
- * moved elsewhere — and those have to happen exactly once, on servers that may be several versions
- * behind. Each step is numbered; the number reached is stored per addon and steps below it are
- * skipped on the next start.</p>
+ * <p>For what {@code CREATE TABLE IF NOT EXISTS} and {@code addColumnIfMissing} cannot do: renaming
+ * a column, backfilling a value, splitting a table. The version reached is stored per addon, so
+ * steps below it are skipped on the next start.</p>
  *
  * <pre>{@code
  * api().tableManager().migrator("XHomes")
@@ -31,9 +29,8 @@ import fr.xyness.XCore.API.DatabaseType;
  *     .run();
  * }</pre>
  *
- * <p>Steps run inside a transaction, so a failure leaves the database as it was and the version
- * unchanged. SQLite does not roll back DDL in all cases, which is worth keeping in mind when a step
- * both alters a table and moves data.</p>
+ * <p>Steps run in a transaction, so a failure leaves the database and the version as they were.
+ * Note that SQLite does not always roll back DDL.</p>
  */
 public class SchemaMigrator {
 

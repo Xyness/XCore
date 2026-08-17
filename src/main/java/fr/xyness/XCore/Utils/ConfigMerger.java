@@ -6,20 +6,18 @@ import java.util.List;
 import org.bukkit.configuration.file.FileConfiguration;
 
 /**
- * Adds the settings a new version introduces to a config file that is already on disk.
+ * Adds the settings a new version introduces to a config file already on disk.
  *
- * <p>Only missing keys are written, existing values are never touched. Three kinds of keys are
- * skipped, because they hold data the administrator wrote rather than settings we ship:</p>
+ * <p>Only missing keys are written, existing values are never touched. Three kinds of key are left
+ * alone because they hold what the administrator wrote rather than what we ship:</p>
  *
  * <ul>
  *   <li>anything under a path the caller declares protected;</li>
  *   <li>anything under a listing — a section whose children are all sections, like
- *       {@code economy.currencies} or {@code shops} — once that section exists on disk;</li>
+ *       {@code economy.currencies} — once that section exists on disk. Otherwise renaming the
+ *       {@code dollar} currency to {@code euro} brings {@code dollar} back on the next start;</li>
  *   <li>a list whose key was deleted, unless the section around it is new too.</li>
  * </ul>
- *
- * <p>Without the second rule, renaming the {@code dollar} currency to {@code euro} brings
- * {@code dollar} back on the next start: key by key, it just looks like a missing setting.</p>
  */
 public final class ConfigMerger {
 
