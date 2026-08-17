@@ -14,6 +14,7 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Registry;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
@@ -132,6 +133,44 @@ public class GuiUtils {
             Sound sound = Registry.SOUNDS.get(key);
             if (sound != null) player.playSound(player.getLocation(), sound, 0.5f, 1f);
         } catch (Throwable ignored) {}
+    }
+
+    // -------------------------------------------------------------------------
+    // Click handling
+    // -------------------------------------------------------------------------
+
+    /**
+     * Plays the clicked item's sound, runs its configured actions and checks its permission.
+     *
+     * <p>This is what makes the {@code sound}, {@code actions} and {@code permission} keys of a GUI
+     * definition work. Every addon carried an identical copy of it in its own listener.</p>
+     *
+     * @param player    Who clicked.
+     * @param slot      The slot they clicked.
+     * @param clickType How they clicked.
+     * @param def       The definition of the open screen, may be {@code null}.
+     * @return {@code true} when the click may go through, {@code false} when the item declares a
+     *         permission the player does not have.
+     */
+    public static boolean handleCommonFeatures(Player player, int slot, ClickType clickType, GuiDefinition def) {
+        GuiItem item = def != null ? def.itemAt(slot) : null;
+
+        if (item != null && item.getSound() != null && !item.getSound().isBlank()) {
+            playSound(player, item.getSound());
+        } else if (def != null && def.getSound() != null && !def.getSound().isBlank()) {
+            playSound(player, def.getSound());
+        }
+
+        if (item != null) {
+            for (GuiAction action : item.getActions(ClickKind.fromBukkit(clickType))) {
+                action.execute(player);
+            }
+        }
+
+        if (item != null && item.getPermission() != null && !item.getPermission().isBlank()) {
+            return player.hasPermission(item.getPermission());
+        }
+        return true;
     }
 
     // -------------------------------------------------------------------------

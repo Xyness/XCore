@@ -114,8 +114,80 @@ public class XCoreApiService implements XCoreApi {
 	}
 
 	@Override
+	public @NotNull CompletableFuture<Void> updatePlayerDataAsync(@NotNull UUID playerId, @NotNull Map<String, Object> values) {
+		if (values.isEmpty()) return CompletableFuture.completedFuture(null);
+
+		var dataOpt = main.playerCache().getPlayerSync(playerId);
+		Map<String, Object> previous = new java.util.HashMap<>();
+		dataOpt.ifPresent(data -> {
+			values.forEach((column, value) -> {
+				previous.put(column, data.getTargetData(column));
+				data.setTargetData(column, value);
+			});
+			main.playerCache().addOrUpdateToCache(data);
+		});
+
+		return main.playerDAO().updateColumnsAsync(playerId.toString(), values)
+			.exceptionally(ex -> {
+				main.logger().sendWarning("DB update failed for " + values.keySet() + ", rolling back cache : " + ex.getMessage());
+				dataOpt.ifPresent(data -> {
+					previous.forEach(data::setTargetData);
+					main.playerCache().addOrUpdateToCache(data);
+				});
+				throw ex instanceof RuntimeException re ? re : new RuntimeException(ex);
+			});
+	}
+
+	@Override
+	public long getPlaytime(@NotNull UUID playerId) {
+		return main.playerCache().getPlayerSync(playerId)
+				.map(data -> data.getTargetData("playtime", Long.class))
+				.orElse(0L);
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Database.TableManager tableManager() {
+		return main.tableManager();
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Database.QueryBuilder query(@NotNull String table) {
+		return main.tableManager().query(table);
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Delivery.DeliveryService delivery() {
+		return main.delivery();
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Leaderboards.LeaderboardService leaderboards() {
+		return main.leaderboards();
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Network.NetworkRegistry network() {
+		return main.network();
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Integrations.RankResolver ranks() {
+		return main.ranks();
+	}
+
+	@Override
+	public @NotNull fr.xyness.XCore.Integrations.DiscordNotifier discord() {
+		return main.discord();
+	}
+
+	@Override
 	public @NotNull HikariDataSource getDataSource() {
 		return main.getDataSource();
+	}
+
+	@Override
+	public @NotNull ExecutorService getDbExecutor() {
+		return main.getDbExecutor();
 	}
 
 	@Override

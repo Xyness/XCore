@@ -76,6 +76,12 @@ public class PlayerDAO extends AbstractDAO {
     private static final String DELETE =
         "DELETE FROM players WHERE server_uuid = ?";
 
+	/** Gathers column writes so a player's row is updated once rather than once per column. */
+    private final PlayerWriteBuffer writeBuffer;
+
+	/** Told which players were just written, so their caches elsewhere can be dropped. */
+    private volatile java.util.function.Consumer<java.util.List<String>> flushListener;
+
 	/**
 	 * Creates a new PlayerDAO.
 	 *
@@ -84,6 +90,10 @@ public class PlayerDAO extends AbstractDAO {
 	 */
     public PlayerDAO(XCore main, ExecutorService executor) {
         super(main, executor);
+        this.writeBuffer = new PlayerWriteBuffer(main, executor, uuids -> {
+            java.util.function.Consumer<java.util.List<String>> listener = flushListener;
+            if (listener != null) listener.accept(uuids);
+        });
         switch (main.getDatabaseType()) {
             case MYSQL -> {
                 selectByName = "SELECT * FROM players WHERE player_name = ?";
@@ -372,22 +382,87 @@ public class PlayerDAO extends AbstractDAO {
             return CompletableFuture.failedFuture(
                 new IllegalArgumentException("Unknown or invalid column: " + column));
         }
+        if (writeBuffer.isWriteThrough(safeColumn)) {
+            return writeColumnNow(serverUuid, safeColumn, value);
+        }
+        return writeBuffer.queue(serverUuid, safeColumn, value);
+    }
+
+	/**
+	 * Writes one column straight away, for the columns that cannot wait in the buffer.
+	 *
+	 * @param serverUuid The server UUID of the player.
+	 * @param column     The column name, already validated.
+	 * @param value      The new value.
+	 * @return A future that completes when the update is persisted.
+	 */
+    private CompletableFuture<Void> writeColumnNow(String serverUuid, String column, Object value) {
         return runAsync(() -> {
-            String sql = "UPDATE players SET " + safeColumn + " = ? WHERE server_uuid = ?";
+            String sql = "UPDATE players SET " + column + " = ? WHERE server_uuid = ?";
             try (Connection c = getConnection();
                  PreparedStatement ps = c.prepareStatement(sql)) {
                 ps.setObject(1, value);
                 ps.setString(2, serverUuid);
-                int rows = ps.executeUpdate();
-                if (rows == 0) {
-                    main.logger().sendDebug("[DAO] Column update affected 0 rows for " + serverUuid + "." + safeColumn + " (player may not exist yet).");
-                } else {
-                    main.logger().sendDebug("[DAO] Updated column " + safeColumn + " for player " + serverUuid + ".");
+                if (ps.executeUpdate() == 0) {
+                    main.logger().sendDebug("[DAO] Column update affected 0 rows for " + serverUuid
+                            + "." + column + " (player may not exist yet).");
                 }
             } catch (SQLException e) {
-                main.logger().sendError("[DAO] Failed to update column " + safeColumn + " for " + serverUuid + " : " + e.getMessage());
+                main.logger().sendError("[DAO] Failed to update column " + column + " for " + serverUuid + " : " + e.getMessage());
             }
         });
+    }
+
+	/**
+	 * Updates several columns of a player in one statement.
+	 *
+	 * @param serverUuid The server UUID of the player.
+	 * @param values     The column names and their new values.
+	 * @return A future that completes when the update is persisted.
+	 */
+    public CompletableFuture<Void> updateColumnsAsync(String serverUuid, Map<String, Object> values) {
+        if (values == null || values.isEmpty()) return CompletableFuture.completedFuture(null);
+        Map<String, Object> safe = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            String column = entry.getKey().toLowerCase();
+            if (!SAFE_IDENTIFIER.matcher(column).matches() || !knownExtraColumns.contains(column)) {
+                main.logger().sendError("[DAO] Rejected column update: unknown or invalid column '" + entry.getKey() + "'.");
+                return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("Unknown or invalid column: " + entry.getKey()));
+            }
+            safe.put(column, entry.getValue());
+        }
+
+        // A write-through column in the middle of the batch would be delayed with the rest, so it
+        // leaves on its own and the buffer takes what is left.
+        java.util.List<CompletableFuture<Void>> now = new java.util.ArrayList<>();
+        safe.entrySet().removeIf(entry -> {
+            if (!writeBuffer.isWriteThrough(entry.getKey())) return false;
+            now.add(writeColumnNow(serverUuid, entry.getKey(), entry.getValue()));
+            return true;
+        });
+
+        CompletableFuture<Void> buffered = safe.isEmpty()
+                ? CompletableFuture.completedFuture(null)
+                : writeBuffer.queue(serverUuid, safe);
+        if (now.isEmpty()) return buffered;
+
+        now.add(buffered);
+        return CompletableFuture.allOf(now.toArray(new CompletableFuture[0]));
+    }
+
+	/** @return The buffer holding column writes that have not reached the database yet. */
+    public PlayerWriteBuffer writeBuffer() {
+        return writeBuffer;
+    }
+
+	/**
+	 * Registers who to tell once a player's row has actually been written.
+	 *
+	 * @param listener Receives the server UUIDs of the players just updated.
+	 */
+    public void setFlushListener(java.util.function.Consumer<java.util.List<String>> listener) {
+        this.flushListener = listener;
     }
 
 	/**

@@ -21,6 +21,11 @@ language system, Vault integration, web dashboard and addon loader.
 - PlaceholderAPI, core placeholders and per-addon expansions.
 - Folia support through the SchedulerAdapter.
 - Table and query builder, identical on MySQL, PostgreSQL and SQLite.
+- Deliveries: what an addon owes a player but could not hand over is stored and given on join.
+- Leaderboards declared once, kept in memory and served as placeholders.
+- Network registry: which servers are up, how many players they hold, and where a given player is.
+- One Discord sender for the whole installation, with a queue and rate-limit handling.
+- Play time per player, counted across sessions.
 - Bedrock detection through Geyser and Floodgate.
 - Per-addon profiling with `/xcore profile`.
 - Tick-thread watchdog: with `debug: true`, database access from a tick thread is reported once per
@@ -133,6 +138,7 @@ cross-server:
     password: ""
     database: 0
     ttl: 3600            # seconds, for cached player data
+  heartbeat-seconds: 10  # how often a server announces itself to the others
   sync:
     poll-interval-seconds: 3
     retention-seconds: 300
@@ -155,6 +161,18 @@ web-dashboard:
   metrics-public: true
   cors-origin: "*"
   public-url: ""           # when a proxy or a domain sits in front
+
+# What an addon owes a player but could not hand over. Given on their next join.
+delivery:
+  on-join: true
+  per-join-limit: 20
+
+# The name and picture Discord messages are posted under, when the addon does not set its own.
+# Webhook addresses stay in each addon's own config.
+integrations:
+  discord:
+    username: "XCore"
+    avatar-url: ""
 
 # Without Vault the economy still runs, it is just not published to other plugins.
 economy:
@@ -183,7 +201,9 @@ economy:
     currency: "dollar"
 ```
 
-A new key under `currencies` adds a currency; its balance column is created automatically.
+A new key under `currencies` adds a currency; its balance column is created automatically. Renaming
+or removing one is respected: XCore never writes an entry back into a section whose names you chose
+yourself.
 
 ## Languages
 
@@ -216,6 +236,12 @@ overlap. New keys are appended at startup, existing values are never overwritten
 Pruning copies the file to `<name>.pre-prune.bak` and logs every key dropped. Protected sections
 (world names, material maps, shop entries) are never added to and never pruned. YAML lists count as
 values.
+
+Two more things are left alone on their own, without having to be declared. A section whose children
+are all sections is a list of named entries, not a group of settings: once `economy.currencies`,
+`shops` or `kits` exists on disk, nothing under it is written back, so renaming an entry does not
+bring the old one back on the next start. And a list whose key was deleted stays deleted, unless the
+whole section around it is new.
 
 ## Web API
 
@@ -274,10 +300,28 @@ language of the player whose link is in use.
 | `%xcore_uuid%` | Server UUID |
 | `%xcore_last_login%` | Last login |
 | `%xcore_last_logout%` | Last logout |
+| `%xcore_playtime%` | Time connected, all sessions, formatted |
+| `%xcore_playtime_seconds%` | The same as a number |
+| `%xcore_server%` | This server's name |
+| `%xcore_network_online%` | Players connected across the network |
+| `%xcore_servers%` | Servers currently up |
+| `%xcore_top_<board>_<rank>_name%` | A leaderboard entry, also `_value`, `_raw` and `_uuid` |
 | `%xcore_balance%` | Formatted Vault balance |
 | `%xcore_balance_raw%` | Unformatted |
 | `%xcore_balance_<id>%` | Formatted balance for one currency |
 | `%xcore_balance_<id>_raw%` | Unformatted |
+
+An addon publishes its own without writing an expansion class:
+
+```java
+placeholders()
+    .register("kits", (player, arg) -> String.valueOf(available(player)))
+    .register("cooldown", (player, arg) -> Formats.duration(remaining(player, arg)));
+placeholders().publish();
+```
+
+The identifier is the addon name in lower case, so those become `%mykits_kits%` and
+`%mykits_cooldown_starter%`.
 
 ## Writing an addon
 
@@ -342,10 +386,18 @@ public class MyAddon extends XAddon {
 | `logger()` | Logger scoped to the addon |
 | `lang()` | The addon's language namespace |
 | `guiRegistry()` | GUI definitions loaded from YAML |
+| `guiUtils()` | Item building, sounds, heads, click handling |
+| `delivery()` | Give an item or money to someone offline, handed over on their next join |
+| `leaderboards()` | Declare a ranking once, read it from memory |
+| `network()` | Which servers are up, and where a player is |
+| `ranks()` | Primary group and numbered permission levels, LuckPerms or Vault |
+| `discord()` | The shared webhook sender |
+| `cooldowns()` | Per-player cooldowns for this addon |
+| `placeholders()` | Publish placeholders without writing an expansion |
 | `getConfig()` | The addon's config.yml |
 | `getDataFolder()` | `plugins/XCore/addons/<name>/` |
 | `saveDefaultConfig()` | Write the bundled `config.yml` if missing, without merging |
-| `updateConfigWithDefaults(String... protectedSections)` | Defaults on the first run, new top-level keys later. Listed paths are skipped |
+| `updateConfigWithDefaults(String... protectedSections)` | Defaults on the first run, new keys later. Listed paths are skipped, and so is anything the administrator names themselves |
 | `loadLanguage(String... available)` | Extract the bundled translations and load the chosen one |
 | `initUpdater()` / `updater()` | Update checker, reading `update-url` from `addon.yml` |
 
@@ -354,11 +406,18 @@ public class MyAddon extends XAddon {
 | Class | Purpose |
 |-------|---------|
 | `fr.xyness.XCore.Utils.WorldConfig` | Per-world overrides (`worlds.<name>.<key>`), resolved once at load |
-| `fr.xyness.XCore.Utils.Formats` | Durations, thousands separators, compact numbers, byte sizes |
+| `fr.xyness.XCore.Utils.Formats` | Durations both ways, thousands separators, compact numbers, byte sizes |
+| `fr.xyness.XCore.Utils.Items` | Items to base64 and back, giving without losing the overflow, counting, taking |
+| `fr.xyness.XCore.Utils.Cooldowns` | Per-player cooldowns that expire on their own |
+| `fr.xyness.XCore.Utils.Notify` | Titles, action bars and boss bars |
+| `fr.xyness.XCore.Utils.ConfigMerger` | Adds new settings to a config without resurrecting what was removed |
 | `fr.xyness.XCore.Gui.BlinkCache` | Holds both faces of a blinking item |
+| `fr.xyness.XCore.Gui.PagedGui` | Base class for a paginated screen: pages, bar, blink, clicks |
+| `fr.xyness.XCore.Commands.CommandHelpers` | Suggestions, offline target resolution, the `-s` flag |
 | `fr.xyness.XCore.Utils.Profiler` | Per-addon timings behind `/xcore profile` |
 | `fr.xyness.XCore.Database.GuardedDataSource` | With `debug: true`, names any query made from a tick thread |
 | `guiUtils().blinkBarItem(blink, lang, itemDef, on, viewer, ...)` | Renders a bar item and caches both faces |
+| `GuiUtils.handleCommonFeatures(player, slot, click, def)` | Sound, actions and permission of the clicked item |
 
 ### Player columns
 
@@ -387,6 +446,85 @@ api().query("table").where("a", 1).or().where("b", 2).executeAsync();
 
 `setRelative` does the arithmetic in the database (`col = COALESCE(col, 0) + ?`), so two servers
 cannot both read the old value and write back a total that loses the other's change.
+
+`executeUpdateAsync()` returns the number of rows affected, which is what makes a conditional write
+usable: `UPDATE ... WHERE stock > 0` touching one row is a sale, touching none is "out of stock".
+
+```java
+// Write the row, or update it if it is already there. The key columns need a unique index.
+api().query("homes").insert()
+    .set("player_uuid", uuid).set("name", name).set("world", world)
+    .upsert("player_uuid", "name")
+    .executeUpdateAsync();
+
+// Several statements, all or nothing.
+api().tableManager().transaction(conn -> {
+    ...
+    return true;
+});
+
+// Schema changes that must run once, in order, on servers several versions behind.
+api().tableManager().migrator("MyAddon")
+    .version(1, conn -> { ... })
+    .version(2, conn -> { ... })
+    .run();
+```
+
+### Deliveries
+
+What an addon owes a player but cannot hand over right away: the inventory was full, or the player
+was offline. Stored, then given on their next join.
+
+```java
+delivery().sendItem(uuid, item, "Auction sale", "XAuctionHouse");
+delivery().sendMoney(uuid, "dollar", 250.0, "Vote reward", "XVote");
+delivery().countPending(uuid).thenAccept(count -> ...);
+```
+
+Money always goes through. An item is only marked as taken once it is really in the inventory, so a
+full inventory postpones it instead of losing it.
+
+### Leaderboards
+
+Declared once, refreshed on a timer, read from memory.
+
+```java
+leaderboards().define("kills")
+    .table("xtools_warzone").value("kills")
+    .size(10).refreshEvery(300)
+    .register();
+```
+
+That publishes `%xcore_top_kills_1_name%` and `%xcore_top_kills_1_value%`, and
+`leaderboards().get("kills").top(10)` returns the snapshot without touching the database.
+
+### Network
+
+Every server announces itself on the sync channel, so an addon can know what the network looks like.
+
+```java
+network().servers();                  // name, players, TPS, version
+network().locate(uuid);               // which server holds this player
+network().totalOnline();              // across the network
+network().send("lobby", "mychannel", new SyncMessage("KICK", uuid.toString()));
+```
+
+### Discord
+
+One queue for the whole installation: retries, and a webhook that answers 429 is left alone for as
+long as Discord asks. Each addon keeps its own webhook address in its own config.
+
+```java
+discord().send(url, DiscordNotifier.embed()
+        .title("Ban")
+        .description(player + " was banned by " + staff)
+        .color(0xC0362C)
+        .field("Reason", reason, false)
+        .timestamp()
+        .build());
+```
+
+`discord().sendRaw(url, json)` takes a payload an addon has already assembled.
 
 ### Dashboard pages
 
@@ -538,34 +676,37 @@ holds. `updateGuiItem` clones it.
 ```java
 import fr.xyness.XCore.Gui.*;
 
-// Sound, actions and permission in one call
-private boolean handleCommonFeatures(Player player, int slot, ClickType click, GuiDefinition def) {
-    GuiItem guiItem = def != null ? def.itemAt(slot) : null;
-
-    if (guiItem != null && guiItem.getSound() != null && !guiItem.getSound().isBlank()) {
-        GuiUtils.playSound(player, guiItem.getSound());
-    } else if (def != null && def.getSound() != null && !def.getSound().isBlank()) {
-        GuiUtils.playSound(player, def.getSound());
-    }
-
-    if (guiItem != null) {
-        ClickKind clickKind = ClickKind.fromBukkit(click);
-        for (GuiAction action : guiItem.getActions(clickKind)) {
-            action.execute(player);
-        }
-    }
-
-    if (guiItem != null && guiItem.getPermission() != null && !guiItem.getPermission().isBlank()) {
-        return player.hasPermission(guiItem.getPermission());
-    }
-    return true;
-}
-
 @EventHandler
 public void onInventoryClick(InventoryClickEvent event) {
     GuiDefinition def = addon.guiRegistry().get("my_gui");
-    if (!handleCommonFeatures(player, event.getSlot(), event.getClick(), def)) return;
+    // Sound, configured actions and permission of the clicked item, in one call
+    if (!GuiUtils.handleCommonFeatures(player, event.getSlot(), event.getClick(), def)) return;
     // then the button's own logic
+}
+```
+
+#### A paginated screen
+
+`PagedGui` covers what a list screen always needs: page maths, the bar at 48 / 49 / 50, the blink
+task and its cancellation, and the click routing. XCore listens for these screens itself, so nothing
+has to be registered.
+
+```java
+public class WarpGui extends PagedGui<Warp> {
+
+    public WarpGui(MyAddon addon) {
+        super(addon.scheduler(), addon.guiUtils(), addon.lang(), addon.guiRegistry().get("warps"));
+    }
+
+    @Override protected List<Warp> items(Player viewer) { return manager.warps(); }
+
+    @Override protected ItemStack render(Warp warp, Player viewer, boolean blinkOn) {
+        return guiUtils().createItemFromDef(itemDef, title(warp), lang().getLore(lore(warp)), viewer);
+    }
+
+    @Override protected void onItemClick(Warp warp, Player viewer, ClickType click) {
+        manager.teleport(viewer, warp);
+    }
 }
 ```
 

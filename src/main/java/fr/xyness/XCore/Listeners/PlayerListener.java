@@ -10,8 +10,6 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.entity.Player;
-import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent.Result;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -19,7 +17,6 @@ import org.bukkit.event.player.PlayerQuitEvent;
 
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Events.PlayerDataLoadEvent;
-import fr.xyness.XCore.Gui.GuiClickHandler;
 import fr.xyness.XCore.Models.PlayerData;
 
 /**
@@ -208,66 +205,86 @@ public class PlayerListener implements Listener {
         });
     }
 
+    /** Where the start of the session is kept, on the player's temporary data. */
+    private static final String SESSION_START = XCore.SESSION_START_KEY;
+
     /**
-     * Handles player join to update last_login timestamp.
+     * Records the login, starts counting play time, announces the arrival to the network and hands
+     * over anything the player was owed.
      *
      * @param event The player join event.
      */
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
-        // Delay 20 ticks (1 second) to ensure DB row exists for new players
+        Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+
+        core.playerCache().getTempPlayerData(uuid).put(SESSION_START, System.currentTimeMillis());
+        if (core.network() != null) core.network().announceJoin(player);
+
+        // A second's delay so a brand new player has their row by the time this writes to it. The
+        // write goes through the cache path, otherwise the copy in memory keeps the previous date
+        // for the whole session.
         core.schedulerAdapter().runAsyncTaskLater(() -> {
             String now = LocalDateTime.now().format(XCore.FORMATTER);
-            core.playerDAO().updateColumnAsync(event.getPlayer().getUniqueId().toString(), "last_login", now);
+            core.api().updatePlayerDataAsync(uuid, "last_login", now);
+            if (core.delivery() != null) core.delivery().claimOnJoin(player);
         }, 20L);
     }
 
     /**
-     * Handles the player quit event to clean up temporary session data.
-     * Updates last_logout and removes temporary data from cache.
+     * Records the logout, adds the session to the total play time and cleans up.
      *
      * @param event The player quit event.
      */
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
+        Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+
         String now = LocalDateTime.now().format(XCore.FORMATTER);
-        core.playerDAO().updateColumnAsync(event.getPlayer().getUniqueId().toString(), "last_logout", now);
-        core.playerCache().removePlayerTempDataFromCache(event.getPlayer().getUniqueId());
-        // A player who disconnects with a GuiManager screen open never fires InventoryCloseEvent
-        // on every platform, and the blink task outlives them if nobody says so.
-        core.getGuiManager().close(event.getPlayer(), core.schedulerAdapter());
+        core.api().updatePlayerDataAsync(uuid, "last_logout", now);
+
+        addPlaytime(uuid);
+
+        if (core.network() != null) core.network().announceQuit(player);
+        core.playerCache().removePlayerTempDataFromCache(uuid);
+
+        // Anything this player still had buffered goes out now rather than waiting for the timer:
+        // they may reconnect on another server within the second.
+        core.playerDAO().writeBuffer().flushPlayer(uuid.toString());
     }
 
     /**
-     * Sends a click in a {@link fr.xyness.XCore.Gui.GuiManager} screen to the handler registered for
-     * its holder.
+     * Adds the session that just ended to the player's total.
      *
-     * <p>Without this, {@code GuiManager.registerHandler} accepted a handler and never called it —
-     * an API that silently does nothing, which is worse than one that is missing.</p>
+     * <p>The addition is done by the database rather than in Java, so two servers closing a session
+     * for the same account cannot each write a total computed from the same starting point.</p>
      *
-     * @param event The click.
+     * @param uuid The player who just left.
      */
-    @EventHandler
-    public void onInventoryClick(InventoryClickEvent event) {
-        if (!(event.getWhoClicked() instanceof Player player)) return;
-        var holder = event.getInventory().getHolder();
-        if (holder == null) return;
-        GuiClickHandler handler = core.getGuiManager().getHandler(holder.getClass());
-        if (handler == null) return;
-        core.getGuiManager().getSession(player).ifPresent(session -> handler.handle(event, player, session));
-    }
+    private void addPlaytime(UUID uuid) {
+        Object start = core.playerCache().getTempPlayerData(uuid).get(SESSION_START);
+        if (!(start instanceof Long since)) return;
 
-    /**
-     * Ends a {@link fr.xyness.XCore.Gui.GuiManager} session when its screen is closed.
-     *
-     * <p>The session held a running blink task. Nothing stopped it, so every screen opened through
-     * the manager left one behind, for as long as the server ran.</p>
-     *
-     * @param event The close.
-     */
-    @EventHandler
-    public void onInventoryClose(InventoryCloseEvent event) {
-        if (!(event.getPlayer() instanceof Player player)) return;
-        core.getGuiManager().close(player, core.schedulerAdapter());
+        long seconds = (System.currentTimeMillis() - since) / 1000L;
+        if (seconds <= 0) return;
+
+        core.tableManager().query("players")
+                .update()
+                .setRelative("playtime", seconds)
+                .where("server_uuid", uuid.toString())
+                .executeUpdateAsync()
+                .exceptionally(error -> {
+                    core.logger().sendDebug("Could not add play time for " + uuid + " : " + error.getMessage());
+                    return 0;
+                });
+
+        // Keep the cached copy in step with what the database now holds.
+        core.playerCache().getPlayerSync(uuid).ifPresent(data -> {
+            Long current = data.getTargetData("playtime", Long.class);
+            data.setTargetData("playtime", (current == null ? 0L : current) + seconds);
+            core.playerCache().addOrUpdateToCache(data);
+        });
     }
 }

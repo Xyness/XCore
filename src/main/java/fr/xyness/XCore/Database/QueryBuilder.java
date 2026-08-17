@@ -79,6 +79,9 @@ public class QueryBuilder {
     private int limitValue = -1;
     private int offsetValue = -1;
 
+    /** The conflict columns of an upsert, or {@code null} for a plain insert. */
+    private String[] upsertKeys;
+
     /** Whether the next {@code where} is joined with OR instead of AND. */
     private boolean nextIsOr = false;
 
@@ -250,6 +253,35 @@ public class QueryBuilder {
     }
 
     /**
+     * Turns this insert into an upsert: write the row, or update it if it is already there.
+     * Replaces the usual select-then-insert-or-update, which costs three round trips and races
+     * between the read and the write.
+     *
+     * <pre>{@code
+     * query.insert()
+     *      .set("player_uuid", uuid).set("home", name).set("world", world)
+     *      .upsert("player_uuid", "home")
+     *      .executeUpdateAsync();
+     * }</pre>
+     *
+     * <p>The key columns need a unique constraint on every engine, see {@code TableBuilder#unique()}.
+     * They are left untouched on a conflict; the other columns take the values passed to
+     * {@link #set(String, Object)}.</p>
+     *
+     * @param keyColumns The columns that identify the row.
+     * @return This builder.
+     */
+    public QueryBuilder upsert(String... keyColumns) {
+        if (keyColumns == null || keyColumns.length == 0) {
+            throw new IllegalArgumentException("upsert() needs at least one key column.");
+        }
+        for (String col : keyColumns) validateName(col);
+        this.queryType = QueryType.INSERT;
+        this.upsertKeys = keyColumns;
+        return this;
+    }
+
+    /**
      * Adds a relative SET clause: {@code column = COALESCE(column, 0) + delta}.
      *
      * <p>The arithmetic happens inside the database, so two servers applying a delta to the same row
@@ -312,6 +344,7 @@ public class QueryBuilder {
             values.append("?");
         }
         sb.append(") VALUES (").append(values).append(")");
+        appendConflictClause(sb);
         String sql = sb.toString();
         List<List<Object>> rows = new ArrayList<>(batchRows);
 
@@ -402,17 +435,21 @@ public class QueryBuilder {
     }
 
     /**
-     * Executes an INSERT, UPDATE, or DELETE query asynchronously.
+     * Executes an INSERT, UPDATE or DELETE asynchronously.
      *
-     * @return A future that completes when the operation finishes.
+     * <p>The row count matters for conditional updates: {@code SET stock = stock - 1 WHERE stock > 0}
+     * touching one row is a sale, touching none is "out of stock". Returning {@code Void} here is
+     * what pushed addons back to raw JDBC for those.</p>
+     *
+     * @return A future completing with the number of rows affected.
      */
-    public CompletableFuture<Void> executeUpdateAsync() {
-        return CompletableFuture.runAsync(() -> {
+    public CompletableFuture<Integer> executeUpdateAsync() {
+        return CompletableFuture.supplyAsync(() -> {
             SqlAndParams sp = buildSql();
             try (Connection c = dataSource.getConnection();
                  PreparedStatement ps = c.prepareStatement(sp.sql)) {
                 bindParams(ps, sp.params);
-                ps.executeUpdate();
+                return ps.executeUpdate();
             } catch (SQLException e) {
                 throw new RuntimeException("Update execution failed : " + e.getMessage(), e);
             }
@@ -490,6 +527,7 @@ public class QueryBuilder {
                     params.add(setClauses.get(i).value);
                 }
                 sb.append(") VALUES (").append(values).append(")");
+                appendConflictClause(sb);
             }
             case UPDATE -> {
                 if (setClauses.isEmpty()) {
@@ -544,6 +582,50 @@ public class QueryBuilder {
             }
             sb.append(w.column).append(" ").append(w.operator).append(" ?");
             params.add(w.value);
+        }
+    }
+
+    /**
+     * Appends the conflict clause of an upsert, in the spelling the engine understands.
+     * Does nothing for a plain insert.
+     */
+    private void appendConflictClause(StringBuilder sb) {
+        if (upsertKeys == null) return;
+
+        List<String> updated = new ArrayList<>();
+        for (SetClause clause : setClauses) {
+            boolean isKey = false;
+            for (String key : upsertKeys) {
+                if (key.equalsIgnoreCase(clause.column)) { isKey = true; break; }
+            }
+            if (!isKey) updated.add(clause.column);
+        }
+
+        if (databaseType == DatabaseType.MYSQL) {
+            if (updated.isEmpty()) {
+                // Nothing to change, but the statement still has to swallow the duplicate rather
+                // than fail. Assigning a key column to itself is the usual way to say that.
+                sb.append(" ON DUPLICATE KEY UPDATE ").append(upsertKeys[0])
+                  .append(" = ").append(upsertKeys[0]);
+                return;
+            }
+            sb.append(" ON DUPLICATE KEY UPDATE ");
+            for (int i = 0; i < updated.size(); i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(updated.get(i)).append(" = VALUES(").append(updated.get(i)).append(")");
+            }
+            return;
+        }
+
+        sb.append(" ON CONFLICT (").append(String.join(", ", upsertKeys)).append(")");
+        if (updated.isEmpty()) {
+            sb.append(" DO NOTHING");
+            return;
+        }
+        sb.append(" DO UPDATE SET ");
+        for (int i = 0; i < updated.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(updated.get(i)).append(" = excluded.").append(updated.get(i));
         }
     }
 

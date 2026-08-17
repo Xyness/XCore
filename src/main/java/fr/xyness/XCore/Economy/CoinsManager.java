@@ -229,7 +229,7 @@ public class CoinsManager {
             } catch (SQLException e) {
                 logger().sendWarning("Failed to create transactions table: " + e.getMessage());
             }
-        }, plugin.getExecutor());
+        }, plugin.getDbExecutor());
     }
 
     /**
@@ -306,7 +306,7 @@ public class CoinsManager {
             } catch (SQLException e) {
                 logger().sendWarning("Failed to log " + batch.size() + " transaction(s): " + e.getMessage());
             }
-        }, plugin.getExecutor());
+        }, plugin.getDbExecutor());
     }
 
     /**
@@ -393,7 +393,7 @@ public class CoinsManager {
             }
             results.forEach((id, value) -> refreshCachedBalance(id, currencyId, value));
             return results;
-        }, plugin.getExecutor());
+        }, plugin.getDbExecutor());
     }
 
     /**
@@ -447,7 +447,7 @@ public class CoinsManager {
                 logger().sendWarning("Failed to count transactions: " + e.getMessage());
             }
             return 0;
-        }, plugin.getExecutor());
+        }, plugin.getDbExecutor());
     }
 
     /**
@@ -491,7 +491,7 @@ public class CoinsManager {
                 logger().sendWarning("Failed to fetch transactions: " + e.getMessage());
             }
             return records;
-        }, plugin.getExecutor());
+        }, plugin.getDbExecutor());
     }
 
     // ****************************
@@ -648,12 +648,10 @@ public class CoinsManager {
             ? Math.min(amount, currency.getMaxBalance())
             : amount;
         double rounded = currency.round(target);
-        return CompletableFuture.runAsync(() -> {
-            synchronized (lockFor(playerId)) {
-                api().updatePlayerDataAsync(playerId, col(currencyId), rounded).join();
-                rememberBalance(playerId, currencyId, rounded);
-            }
-        }, plugin.getExecutor());
+        // Chained rather than waited on: this used to block a pool thread until another task on the
+        // same pool had finished, which under load is a pool with nothing left to run.
+        return api().updatePlayerDataAsync(playerId, col(currencyId), rounded)
+                .thenRun(() -> rememberBalance(playerId, currencyId, rounded));
     }
 
     /** The stripe guarding every balance mutation for this player. */
@@ -767,7 +765,7 @@ public class CoinsManager {
                 }
                 return normalised;
             }
-        }, plugin.getExecutor());
+        }, plugin.getDbExecutor());
     }
 
     /**
@@ -932,7 +930,7 @@ public class CoinsManager {
                 logger().sendError("Failed to reset all balances: " + e.getMessage());
                 return -1;
             }
-        }, plugin.getExecutor()).thenApply(rows -> {
+        }, plugin.getDbExecutor()).thenApply(rows -> {
             if (rows >= 0) invalidateAllPlayerCaches();
             return rows;
         });

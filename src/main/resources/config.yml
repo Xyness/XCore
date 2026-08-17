@@ -59,6 +59,10 @@ cross-server:
     # TTL in seconds for cached player data
     ttl: 3600
 
+  # How often each server announces itself to the others. That is what feeds the server list,
+  # "which server is this player on", and messages addressed to one server in particular.
+  heartbeat-seconds: 10
+
   # Sync settings
   sync:
     # Poll interval in seconds (fallback if Redis unavailable)
@@ -98,6 +102,22 @@ web-dashboard:
   # Address /xcore dashboard links to. Leave empty to build it from the server address and the
   # port above; set it when a reverse proxy or a domain sits in front (e.g. https://panel.example.com)
   public-url: ""
+
+# Deliveries: what an addon owes a player but could not hand over — a reward when the inventory was
+# full, a payment for somebody offline. Any addon can use it; nothing is ever lost in the meantime.
+delivery:
+  # Hand everything over when the player joins.
+  on-join: true
+  # How many to hand over per join, so a long backlog does not slow a login down.
+  per-join-limit: 20
+
+# Shared integrations
+integrations:
+  discord:
+    # The name and picture messages are posted under, when the addon does not set its own.
+    # Each addon keeps its own webhook address in its own config; only the identity is shared.
+    username: "XCore"
+    avatar-url: ""
 
 # Economy system (built-in, requires Vault)
 # Automatically enabled if Vault is installed, disabled otherwise.

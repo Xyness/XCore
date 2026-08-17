@@ -369,11 +369,30 @@ public class XCoreCommand {
         out.append("  L1 players   : ").append(cache.getL1Size()).append(" entries, ")
            .append(String.format(java.util.Locale.US, "%.1f", cache.getL1HitRate() * 100)).append("% hit rate\n");
         out.append("  DB reads     : ").append(cache.getDbReads()).append('\n');
+        out.append("  Buffered     : ").append(core.playerDAO().writeBuffer().getColumnsWritten())
+           .append(" column writes in ").append(core.playerDAO().writeBuffer().getStatementCount())
+           .append(" statements, ").append(core.playerDAO().writeBuffer().pendingPlayers())
+           .append(" player(s) waiting\n");
+        out.append("  Rejections   : ").append(fr.xyness.XCore.Utils.RejectedTaskPolicy.getRejectionCount())
+           .append(" (").append(fr.xyness.XCore.Utils.RejectedTaskPolicy.getTickRescueCount())
+           .append(" kept off a tick thread)\n");
         out.append("  Mojang API   : ").append(cache.getApiCalls()).append(" calls, ")
            .append(cache.getApiFailures()).append(" failures, ")
            .append(cache.getApiRateLimits()).append(" rate limits\n");
         out.append("  Breaker      : ").append(cache.getCircuitBreaker().getState()).append('\n');
         out.append('\n');
+
+        if (core.network() != null) {
+            out.append("[Network]\n");
+            for (fr.xyness.XCore.Network.ServerInfo info : core.network().servers()) {
+                out.append("  ").append(String.format("%-18s", info.name()))
+                   .append(info.online()).append('/').append(info.maximum()).append(" players, ")
+                   .append(String.format(java.util.Locale.US, "%.1f", info.tps())).append(" TPS")
+                   .append(info.local() ? "  (this server)" : "")
+                   .append('\n');
+            }
+            out.append('\n');
+        }
 
         out.append("[Addons]\n");
         Map<String, XAddon> addons = am.getAddons();
@@ -413,31 +432,97 @@ public class XCoreCommand {
 
         java.io.File file = new java.io.File(core.getDataFolder(),
                 "diagnostic-" + stamp.replace(':', '-').replace(' ', '_') + ".txt");
-        try {
-            java.nio.file.Files.writeString(file.toPath(), out.toString(), java.nio.charset.StandardCharsets.UTF_8);
-        } catch (java.io.IOException e) {
-            send(sender, "diag-failed", "error", e.getMessage());
+
+        // The rest reads the database, so it happens off the server thread — a support report is
+        // not worth a stall, and the guarded pool would rightly complain about it.
+        core.schedulerAdapter().runAsyncTask(() -> {
+            out.append("\n[Players table]\n");
+            appendColumnWidths(out);
+
+            try {
+                java.nio.file.Files.writeString(file.toPath(), out.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            } catch (java.io.IOException e) {
+                core.schedulerAdapter().runGlobalTask(() -> send(sender, "diag-failed", "error", e.getMessage()));
+                return;
+            }
+
+            core.schedulerAdapter().runGlobalTask(() -> {
+                send(sender, "bar");
+                send(sender, "diag-header");
+                send(sender, "blank");
+                send(sender, "diag-platform",
+                    "version", core.getPluginMeta().getVersion(),
+                    "software", Bukkit.getVersion(),
+                    "java", Runtime.version().toString());
+                send(sender, "diag-storage",
+                    "type", core.getDatabaseType().name(),
+                    "queries", number(fr.xyness.XCore.Database.GuardedDataSource.getBorrowCount()),
+                    "blocking", number(fr.xyness.XCore.Database.GuardedDataSource.getTickThreadBorrowCount()));
+                send(sender, "diag-addons",
+                    "count", String.valueOf(addons.size()),
+                    "enabled", String.valueOf(addons.keySet().stream()
+                            .filter(n -> am.getState(n) == AddonState.ENABLED).count()));
+                send(sender, "blank");
+                send(sender, "diag-written", "file", file.getName());
+                send(sender, "bar");
+            });
+        });
+    }
+
+    /**
+     * Measures how wide each column of {@code players} really is, and says which ones are worth
+     * moving out.
+     *
+     * <p>Every addon adds its columns to this one table, and the whole row is read and written back
+     * to Redis on every change, for every addon. A column holding a serialised list is therefore
+     * paid for by everyone. The rule is written down; nothing measured it until now.</p>
+     *
+     * @param out The report being built.
+     */
+    private void appendColumnWidths(StringBuilder out) {
+        java.util.Map<String, long[]> widths = new java.util.LinkedHashMap<>();
+        int rows = 0;
+
+        try (java.sql.Connection conn = core.getDataSource().getConnection();
+             java.sql.PreparedStatement ps = conn.prepareStatement("SELECT * FROM players LIMIT 500");
+             java.sql.ResultSet rs = ps.executeQuery()) {
+            java.sql.ResultSetMetaData meta = rs.getMetaData();
+            int count = meta.getColumnCount();
+            while (rs.next()) {
+                rows++;
+                for (int i = 1; i <= count; i++) {
+                    Object value = rs.getObject(i);
+                    int length = value == null ? 0 : String.valueOf(value).length();
+                    long[] entry = widths.computeIfAbsent(meta.getColumnName(i), k -> new long[2]);
+                    entry[0] += length;
+                    entry[1] = Math.max(entry[1], length);
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            out.append("  (could not be measured : ").append(e.getMessage()).append(")\n");
             return;
         }
 
-        send(sender, "bar");
-        send(sender, "diag-header");
-        send(sender, "blank");
-        send(sender, "diag-platform",
-            "version", core.getPluginMeta().getVersion(),
-            "software", Bukkit.getVersion(),
-            "java", Runtime.version().toString());
-        send(sender, "diag-storage",
-            "type", core.getDatabaseType().name(),
-            "queries", number(fr.xyness.XCore.Database.GuardedDataSource.getBorrowCount()),
-            "blocking", number(fr.xyness.XCore.Database.GuardedDataSource.getTickThreadBorrowCount()));
-        send(sender, "diag-addons",
-            "count", String.valueOf(addons.size()),
-            "enabled", String.valueOf(addons.keySet().stream()
-                    .filter(n -> am.getState(n) == AddonState.ENABLED).count()));
-        send(sender, "blank");
-        send(sender, "diag-written", "file", file.getName());
-        send(sender, "bar");
+        if (rows == 0) {
+            out.append("  (no rows yet)\n");
+            return;
+        }
+
+        out.append("  ").append(widths.size()).append(" columns, measured over ").append(rows).append(" row(s)\n");
+        long total = 0;
+        java.util.List<String> heavy = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, long[]> entry : widths.entrySet()) {
+            long average = entry.getValue()[0] / rows;
+            total += average;
+            out.append("  ").append(String.format("%-28s", entry.getKey()))
+               .append(String.format("%5d avg  %6d max%n", average, entry.getValue()[1]));
+            if (average > 128) heavy.add(entry.getKey());
+        }
+        out.append("  ").append(String.format("%-28s", "row total")).append(String.format("%5d avg%n", total));
+        if (!heavy.isEmpty()) {
+            out.append("  Wide columns, worth moving to their own table : ")
+               .append(String.join(", ", heavy)).append('\n');
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -652,7 +737,7 @@ public class XCoreCommand {
 
     private void handleClearCache(CommandSender sender) {
         core.playerCache().clearAll();
-        core.getCacheManager().shutdown();
+        fr.xyness.XCore.Gui.GuiUtils.clearHeadCache();
         send(sender, "clear-cache-success");
     }
 

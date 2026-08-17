@@ -251,7 +251,7 @@ public class PlayerCache<P> {
                 .buildAsync(new AsyncCacheLoader<String, Optional<P>>() {
                     @Override
                     public CompletableFuture<? extends Optional<P>> asyncLoad(String key, Executor exec) {
-                        Optional<P> fromRedis = getPlayerFromRedis(REDIS_PREFIX_NAME + key.toLowerCase());
+                        Optional<P> fromRedis = getPlayerByNameFromRedis(key);
                         if (fromRedis != null) return CompletableFuture.completedFuture(fromRedis);
                         dbReads.increment();
                         return findByNameAsync.apply(key).thenApply(opt -> {
@@ -294,26 +294,48 @@ public class PlayerCache<P> {
     }
 
     /**
-     * Writes a player to L2 under both its keys.
+     * Writes a player to L2, off the calling thread and pipelined.
      *
-     * <p>Off the calling thread and pipelined. This is reached from
-     * {@code updatePlayerDataAsync}, which addons call from ordinary events — so the two round trips
-     * it used to perform inline were two blocking network calls on the server thread, for a method
-     * whose name promises the opposite.</p>
+     * <p>The name key holds the UUID rather than a second copy of the player. Two copies meant every
+     * write carried the whole row twice — and with two dozen addons adding columns to it, that row
+     * is not small — and left two versions that could disagree.</p>
      */
     private void putToRedis(P data) {
         if (jedisPool == null) return;
-        String uuidKey = REDIS_PREFIX_UUID + uuidExtractor.apply(data);
+        String uuid = uuidExtractor.apply(data).toString();
+        String uuidKey = REDIS_PREFIX_UUID + uuid;
         String nameKey = REDIS_PREFIX_NAME + nameExtractor.apply(data).toLowerCase();
         executor.execute(() -> {
             try (Jedis jedis = jedisPool.getResource()) {
                 String json = serializer.apply(data);
                 var pipeline = jedis.pipelined();
                 pipeline.setex(uuidKey, redisTTL, json);
-                pipeline.setex(nameKey, redisTTL, json);
+                pipeline.setex(nameKey, redisTTL, uuid);
                 pipeline.sync();
             } catch (Exception e) { logError.log("Redis write error : " + e.getMessage()); }
         });
+    }
+
+    /**
+     * Reads a player from L2 by name, following the pointer the name key holds.
+     *
+     * @param name The player name, any case.
+     * @return The player, or {@code null} when L2 does not have them.
+     */
+    private Optional<P> getPlayerByNameFromRedis(String name) {
+        if (jedisPool == null) return null;
+        try (Jedis jedis = jedisPool.getResource()) {
+            String pointer = jedis.get(REDIS_PREFIX_NAME + name.toLowerCase());
+            if (pointer == null) return null;
+            // Entries written before the name key became a pointer still hold the whole player.
+            if (pointer.startsWith("{")) return Optional.ofNullable(deserializer.apply(pointer));
+            String json = jedis.get(REDIS_PREFIX_UUID + pointer);
+            if (json == null) return null;
+            return Optional.ofNullable(deserializer.apply(json));
+        } catch (Exception e) {
+            logError.log("Redis read error : " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -475,6 +497,22 @@ public class PlayerCache<P> {
     public void invalidateLocal(UUID uuid, String name) {
         uuidToPlayers.synchronous().invalidate(uuid);
         nameToPlayers.synchronous().invalidate(name.toLowerCase());
+    }
+
+    /**
+     * Drops the local copy of a player, by UUID alone.
+     *
+     * <p>What another server's "this row changed" notice ends up calling. Redis is left as it is:
+     * it holds the new value, and the next read will pick it up from there.</p>
+     *
+     * @param uuid The player's server UUID.
+     */
+    public void invalidateByUuid(UUID uuid) {
+        Optional<P> current = uuidToPlayers.synchronous().getIfPresent(uuid);
+        uuidToPlayers.synchronous().invalidate(uuid);
+        if (current != null && current.isPresent()) {
+            nameToPlayers.synchronous().invalidate(nameExtractor.apply(current.get()).toLowerCase());
+        }
     }
 
     /**

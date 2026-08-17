@@ -122,12 +122,101 @@ public interface XCoreApi {
     @NotNull CompletableFuture<Void> updatePlayerDataAsync(@NotNull UUID playerId, @NotNull String column, Object value);
 
 	/**
+	 * Updates several columns of a player at once.
+	 *
+	 * <p>One statement instead of one per column, and one message to the other servers instead of
+	 * one per column. Prefer this whenever more than one value changes together.</p>
+	 *
+	 * @param playerId The server-side UUID of the player.
+	 * @param values   The column names and their new values.
+	 * @return A future that completes when the update is persisted.
+	 */
+	@NotNull CompletableFuture<Void> updatePlayerDataAsync(@NotNull UUID playerId, @NotNull Map<String, Object> values);
+
+	/**
+	 * Returns how long a player has been connected, in seconds, across every session.
+	 *
+	 * @param playerId The server-side UUID.
+	 * @return The total, 0 when the player is unknown.
+	 */
+	long getPlaytime(@NotNull UUID playerId);
+
+	/**
+	 * Returns the entry point for creating tables and building queries.
+	 *
+	 * <pre>{@code
+	 * api.tableManager().createTable("my_table")
+	 *     .column("id", ColumnType.SERIAL)
+	 *     .column("player_uuid", ColumnType.CHAR, 36).notNull()
+	 *     .index("player_uuid")
+	 *     .build();
+	 * }</pre>
+	 *
+	 * @return The {@link fr.xyness.XCore.Database.TableManager}.
+	 */
+	@NotNull fr.xyness.XCore.Database.TableManager tableManager();
+
+	/**
+	 * Starts a query on a table. Shorthand for {@code tableManager().query(table)}.
+	 *
+	 * @param table The table name.
+	 * @return A new query builder.
+	 */
+	@NotNull fr.xyness.XCore.Database.QueryBuilder query(@NotNull String table);
+
+	/**
+	 * Returns the mailbox for things a player could not be handed straight away.
+	 *
+	 * @return The {@link fr.xyness.XCore.Delivery.DeliveryService}.
+	 */
+	@NotNull fr.xyness.XCore.Delivery.DeliveryService delivery();
+
+	/**
+	 * Returns the leaderboard service.
+	 *
+	 * @return The {@link fr.xyness.XCore.Leaderboards.LeaderboardService}.
+	 */
+	@NotNull fr.xyness.XCore.Leaderboards.LeaderboardService leaderboards();
+
+	/**
+	 * Returns the network registry: which servers are up, and where each player is.
+	 *
+	 * @return The {@link fr.xyness.XCore.Network.NetworkRegistry}.
+	 */
+	@NotNull fr.xyness.XCore.Network.NetworkRegistry network();
+
+	/**
+	 * Returns group and rank lookups, whichever permission plugin is installed.
+	 *
+	 * @return The {@link fr.xyness.XCore.Integrations.RankResolver}.
+	 */
+	@NotNull fr.xyness.XCore.Integrations.RankResolver ranks();
+
+	/**
+	 * Returns the shared Discord webhook sender.
+	 *
+	 * @return The {@link fr.xyness.XCore.Integrations.DiscordNotifier}.
+	 */
+	@NotNull fr.xyness.XCore.Integrations.DiscordNotifier discord();
+
+	/**
 	 * Returns the shared HikariCP data source.
 	 * External plugins can use this to create their own tables in the same database.
 	 *
 	 * @return The {@link HikariDataSource} instance.
 	 */
     @NotNull HikariDataSource getDataSource();
+
+	/**
+	 * Returns the pool database work runs on.
+	 *
+	 * <p>Use this one for anything that touches the database, and {@link #getExecutor()} for the
+	 * rest: keeping them apart is what stops a task waiting on a query from blocking the pool the
+	 * query itself needs.</p>
+	 *
+	 * @return The database {@link ExecutorService}.
+	 */
+	@NotNull ExecutorService getDbExecutor();
 
 	/**
 	 * Returns the shared executor service for async operations.

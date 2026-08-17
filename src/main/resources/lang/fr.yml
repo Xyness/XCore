@@ -233,3 +233,10 @@ eco-help-message: |
 # ---------------------------------------------------------------------------
 
 update-available: "<red>[{addon}] Une mise à jour est disponible : <aqua>{version} <red>({date})"
+
+# ---------------------------------------------------------------------------
+# Deliveries: things handed over on join because they could not be given at
+# the time — a reward with a full inventory, a payment made while offline.
+# ---------------------------------------------------------------------------
+
+delivery-received: " <yellow>▸ <white>Vous avez reçu <gray>{count} <white>objet(s) en attente."

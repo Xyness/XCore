@@ -197,6 +197,10 @@ public class LangNamespace {
             }
         }
 
+        // Taken before the disk file is overlaid: read afterwards, this set also contains the keys
+        // that only exist on disk, and the removal pass below can never match anything.
+        Set<String> defaultKeys = new HashSet<>(messages.keySet());
+
         // Overlay with file values
         if (langFile != null && langFile.exists()) {
             YamlConfiguration yaml = YamlConfiguration.loadConfiguration(langFile);
@@ -219,11 +223,20 @@ public class LangNamespace {
                 }
 
                 // Remove obsolete keys (present on disk but not in defaults)
-                Set<String> defaultKeys = messages.keySet();
-                Set<String> diskKeys = new HashSet<>(yaml.getKeys(true));
-                for (String key : diskKeys) {
+                List<String> obsolete = new ArrayList<>();
+                for (String key : new HashSet<>(yaml.getKeys(true))) {
                     if (!yaml.isConfigurationSection(key) && !defaultKeys.contains(key)) {
-                        yaml.set(key, null);
+                        obsolete.add(key);
+                    }
+                }
+
+                if (!obsolete.isEmpty()) {
+                    // Copy the file first: this removes lines somebody may have written by hand.
+                    if (backup(langFile)) {
+                        for (String key : obsolete) {
+                            yaml.set(key, null);
+                            messages.remove(key);
+                        }
                         changed = true;
                     }
                 }
@@ -236,6 +249,25 @@ public class LangNamespace {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Copies a language file next to itself before keys are removed from it.
+     *
+     * @param file The file about to be rewritten.
+     * @return {@code true} when the copy succeeded and the removal may proceed.
+     */
+    private static boolean backup(File file) {
+        try {
+            java.nio.file.Files.copy(file.toPath(),
+                    new File(file.getParentFile(), file.getName() + ".pre-prune.bak").toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (IOException e) {
+            java.util.logging.Logger.getLogger("XCore").warning(
+                    "Could not back up " + file.getName() + " before pruning it; leaving it untouched.");
+            return false;
         }
     }
 }

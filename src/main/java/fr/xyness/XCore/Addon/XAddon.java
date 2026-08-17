@@ -16,6 +16,7 @@ import org.bukkit.entity.Player;
 
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Gui.GuiRegistry;
+import fr.xyness.XCore.Gui.GuiUtils;
 import fr.xyness.XCore.Lang.LangNamespace;
 import fr.xyness.XCore.Utils.Logger;
 import fr.xyness.XCore.Utils.SchedulerAdapter;
@@ -55,6 +56,13 @@ public abstract class XAddon {
     private FileConfiguration config;
     private File configFile;
     private Updater updater;
+
+    /** Built on first use, so an addon that never opens a GUI never creates one. */
+    private GuiUtils guiUtils;
+
+    /** Same for cooldowns and placeholders. */
+    private fr.xyness.XCore.Utils.Cooldowns cooldowns;
+    private fr.xyness.XCore.Integrations.PlaceholderRegistry placeholders;
 
     // -------------------------------------------------------------------------
     // Lifecycle methods (override in subclasses)
@@ -138,6 +146,102 @@ public abstract class XAddon {
      * @return The {@link AddonDescriptor}.
      */
     public final AddonDescriptor getDescriptor() { return descriptor; }
+
+    // -------------------------------------------------------------------------
+    // Shared services
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the public API.
+     *
+     * @return The {@link fr.xyness.XCore.API.XCoreApi} instance.
+     */
+    public fr.xyness.XCore.API.XCoreApi api() {
+        return fr.xyness.XCore.API.XCoreApiProvider.get();
+    }
+
+    /**
+     * Returns the shared GUI helpers.
+     *
+     * @return A {@link GuiUtils} instance for this addon.
+     */
+    public GuiUtils guiUtils() {
+        if (guiUtils == null) guiUtils = new GuiUtils();
+        return guiUtils;
+    }
+
+    /**
+     * Returns the mailbox for things a player could not be handed straight away: a reward when the
+     * inventory was full, a payment for someone offline.
+     *
+     * @return The {@link fr.xyness.XCore.Delivery.DeliveryService}.
+     */
+    public final fr.xyness.XCore.Delivery.DeliveryService delivery() {
+        return core.delivery();
+    }
+
+    /**
+     * Returns the shared Discord sender.
+     *
+     * @return The {@link fr.xyness.XCore.Integrations.DiscordNotifier}.
+     */
+    public final fr.xyness.XCore.Integrations.DiscordNotifier discord() {
+        return core.discord();
+    }
+
+    /**
+     * Returns the leaderboard service.
+     *
+     * @return The {@link fr.xyness.XCore.Leaderboards.LeaderboardService}.
+     */
+    public final fr.xyness.XCore.Leaderboards.LeaderboardService leaderboards() {
+        return core.leaderboards();
+    }
+
+    /**
+     * Returns the network registry: which servers are up, and where the players are.
+     *
+     * @return The {@link fr.xyness.XCore.Network.NetworkRegistry}.
+     */
+    public final fr.xyness.XCore.Network.NetworkRegistry network() {
+        return core.network();
+    }
+
+    /**
+     * Returns group and rank lookups.
+     *
+     * @return The {@link fr.xyness.XCore.Integrations.RankResolver}.
+     */
+    public final fr.xyness.XCore.Integrations.RankResolver ranks() {
+        return core.ranks();
+    }
+
+    /**
+     * Returns this addon's cooldowns.
+     *
+     * @return A {@link fr.xyness.XCore.Utils.Cooldowns} instance of its own.
+     */
+    public final fr.xyness.XCore.Utils.Cooldowns cooldowns() {
+        if (cooldowns == null) cooldowns = new fr.xyness.XCore.Utils.Cooldowns();
+        return cooldowns;
+    }
+
+    /**
+     * Returns this addon's placeholders.
+     *
+     * <p>Register them in {@code onEnable()} and call
+     * {@link fr.xyness.XCore.Integrations.PlaceholderRegistry#publish()} once; the identifier is the
+     * addon name in lower case.</p>
+     *
+     * @return The {@link fr.xyness.XCore.Integrations.PlaceholderRegistry}.
+     */
+    public final fr.xyness.XCore.Integrations.PlaceholderRegistry placeholders() {
+        if (placeholders == null) {
+            placeholders = new fr.xyness.XCore.Integrations.PlaceholderRegistry(
+                    descriptor.getName().toLowerCase(), descriptor.getAuthor(), descriptor.getVersion());
+        }
+        return placeholders;
+    }
 
     // -------------------------------------------------------------------------
     // Listener registration
@@ -351,17 +455,12 @@ public abstract class XAddon {
             YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
                 new InputStreamReader(defStream, StandardCharsets.UTF_8));
 
-            boolean changed = false;
-            for (String key : defConfig.getKeys(true)) {
-                if (defConfig.isConfigurationSection(key)) continue;
-                if (diskConfig.contains(key)) continue;
-                if (isUnderProtectedSection(key, protectedSections)) continue;
-                diskConfig.set(key, defConfig.get(key));
-                changed = true;
-            }
+            java.util.List<String> added = fr.xyness.XCore.Utils.ConfigMerger.addMissingKeys(
+                    diskConfig, defConfig, protectedSections);
 
-            if (changed) {
+            if (!added.isEmpty()) {
                 diskConfig.save(configFile);
+                logger.sendDebug("Added " + added.size() + " new setting(s) to config.yml.");
             }
         } catch (IOException e) {
             logger.sendError("Error updating config with defaults: " + e.getMessage());
@@ -370,11 +469,7 @@ public abstract class XAddon {
     }
 
     private static boolean isUnderProtectedSection(String key, String[] protectedSections) {
-        for (String prot : protectedSections) {
-            if (prot == null || prot.isEmpty()) continue;
-            if (key.equals(prot) || key.startsWith(prot + ".")) return true;
-        }
-        return false;
+        return fr.xyness.XCore.Utils.ConfigMerger.isUnderProtectedSection(key, protectedSections);
     }
 
     /**
