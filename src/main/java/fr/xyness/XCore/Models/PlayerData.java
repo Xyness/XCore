@@ -44,8 +44,12 @@ public class PlayerData {
 	/** Thread-safe map for dynamic extra data loaded from additional database columns. */
     private final ConcurrentHashMap<String, Object> data = new ConcurrentHashMap<>();
 
-	/** Lazily-built player head item, cached after first access (textured or plain). */
-    private volatile ItemStack head;
+	/**
+	 * Lazily-built player head item, cached after first access (textured or plain).
+	 * Transient because this class goes through Gson on its way to Redis, and an ItemStack has no
+	 * business being serialised there.
+	 */
+    private transient volatile ItemStack head;
 
 	/**
 	 * Creates a new PlayerData instance.

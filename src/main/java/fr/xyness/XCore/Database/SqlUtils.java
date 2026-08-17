@@ -34,12 +34,31 @@ public final class SqlUtils {
     public static void createIndexIfNotExists(Connection conn, DatabaseType dbType,
                                               String indexName, String tableName, String columns)
             throws SQLException {
+        createIndexIfNotExists(conn, dbType, indexName, tableName, columns, false);
+    }
+
+    /**
+     * Same, with the choice of a unique index.
+     *
+     * @param conn      An open JDBC connection.
+     * @param dbType    The current database dialect.
+     * @param indexName The index name (validated).
+     * @param tableName The target table name (validated).
+     * @param columns   The comma-separated column list (validated).
+     * @param unique    Whether the index enforces uniqueness.
+     */
+    public static void createIndexIfNotExists(Connection conn, DatabaseType dbType,
+                                              String indexName, String tableName, String columns,
+                                              boolean unique)
+            throws SQLException {
         if (!SAFE_IDENT.matcher(indexName).matches()
                 || !SAFE_IDENT.matcher(tableName).matches()
                 || !SAFE_COLUMNS.matcher(columns).matches()) {
             throw new SQLException("Invalid identifier for index creation: "
                     + indexName + " / " + tableName + " / " + columns);
         }
+
+        String kind = unique ? "CREATE UNIQUE INDEX " : "CREATE INDEX ";
 
         if (dbType == DatabaseType.MYSQL) {
             try (PreparedStatement ps = conn.prepareStatement(
@@ -52,11 +71,11 @@ public final class SqlUtils {
                 }
             }
             try (Statement stmt = conn.createStatement()) {
-                stmt.executeUpdate("CREATE INDEX " + indexName + " ON " + tableName + " (" + columns + ")");
+                stmt.executeUpdate(kind + indexName + " ON " + tableName + " (" + columns + ")");
             }
         } else {
             try (Statement stmt = conn.createStatement()) {
-                stmt.executeUpdate("CREATE INDEX IF NOT EXISTS " + indexName
+                stmt.executeUpdate(kind + "IF NOT EXISTS " + indexName
                         + " ON " + tableName + " (" + columns + ")");
             }
         }

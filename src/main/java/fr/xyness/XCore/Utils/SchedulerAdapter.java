@@ -37,7 +37,6 @@ public class SchedulerAdapter {
     private boolean isFolia;
 
     // Cached Folia reflection methods (null on non-Folia servers)
-    private Method playerTeleportAsyncMethod;
     private Method playerGetSchedulerMethod;
     private Method entityGetSchedulerMethod;
     private Method entitySchedulerRunMethod;
@@ -86,7 +85,6 @@ public class SchedulerAdapter {
     	if (isFolia) {
             try {
                 Class<?> playerClass = Player.class;
-                playerTeleportAsyncMethod = playerClass.getMethod("teleportAsync", Location.class);
                 playerGetSchedulerMethod = playerClass.getMethod("getScheduler");
                 // All entities share the same #getScheduler signature on Folia/Paper 1.21+.
                 entityGetSchedulerMethod = Entity.class.getMethod("getScheduler");
@@ -266,39 +264,31 @@ public class SchedulerAdapter {
 	}
 
 	/**
-	 * Teleports a player asynchronously.
-	 * On Folia, uses the native async teleport API. On Bukkit, teleports synchronously
-	 * via the global scheduler.
+	 * Teleports a player, loading the destination chunk off the main thread.
+	 *
+	 * <p>{@code Player#teleportAsync} is Paper API since 1.13 and works on Folia too, so there is no
+	 * need for a separate branch here. The previous non-Folia path used a plain {@code teleport()},
+	 * which loads the chunk synchronously and stalls the server, and it always reported success.</p>
 	 *
 	 * @param player   The player to teleport.
 	 * @param location The target location.
-	 * @return A future that completes with {@code true} on success.
+	 * @return A future completing with {@code true} when the player was moved.
 	 */
 	public CompletableFuture<Boolean> teleportAsync(Player player, Location location) {
 	    CompletableFuture<Boolean> future = new CompletableFuture<>();
-
-	    if (isFolia) {
-	        try {
-	            Object teleportResult = playerTeleportAsyncMethod.invoke(player, location);
-	            if (teleportResult instanceof CompletableFuture<?> cf) {
-	                cf.thenAccept(result -> future.complete((Boolean) result))
-	                  .exceptionally(ex -> {
-	                      main.logger().sendError("Folia teleportAsync failed: " + ex.getMessage());
-	                      future.complete(false);
-	                      return null;
-	                  });
-	            } else {
-	                future.complete(false);
-	            }
-	        } catch (Exception e) {
-	            main.logger().sendError("Failed to use Folia teleportAsync: " + e.getMessage());
-	            future.complete(false);
-	        }
-	    } else {
-	    	runGlobalTask(() -> player.teleport(location));
-	        future.complete(true);
+	    try {
+	        player.teleportAsync(location)
+	              .thenAccept(result -> future.complete(Boolean.TRUE.equals(result)))
+	              .exceptionally(ex -> {
+	                  main.logger().sendError("Asynchronous teleport failed : " + ex.getMessage());
+	                  future.complete(false);
+	                  return null;
+	              });
+	    } catch (Throwable t) {
+	        // A fork without the method: fall back to the classic path rather than not teleporting.
+	        main.logger().sendDebug("teleportAsync unavailable (" + t + "), falling back to a scheduled teleport.");
+	        runLocationTask(() -> future.complete(player.teleport(location)), location);
 	    }
-
 	    return future;
 	}
 

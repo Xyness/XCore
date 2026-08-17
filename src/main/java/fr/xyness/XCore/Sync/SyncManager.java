@@ -1,5 +1,7 @@
 package fr.xyness.XCore.Sync;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -7,6 +9,7 @@ import java.util.concurrent.Executor;
 
 import javax.sql.DataSource;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -36,6 +39,15 @@ public class SyncManager {
     private final int pollIntervalTicks;
     private final int retentionSeconds;
     private final Map<String, SyncChannel> channels = new ConcurrentHashMap<>();
+
+    /** The most messages that travel together. */
+    private static final int BATCH_LIMIT = 200;
+
+    /** Messages waiting to leave, gathered so a burst costs one round trip instead of a thousand. */
+    private final java.util.Queue<JsonObject> outgoing = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Sends whatever is queued, a few times a second. */
+    private java.util.concurrent.ScheduledExecutorService flusher;
 
     private volatile SyncTransport transport;
     private final LogCallback logDebug;
@@ -127,6 +139,17 @@ public class SyncManager {
      * @param message     The message to publish.
      */
     public void publish(String channelName, SyncMessage message) {
+        publish(channelName, message, null);
+    }
+
+    /**
+     * Publishes a message to one server rather than to all of them.
+     *
+     * @param channelName  The target channel name.
+     * @param message      The message to publish.
+     * @param targetServer The server that should act on it, or {@code null} to broadcast.
+     */
+    public void publish(String channelName, SyncMessage message, String targetServer) {
         if (transport == null) return;
         if (!channels.containsKey(channelName)) {
             logWarning.log("Attempted to publish to unregistered channel '" + channelName + "'.");
@@ -138,12 +161,38 @@ public class SyncManager {
         json.addProperty("a", message.action());
         json.addProperty("k", message.key() == null ? "" : message.key());
         json.addProperty("p", message.payload() == null ? "" : message.payload());
-        String formatted = json.toString();
+        if (targetServer != null && !targetServer.isBlank()) json.addProperty("t", targetServer);
+
+        outgoing.add(json);
+        // A purge or an import produces thousands of these in a row; letting them pile up for a
+        // fraction of a second turns that into a handful of round trips instead of thousands.
+        if (outgoing.size() >= BATCH_LIMIT) flushOutgoing();
+    }
+
+    /** Sends everything queued, as one message when there is more than one. */
+    private void flushOutgoing() {
+        if (transport == null || outgoing.isEmpty()) return;
+
+        List<JsonObject> batch = new ArrayList<>();
+        for (JsonObject json = outgoing.poll(); json != null && batch.size() < BATCH_LIMIT; json = outgoing.poll()) {
+            batch.add(json);
+        }
+        if (batch.isEmpty()) return;
+
+        String formatted;
+        if (batch.size() == 1) {
+            formatted = batch.get(0).toString();
+        } else {
+            JsonArray array = new JsonArray();
+            batch.forEach(array::add);
+            formatted = array.toString();
+        }
+
         executor.execute(() -> {
             try {
                 transport.publish(formatted);
             } catch (Exception e) {
-                logError.log("Failed to publish sync message on '" + channelName + "' : " + e.getMessage());
+                logError.log("Failed to publish " + batch.size() + " sync message(s) : " + e.getMessage());
             }
         });
     }
@@ -168,12 +217,26 @@ public class SyncManager {
         }
 
         transport.start();
+
+        flusher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "XCore-SyncFlush");
+            thread.setDaemon(true);
+            return thread;
+        });
+        flusher.scheduleWithFixedDelay(this::flushOutgoing, 100, 100, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     /**
      * Stops the sync transport and clears all channels.
      */
     public void stop() {
+        // Whatever is still queued belongs on the wire, not in memory: the last thing published is
+        // usually a shutdown notice other servers need.
+        flushOutgoing();
+        if (flusher != null) {
+            flusher.shutdownNow();
+            flusher = null;
+        }
         if (transport != null) {
             transport.stop();
             transport = null;
@@ -193,38 +256,51 @@ public class SyncManager {
 
     /**
      * Handles a raw message from the transport layer.
-     * Accepts the JSON format emitted by {@link #publish}; anything else is ignored.
+     * Accepts one object or an array of them; anything else is ignored.
      */
     private void handleRawMessage(String rawMessage) {
         try {
             if (rawMessage == null || rawMessage.isBlank()) return;
 
             String trimmed = rawMessage.trim();
-            if (trimmed.charAt(0) != '{') return;
+            char first = trimmed.charAt(0);
 
-            JsonObject json = JsonParser.parseString(trimmed).getAsJsonObject();
-            String sourceServerId = json.has("s") ? json.get("s").getAsString() : "";
-            String channelName = json.has("c") ? json.get("c").getAsString() : "";
-            String action = json.has("a") ? json.get("a").getAsString() : "";
-            String key = json.has("k") ? json.get("k").getAsString() : "";
-            String payload = json.has("p") ? json.get("p").getAsString() : "";
-
-            if (sourceServerId.equals(serverId)) return; // Ignore own messages
-
-            SyncChannel channel = channels.get(channelName);
-            if (channel == null) return; // Not subscribed to this channel
-
-            SyncMessage message = new SyncMessage(action, key, payload);
-            executor.execute(() -> {
-                try {
-                    channel.listener().onMessage(message);
-                    logDebug.log("Sync received on '" + channelName + "' : " + action + " for " + key + ".");
-                } catch (Exception e) {
-                    logError.log("Error handling sync message on '" + channelName + "' : " + e.getMessage());
+            if (first == '[') {
+                for (var element : JsonParser.parseString(trimmed).getAsJsonArray()) {
+                    if (element.isJsonObject()) handleOne(element.getAsJsonObject());
                 }
-            });
+                return;
+            }
+            if (first != '{') return;
+            handleOne(JsonParser.parseString(trimmed).getAsJsonObject());
         } catch (Exception e) {
             logError.log("Failed to parse sync message : " + e.getMessage());
         }
+    }
+
+    /** Delivers one decoded message to its channel. */
+    private void handleOne(JsonObject json) {
+        String sourceServerId = json.has("s") ? json.get("s").getAsString() : "";
+        String channelName = json.has("c") ? json.get("c").getAsString() : "";
+        String action = json.has("a") ? json.get("a").getAsString() : "";
+        String key = json.has("k") ? json.get("k").getAsString() : "";
+        String payload = json.has("p") ? json.get("p").getAsString() : "";
+        String target = json.has("t") ? json.get("t").getAsString() : "";
+
+        if (sourceServerId.equals(serverId)) return;                    // our own message
+        if (!target.isEmpty() && !target.equals(serverId)) return;      // addressed to somebody else
+
+        SyncChannel channel = channels.get(channelName);
+        if (channel == null) return;                                    // not subscribed here
+
+        SyncMessage message = new SyncMessage(action, key, payload);
+        executor.execute(() -> {
+            try {
+                channel.listener().onMessage(message);
+                logDebug.log("Sync received on '" + channelName + "' : " + action + " for " + key + ".");
+            } catch (Exception e) {
+                logError.log("Error handling sync message on '" + channelName + "' : " + e.getMessage());
+            }
+        });
     }
 }

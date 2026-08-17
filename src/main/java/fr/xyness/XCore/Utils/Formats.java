@@ -118,6 +118,71 @@ public final class Formats {
     }
 
     /**
+     * Reads a duration written the way a moderator types it: {@code 30m}, {@code 12h}, {@code 7d},
+     * {@code 1w}, {@code 3M}, {@code 1y}, or several in a row like {@code 1d12h}.
+     *
+     * <p>Case matters on one letter only: {@code m} is minutes and {@code M} is months, the same
+     * convention the ban commands already used. A bare number counts as seconds.</p>
+     *
+     * @param input The text to read.
+     * @return The duration in seconds, or -1 when the text says nothing usable — which is how
+     *         "permanent" reaches a sanction command.
+     */
+    public static long parseDuration(String input) {
+        if (input == null) return -1;
+        String text = input.trim();
+        if (text.isEmpty()) return -1;
+
+        String lower = text.toLowerCase();
+        if (lower.equals("perm") || lower.equals("permanent") || lower.equals("forever")) return -1;
+
+        long total = 0;
+        long number = 0;
+        boolean sawDigit = false;
+        boolean sawUnit = false;
+
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '0' && c <= '9') {
+                number = number * 10 + (c - '0');
+                sawDigit = true;
+                continue;
+            }
+            if (!sawDigit) return -1;
+            long unit = switch (c) {
+                case 's', 'S' -> 1L;
+                case 'm' -> 60L;
+                case 'h', 'H' -> 3_600L;
+                case 'd', 'D' -> 86_400L;
+                case 'w', 'W' -> 604_800L;
+                case 'M' -> 2_592_000L;
+                case 'y', 'Y' -> 31_536_000L;
+                default -> 0L;
+            };
+            if (unit == 0) return -1;
+            total += number * unit;
+            number = 0;
+            sawDigit = false;
+            sawUnit = true;
+        }
+
+        if (sawDigit) total += number;          // trailing number with no unit: seconds
+        else if (!sawUnit) return -1;
+        return total <= 0 ? -1 : total;
+    }
+
+    /**
+     * Same, in milliseconds.
+     *
+     * @param input The text to read.
+     * @return The duration in milliseconds, or -1.
+     */
+    public static long parseDurationMillis(String input) {
+        long seconds = parseDuration(input);
+        return seconds < 0 ? -1 : seconds * 1000L;
+    }
+
+    /**
      * Formats a byte count for a human: {@code 512 B}, {@code 4.2 MB}.
      *
      * @param bytes The size in bytes.

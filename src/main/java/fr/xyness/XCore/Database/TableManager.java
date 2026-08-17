@@ -72,6 +72,80 @@ public class TableManager {
         return new QueryBuilder(dataSource, databaseType, executor, tableName);
     }
 
+    /**
+     * Runs several statements as one transaction, off the calling thread.
+     *
+     * <p>Either everything in the body is written or none of it is. That is what a purchase needs:
+     * taking the money and handing over the item are two statements, and a crash between them
+     * leaves a player robbed. Throw from the body to roll back on purpose.</p>
+     *
+     * <pre>{@code
+     * db.transaction(conn -> {
+     *     try (PreparedStatement ps = conn.prepareStatement("UPDATE players SET coins = coins - ? WHERE server_uuid = ? AND coins >= ?")) {
+     *         ...
+     *         if (ps.executeUpdate() == 0) throw new SQLException("not enough coins");
+     *     }
+     *     ...
+     *     return true;
+     * });
+     * }</pre>
+     *
+     * @param <T>  What the body returns.
+     * @param body The statements to run on the shared connection.
+     * @return A future completing with the body's result, or failing if it was rolled back.
+     */
+    public <T> java.util.concurrent.CompletableFuture<T> transaction(TransactionBody<T> body) {
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try (java.sql.Connection conn = dataSource.getConnection()) {
+                boolean previous = conn.getAutoCommit();
+                conn.setAutoCommit(false);
+                try {
+                    T result = body.run(conn);
+                    conn.commit();
+                    return result;
+                } catch (Exception e) {
+                    try {
+                        conn.rollback();
+                    } catch (java.sql.SQLException rollbackFailed) {
+                        throw new RuntimeException("Transaction failed and could not be rolled back : "
+                                + rollbackFailed.getMessage(), e);
+                    }
+                    throw e instanceof RuntimeException re ? re
+                            : new RuntimeException("Transaction rolled back : " + e.getMessage(), e);
+                } finally {
+                    try { conn.setAutoCommit(previous); } catch (java.sql.SQLException ignored) {}
+                }
+            } catch (java.sql.SQLException e) {
+                throw new RuntimeException("Could not open a transaction : " + e.getMessage(), e);
+            }
+        }, executor);
+    }
+
+    /**
+     * The body of a {@link #transaction(TransactionBody)}.
+     *
+     * @param <T> What it returns.
+     */
+    @FunctionalInterface
+    public interface TransactionBody<T> {
+        /**
+         * @param connection The connection every statement of the transaction must use.
+         * @return Whatever the caller wants back.
+         * @throws Exception to roll the transaction back.
+         */
+        T run(java.sql.Connection connection) throws Exception;
+    }
+
+    /**
+     * Returns the schema migrator for a set of tables.
+     *
+     * @param namespace An identifier for the addon, used as the key of its schema version.
+     * @return A migrator scoped to that namespace.
+     */
+    public SchemaMigrator migrator(String namespace) {
+        return new SchemaMigrator(dataSource, databaseType, namespace);
+    }
+
     /** @return The database type. */
     public DatabaseType getDatabaseType() {
         return databaseType;

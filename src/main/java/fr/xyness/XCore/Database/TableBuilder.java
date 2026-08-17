@@ -106,6 +106,18 @@ public class TableBuilder {
     }
 
     /**
+     * Marks the current column as UNIQUE.
+     *
+     * @return This builder.
+     * @throws IllegalStateException if no column is being defined.
+     */
+    public TableBuilder unique() {
+        requireCurrentColumn();
+        currentColumn.unique = true;
+        return this;
+    }
+
+    /**
      * Adds an index on the specified columns.
      *
      * @param indexColumns The column names to index.
@@ -115,7 +127,22 @@ public class TableBuilder {
         for (String col : indexColumns) {
             validateName(col);
         }
-        indexes.add(new IndexDef(indexColumns));
+        indexes.add(new IndexDef(indexColumns, false));
+        return this;
+    }
+
+    /**
+     * Adds a unique index on the specified columns. Also what an upsert needs to identify a row:
+     * {@code QueryBuilder#upsert(String...)} relies on a unique constraint over the same columns.
+     *
+     * @param indexColumns The column names the combination of which must stay unique.
+     * @return This builder.
+     */
+    public TableBuilder uniqueIndex(String... indexColumns) {
+        for (String col : indexColumns) {
+            validateName(col);
+        }
+        indexes.add(new IndexDef(indexColumns, true));
         return this;
     }
 
@@ -138,7 +165,7 @@ public class TableBuilder {
         // For MySQL, inline indexes
         if (databaseType == DatabaseType.MYSQL) {
             for (IndexDef idx : indexes) {
-                sb.append(", INDEX ").append(idx.indexName(tableName)).append(" (");
+                sb.append(idx.unique ? ", UNIQUE KEY " : ", INDEX ").append(idx.indexName(tableName)).append(" (");
                 sb.append(String.join(", ", idx.columns));
                 sb.append(")");
             }
@@ -157,7 +184,7 @@ public class TableBuilder {
             if (databaseType != DatabaseType.MYSQL) {
                 for (IndexDef idx : indexes) {
                     SqlUtils.createIndexIfNotExists(c, databaseType, idx.indexName(tableName),
-                            tableName, String.join(", ", idx.columns));
+                            tableName, String.join(", ", idx.columns), idx.unique);
                 }
             }
         } catch (SQLException e) {
@@ -184,6 +211,7 @@ public class TableBuilder {
         sb.append(sqlType(col));
 
         if (col.notNull) sb.append(" NOT NULL");
+        if (col.unique) sb.append(" UNIQUE");
 
         if (col.defaultValue != null) {
             sb.append(" DEFAULT ");
@@ -251,6 +279,7 @@ public class TableBuilder {
         final ColumnType type;
         final int length;
         boolean notNull;
+        boolean unique;
         Object defaultValue;
 
         ColumnDef(String name, ColumnType type, int length) {
@@ -262,13 +291,15 @@ public class TableBuilder {
 
     private static class IndexDef {
         final String[] columns;
+        final boolean unique;
 
-        IndexDef(String[] columns) {
+        IndexDef(String[] columns, boolean unique) {
             this.columns = columns;
+            this.unique = unique;
         }
 
         String indexName(String tableName) {
-            return "idx_" + tableName + "_" + String.join("_", columns);
+            return (unique ? "uix_" : "idx_") + tableName + "_" + String.join("_", columns);
         }
     }
 }

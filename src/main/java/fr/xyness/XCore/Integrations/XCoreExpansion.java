@@ -1,34 +1,38 @@
 package fr.xyness.XCore.Integrations;
 
 import org.bukkit.OfflinePlayer;
-import org.bukkit.entity.Player;
-import org.bukkit.plugin.java.JavaPlugin;
 
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
+
+import fr.xyness.XCore.XCore;
+import fr.xyness.XCore.Utils.Formats;
 
 /**
  * PlaceholderAPI expansion for XCore itself.
  * <p>
  * Placeholders:
  * <ul>
- *   <li>{@code %xcore_name%} — Player name</li>
- *   <li>{@code %xcore_uuid%} — Player UUID</li>
- *   <li>{@code %xcore_last_login%} — Last login timestamp (requires online player)</li>
- *   <li>{@code %xcore_last_logout%} — Last logout timestamp (requires online player)</li>
+ *   <li>{@code %xcore_name%} — player name</li>
+ *   <li>{@code %xcore_uuid%} — player UUID</li>
+ *   <li>{@code %xcore_last_login%} / {@code %xcore_last_logout%} — as XCore recorded them</li>
+ *   <li>{@code %xcore_playtime%} — total time connected, formatted</li>
+ *   <li>{@code %xcore_playtime_seconds%} — the same, as a number</li>
+ *   <li>{@code %xcore_server%} — this server's name</li>
+ *   <li>{@code %xcore_network_online%} — players connected across the network</li>
+ *   <li>{@code %xcore_servers%} — how many servers are up</li>
+ *   <li>{@code %xcore_top_<board>_<rank>_name%} and {@code _value%} — any registered leaderboard</li>
  * </ul>
- * </p>
  */
 public class XCoreExpansion extends PlaceholderExpansion {
 
-    /** The plugin instance used to retrieve version information. */
-    private final JavaPlugin plugin;
+    private final XCore plugin;
 
     /**
      * Creates a new XCore PAPI expansion.
      *
      * @param plugin The XCore plugin instance.
      */
-    public XCoreExpansion(JavaPlugin plugin) {
+    public XCoreExpansion(XCore plugin) {
         this.plugin = plugin;
     }
 
@@ -60,29 +64,59 @@ public class XCoreExpansion extends PlaceholderExpansion {
      * Resolves placeholder values for the given player and parameter.
      *
      * @param offlinePlayer The player requesting the placeholder.
-     * @param params        The placeholder parameter (e.g. {@code "name"}, {@code "uuid"}).
-     * @return The resolved placeholder value, or {@code null} if the parameter is unknown.
+     * @param params        The placeholder parameter.
+     * @return The resolved value, or {@code null} if the parameter is unknown.
      */
     @Override
     public String onRequest(OfflinePlayer offlinePlayer, String params) {
+        if (params == null) return null;
+        String key = params.toLowerCase();
+
+        // Leaderboards first: they are the only family with a variable shape.
+        if (key.startsWith("top_") && plugin.leaderboards() != null) {
+            return plugin.leaderboards().resolvePlaceholder(params.substring(4));
+        }
+
+        if (key.equals("server")) return plugin.getServerName();
+        if (key.equals("network_online")) {
+            return plugin.network() == null ? "0" : String.valueOf(plugin.network().totalOnline());
+        }
+        if (key.equals("servers")) {
+            return plugin.network() == null ? "1" : String.valueOf(plugin.network().servers().size());
+        }
+
         if (offlinePlayer == null) return null;
 
-        return switch (params.toLowerCase()) {
+        return switch (key) {
             case "name" -> offlinePlayer.getName() != null ? offlinePlayer.getName() : "";
             case "uuid" -> offlinePlayer.getUniqueId().toString();
-            case "last_login" -> {
-                if (offlinePlayer instanceof Player player) {
-                    yield String.valueOf(player.getLastLogin());
-                }
-                yield String.valueOf(offlinePlayer.getLastLogin());
-            }
-            case "last_logout" -> {
-                if (offlinePlayer instanceof Player player) {
-                    yield String.valueOf(player.getLastSeen());
-                }
-                yield String.valueOf(offlinePlayer.getLastSeen());
-            }
+            case "last_login" -> value(offlinePlayer, "last_login");
+            case "last_logout" -> value(offlinePlayer, "last_logout");
+            case "playtime" -> Formats.duration(playtime(offlinePlayer));
+            case "playtime_seconds" -> String.valueOf(playtime(offlinePlayer));
             default -> null;
         };
+    }
+
+    /** Reads a column of the cached player row, empty when it is not loaded. */
+    private String value(OfflinePlayer player, String column) {
+        return plugin.playerCache().getPlayerSync(player.getUniqueId())
+                .map(data -> data.getTargetData(column))
+                .map(String::valueOf)
+                .orElse("");
+    }
+
+    private long playtime(OfflinePlayer player) {
+        Long stored = plugin.playerCache().getPlayerSync(player.getUniqueId())
+                .map(data -> data.getTargetData("playtime", Long.class))
+                .orElse(0L);
+        long total = stored == null ? 0L : stored;
+
+        // Add the session in progress, otherwise the number only moves when a player disconnects.
+        Object start = plugin.playerCache().getTempPlayerData(player.getUniqueId()).get(XCore.SESSION_START_KEY);
+        if (start instanceof Long since) {
+            total += (System.currentTimeMillis() - since) / 1000L;
+        }
+        return total;
     }
 }

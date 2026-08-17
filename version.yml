@@ -1,30 +1,31 @@
 # Version
-version: 1.0.7
+version: 1.0.8
 
 # Update date
-date: 16/08/2026
+date: 17/08/2026
 
 # Update notes
 update-notes:
-- "Renamed /coins to /eco, the old name stays as an alias"
-- "Added a single language setting, XCore and every addon follow it (en and fr bundled)"
-- "Moved lang.yml and economy-lang.yml to lang/en.yml and lang/fr.yml"
-- "Added lang/web_en.yml and lang/web_fr.yml for the dashboard labels"
-- "Added migrate-uuid-changes, a returning player keeps their row when their UUID changes"
-- "Added /xcore profile, time spent per addon and per event handler"
-- "Added /xcore diag, a full support report written to plugins/XCore/"
-- "Added a tick thread watchdog, with debug: true a database call from a tick thread is named"
-- "Added /xcore dashboard, a one click login link, and /xcore dashboard revoke to close the sessions"
-- "Redesigned the web dashboard"
-- "Addons declare their own dashboard pages and routes (WebPageSpec)"
-- "Added BlinkCache, a blinking GUI item is built once per face instead of twice a second"
-- "Added WorldConfig, worlds.<name>.<key> overrides are resolved once at load"
-- "Added Formats for durations, numbers, sizes and compact values"
-- "Balance changes are applied atomically in the database and serialized per player"
-- "Added currency exchange, scheduled payouts and interest"
-- "Added per-server balances (per-server-balances)"
-- "Vault stays optional, the economy runs without it"
-- "The query builder handles joins, whereIn, relative updates and batch inserts"
-- "MiniMessage parsing is cached, a lore is no longer rebuilt on every draw"
-- "The updater only announces a version newer than the installed one"
-- "paper-plugin.yml takes its version from the build instead of a hardcoded one"
+- "Fixed player data staying stale on the other servers after a change, balances included"
+- "Fixed the currency list coming back after a rename, and any other section you name yourself"
+- "Fixed teleports loading their chunk on the main thread outside Folia"
+- "Fixed obsolete keys never being removed from a language file"
+- "Fixed last login and last logout never reaching the cache"
+- "Fixed the update builder throwing away the number of rows it touched"
+- "Added the database API to XCoreApi, api().query() and api().tableManager() now exist"
+- "Added transactions, upserts, unique indexes and versioned migrations"
+- "Added a delivery service, an addon can give an item or money to an offline player"
+- "Added play time tracking, with %xcore_playtime%"
+- "Added leaderboards, declared once and served as placeholders and on the dashboard"
+- "Added a network registry, which servers are up and where each player is"
+- "Added a shared Discord sender with a queue, retries and rate limit handling"
+- "Added PagedGui, the paginated screen every addon was writing by hand"
+- "Added cooldowns, item serialisation, rank lookups and placeholder registration to the API"
+- "Added duration parsing to Formats, 1d12h and the like"
+- "XCore registers its own placeholders, which it never did"
+- "Column writes are grouped, one statement per player instead of one per column"
+- "Database work runs on its own pool, so a query can no longer starve the one waiting for it"
+- "Redis holds one copy of a player instead of two"
+- "Sync messages travel in batches"
+- "/xcore diag measures the width of the players table and names the heavy columns"
+- "Removed around 2 200 lines of framework no addon ever used"

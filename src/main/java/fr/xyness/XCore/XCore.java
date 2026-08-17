@@ -33,12 +33,9 @@ import fr.xyness.XCore.API.XCoreApiProvider;
 import fr.xyness.XCore.API.XCoreApiService;
 import fr.xyness.XCore.Addon.AddonListenerRegistry;
 import fr.xyness.XCore.Addon.AddonManager;
-import fr.xyness.XCore.Cache.CacheManager;
 import fr.xyness.XCore.Cache.PlayerCache;
 import fr.xyness.XCore.Commands.XCoreCommand;
 import fr.xyness.XCore.DAO.PlayerDAO;
-import fr.xyness.XCore.Gui.GuiListener;
-import fr.xyness.XCore.Gui.GuiManager;
 import fr.xyness.XCore.Integrations.FloodgateHook;
 import fr.xyness.XCore.Listeners.PlayerListener;
 import fr.xyness.XCore.Models.PlayerData;
@@ -77,6 +74,9 @@ public class XCore extends JavaPlugin {
     /** Sync channel used by XCore itself (cache invalidation after bulk writes). */
     public static final String SYNC_CHANNEL = "xcore";
 
+    /** Where the start of the current session is kept, on a player's temporary data. */
+    public static final String SESSION_START_KEY = "xcore:session-start";
+
     // -------------------------------------------------------------------------
     // Core subsystems
     // -------------------------------------------------------------------------
@@ -85,25 +85,39 @@ public class XCore extends JavaPlugin {
     private final Methods methods = new Methods(this);
     private final Gson gson = new Gson();
 
+    /** Kept so their overflow threads can be stopped with the pools. */
+    private final java.util.List<fr.xyness.XCore.Utils.RejectedTaskPolicy> rejectionPolicies = new java.util.ArrayList<>();
+
     /**
-     * Shared worker pool for every asynchronous operation in XCore and its addons.
+     * General worker pool, for everything that is not a database call.
      * <p>
      * Bounded on purpose. A cached pool grows a thread per queued task and would happily create
-     * thousands of them under a burst — far past the point where they can do anything useful, since
-     * nearly every task ends up waiting on the (much smaller) HikariCP pool anyway. Excess work
-     * queues instead, and {@code CallerRunsPolicy} applies back-pressure rather than dropping it.
+     * thousands of them under a burst, far past the point where they can do anything useful. Excess
+     * work queues instead.
      * </p>
      */
-    private final ExecutorService executor = buildExecutor();
+    private final ExecutorService executor = buildPool("XCore-Work", Math.max(4, Runtime.getRuntime().availableProcessors()) * 2);
 
-    private static ExecutorService buildExecutor() {
-        int core = Math.max(4, Runtime.getRuntime().availableProcessors());
+    /**
+     * Database pool, kept apart from the one above.
+     * <p>
+     * With a single pool, a task that waits on a query is waiting on a task queued behind itself:
+     * with enough of them, every thread is blocked on work that cannot start. Two pools make that
+     * impossible, and this one is sized after the connection pool because more threads than
+     * connections only means more threads waiting for one.
+     * </p>
+     */
+    private ExecutorService dbExecutor;
+
+    private ExecutorService buildPool(String name, int size) {
+        fr.xyness.XCore.Utils.RejectedTaskPolicy policy = new fr.xyness.XCore.Utils.RejectedTaskPolicy(name, logger);
+        rejectionPolicies.add(policy);
         java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
-            core, core * 4,
+            Math.max(2, size / 2), size,
             60L, TimeUnit.SECONDS,
             new java.util.concurrent.LinkedBlockingQueue<>(10_000),
-            r -> { Thread t = new Thread(r, "XCore-Thread"); t.setDaemon(true); return t; },
-            new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+            r -> { Thread t = new Thread(r, name); t.setDaemon(true); return t; },
+            policy);
         pool.allowCoreThreadTimeOut(true);
         return pool;
     }
@@ -120,9 +134,7 @@ public class XCore extends JavaPlugin {
     private int redisTTL = 3600;
     private PlayerCache<PlayerData> playerCache;
     private LangManager langManager;
-    private CacheManager cacheManager;
     private SyncManager syncManager;
-    private GuiManager guiManager;
     private AddonManager addonManager;
     private AddonListenerRegistry listenerRegistry;
     private Object redisHealthTask;
@@ -131,6 +143,33 @@ public class XCore extends JavaPlugin {
     private long startTimeMillis;
     private FileConfiguration addonsConfig;
     private File addonsFile;
+
+    /** The database API addons build their tables and queries with. */
+    private fr.xyness.XCore.Database.TableManager tableManager;
+
+    /** The mailbox addons hand things to when a player cannot take them right away. */
+    private fr.xyness.XCore.Delivery.DeliveryService deliveryService;
+
+    /** One queue for every Discord webhook in the installation. */
+    private fr.xyness.XCore.Integrations.DiscordNotifier discordNotifier;
+
+    /** The rankings addons declare, refreshed on one timer. */
+    private fr.xyness.XCore.Leaderboards.LeaderboardService leaderboards;
+
+    /** Who else is up, and where the players are. */
+    private fr.xyness.XCore.Network.NetworkRegistry network;
+
+    /** Group and rank lookups, whichever permission plugin is installed. */
+    private fr.xyness.XCore.Integrations.RankResolver ranks;
+
+    /** Sends the buffered player columns to the database. */
+    private Object writeFlushTask;
+
+    /** Tells the other servers which players changed. */
+    private Object invalidationTask;
+
+    /** Players whose caches elsewhere still have to be dropped. */
+    private final java.util.Set<String> pendingInvalidations = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -347,14 +386,21 @@ public class XCore extends JavaPlugin {
             return false;
         }
 
+        // ---- Database pool ----
+        // Two threads per connection: enough to keep every connection busy while one of them is
+        // being handed back, and not so many that they queue up waiting for one.
+        this.dbExecutor = buildPool("XCore-DB", Math.max(4, dataSource.getMaximumPoolSize() * 2));
+        this.tableManager = new fr.xyness.XCore.Database.TableManager(dataSource, databaseType, dbExecutor);
+
         // ---- PlayerDAO ----
-        this.playerDAO = new PlayerDAO(this, executor);
+        this.playerDAO = new PlayerDAO(this, dbExecutor);
         playerDAO.loadExtraColumnsFromMetadata();
 
         // Built-in activity tracking columns
         new ColumnBuilder(this)
             .addColumn("last_login", ColumnType.TEXT)
             .addColumn("last_logout", ColumnType.TEXT)
+            .addColumn("playtime", ColumnType.BIGINT).defaultValue(0)
             .apply();
 
         // ---- Redis ----
@@ -391,9 +437,6 @@ public class XCore extends JavaPlugin {
                 if (jedisPool != null) { jedisPool.close(); jedisPool = null; }
             }
         }
-
-        // ---- CacheManager ----
-        this.cacheManager = new CacheManager(jedisPool, executor);
 
         // ---- PlayerCache ----
         int maxCacheSize = clamp(config.getInt("cache.max-size", 100000), 100, 10_000_000, "cache.max-size");
@@ -438,13 +481,27 @@ public class XCore extends JavaPlugin {
             logger::sendDebug, logger::sendWarning, logger::sendError
         );
 
-        // XCore's own channel: lets a bulk database write (e.g. /eco resetall) drop the
-        // stale L1 player caches held by the other servers.
+        // XCore's own channel. CACHE_CLEAR follows a bulk write such as /eco resetall; PLAYER_UPDATE
+        // names the players whose row has just changed, so the other servers stop serving the copy
+        // they still hold. Without the second one, a balance changed on one server stayed wrong
+        // everywhere else until the entry fell out of the cache, which for an active player never
+        // happens.
         syncManager.registerChannel(SYNC_CHANNEL, message -> {
-            if ("CACHE_CLEAR".equals(message.action())) {
-                clearAndWarmPlayerCache();
-                logger.sendDebug("Player caches cleared by a cross-server request.");
+            switch (message.action()) {
+                case "CACHE_CLEAR" -> {
+                    clearAndWarmPlayerCache();
+                    logger.sendDebug("Player caches cleared by a cross-server request.");
+                }
+                case "PLAYER_UPDATE" -> invalidatePlayers(message.key());
+                default -> { }
             }
+        });
+
+        // Told by the write buffer which players actually reached the database, so the message goes
+        // out after the value is readable and never before it.
+        playerDAO.setFlushListener(uuids -> {
+            if (syncManager == null || !syncManager.isRunning()) return;
+            pendingInvalidations.addAll(uuids);
         });
 
         if (crossServerEnabled) {
@@ -453,8 +510,7 @@ public class XCore extends JavaPlugin {
         }
 
         // ---- GUI ----
-        this.guiManager = new GuiManager();
-        getServer().getPluginManager().registerEvents(new GuiListener(guiManager, schedulerAdapter), this);
+        getServer().getPluginManager().registerEvents(new fr.xyness.XCore.Gui.PagedGuiListener(), this);
 
         // ---- Listeners ----
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
@@ -501,12 +557,15 @@ public class XCore extends JavaPlugin {
             try {
                 coinsManager = new CoinsManager(this);
 
-                // Register columns for currencies
+                // Register columns for currencies. They are written straight through rather than
+                // buffered: balance operations also run their own arithmetic in the database, and a
+                // delayed write would land on top of one of those.
                 for (var currency : coinsManager.getCurrencies()) {
                     String col = coinsManager.col(currency.getId());
                     XCoreApiProvider.get().columnBuilder()
                         .addColumn(col, ColumnType.DOUBLE).defaultValue(currency.getStartingBalance()).notNull()
                         .apply();
+                    playerDAO.writeBuffer().writeThrough(col);
                 }
 
                 // Vault provider (optional)
@@ -585,6 +644,30 @@ public class XCore extends JavaPlugin {
             }
         }
 
+        // ---- Shared services ----
+        // All of these exist before the addons are enabled, because addons reach for them in
+        // onEnable().
+        this.ranks = new fr.xyness.XCore.Integrations.RankResolver();
+        this.deliveryService = new fr.xyness.XCore.Delivery.DeliveryService(this);
+        this.discordNotifier = new fr.xyness.XCore.Integrations.DiscordNotifier(this);
+        discordNotifier.start();
+        this.leaderboards = new fr.xyness.XCore.Leaderboards.LeaderboardService(this);
+        leaderboards.start();
+        this.network = new fr.xyness.XCore.Network.NetworkRegistry(this);
+        network.start();
+
+        // XCore's own placeholders. The expansion existed and nothing ever registered it, so
+        // %xcore_...% quietly resolved to nothing.
+        if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
+            new fr.xyness.XCore.Integrations.PlaceholderHook()
+                    .register(new fr.xyness.XCore.Integrations.XCoreExpansion(this));
+        }
+
+        // Buffered column writes reach the database once a second; the invalidation that follows
+        // goes out a little more often so another server does not read a stale row for long.
+        writeFlushTask = schedulerAdapter.runAsyncTaskTimer(() -> playerDAO.writeBuffer().flush(), 20L, 20L);
+        invalidationTask = schedulerAdapter.runAsyncTaskTimer(this::publishInvalidations, 20L, 5L);
+
         // ---- Addons ----
         addonManager.enableAddons();
         saveDataConfig();
@@ -618,8 +701,18 @@ public class XCore extends JavaPlugin {
         // Addons first (reverse dependency order)
         if (addonManager != null) addonManager.disableAddons();
 
-        // Anything still queued in the transaction log belongs in the database, not in memory.
+        // Stop the timers before flushing, so nothing is queued behind our back.
+        if (writeFlushTask != null) schedulerAdapter.cancelTask(writeFlushTask);
+        if (invalidationTask != null) schedulerAdapter.cancelTask(invalidationTask);
+
+        // Anything still buffered belongs in the database, not in memory.
+        if (playerDAO != null) playerDAO.writeBuffer().flush();
         if (coinsManager != null) coinsManager.flushTransactions();
+
+        // Stop the shared services
+        if (network != null) network.stop();
+        if (leaderboards != null) leaderboards.stop();
+        if (discordNotifier != null) discordNotifier.stop();
 
         // Stop web dashboard
         if (webPanel != null) webPanel.stop();
@@ -630,19 +723,12 @@ public class XCore extends JavaPlugin {
 
         // Shutdown caches
         if (playerCache != null) playerCache.shutdown();
-        if (cacheManager != null) cacheManager.shutdown();
 
-        // Graceful shutdown: wait for in-flight operations
-        executor.shutdown();
-        try {
-            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                logger.sendWarning("Executor did not terminate in 10s, forcing shutdown.");
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
+        // Graceful shutdown: wait for in-flight operations. The database pool goes last, because
+        // the flush above is sitting in it and the connection pool must outlive it.
+        shutdown(executor, "XCore-Work");
+        shutdown(dbExecutor, "XCore-DB");
+        rejectionPolicies.forEach(fr.xyness.XCore.Utils.RejectedTaskPolicy::shutdown);
 
         if (dataSource != null) dataSource.close();
         if (jedisPool != null) jedisPool.close();
@@ -654,13 +740,37 @@ public class XCore extends JavaPlugin {
         logger.sendRawBar();
     }
 
+    /**
+     * Stops a pool and waits for what is already running.
+     *
+     * @param pool The pool to stop, may be {@code null}.
+     * @param name Its name, for the warning.
+     */
+    private void shutdown(ExecutorService pool, String name) {
+        if (pool == null) return;
+        pool.shutdown();
+        try {
+            if (!pool.awaitTermination(10, TimeUnit.SECONDS)) {
+                logger.sendWarning(name + " did not terminate in 10s, forcing shutdown.");
+                pool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            pool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Config update
     // -------------------------------------------------------------------------
 
     /**
-     * Updates the configuration file by adding missing keys from the default config in the JAR.
-     * Existing values are preserved; only new keys are added.
+     * Adds the settings a new version introduces, leaving everything else alone.
+     *
+     * <p>The currency list is named by whoever configures it: renaming {@code dollar} to
+     * {@code euro} used to bring {@code dollar} straight back, because a key-by-key comparison
+     * cannot tell a renamed entry from a missing setting. {@link ConfigMerger} handles that, and the
+     * exchange rates are declared here as well since they are a map of user-invented keys.</p>
      */
     private void updateConfigWithDefaults() {
         saveDefaultConfig();
@@ -673,16 +783,12 @@ public class XCore extends JavaPlugin {
             YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
                 new InputStreamReader(defStream, StandardCharsets.UTF_8));
 
-            boolean changed = false;
-            for (String key : defConfig.getKeys(true)) {
-                if (!defConfig.isConfigurationSection(key) && !diskConfig.contains(key)) {
-                    diskConfig.set(key, defConfig.get(key));
-                    changed = true;
-                }
-            }
+            List<String> added = fr.xyness.XCore.Utils.ConfigMerger.addMissingKeys(
+                    diskConfig, defConfig, "economy.currencies", "economy.exchange.rates");
 
-            if (changed) {
+            if (!added.isEmpty()) {
                 diskConfig.save(configFile);
+                logger.sendDebug("Added " + added.size() + " new setting(s) to config.yml.");
             }
         } catch (IOException e) {
             logger.sendError("Error updating config with defaults: " + e.getMessage());
@@ -697,6 +803,9 @@ public class XCore extends JavaPlugin {
     /** @return The XCore logger instance. */
     public Logger logger() { return logger; }
 
+    /** @return The public API, the same object addons get from {@code XCoreApiProvider}. */
+    public fr.xyness.XCore.API.XCoreApi api() { return XCoreApiProvider.get(); }
+
     /** @return The per-addon profiler behind {@code /xcore profile}. */
     public fr.xyness.XCore.Utils.Profiler profiler() { return profiler; }
 
@@ -706,8 +815,29 @@ public class XCore extends JavaPlugin {
     /** @return The shared utility methods. */
     public Methods methods() { return methods; }
 
-    /** @return The shared executor service. */
+    /** @return The shared executor service, for work that is not a database call. */
     public ExecutorService getExecutor() { return executor; }
+
+    /** @return The pool database work runs on. */
+    public ExecutorService getDbExecutor() { return dbExecutor; }
+
+    /** @return The table and query builder entry point. */
+    public fr.xyness.XCore.Database.TableManager tableManager() { return tableManager; }
+
+    /** @return The mailbox for things a player could not be handed straight away. */
+    public fr.xyness.XCore.Delivery.DeliveryService delivery() { return deliveryService; }
+
+    /** @return The shared Discord webhook sender. */
+    public fr.xyness.XCore.Integrations.DiscordNotifier discord() { return discordNotifier; }
+
+    /** @return The leaderboard service. */
+    public fr.xyness.XCore.Leaderboards.LeaderboardService leaderboards() { return leaderboards; }
+
+    /** @return The network registry: which servers are up, and where the players are. */
+    public fr.xyness.XCore.Network.NetworkRegistry network() { return network; }
+
+    /** @return Group and rank lookups. */
+    public fr.xyness.XCore.Integrations.RankResolver ranks() { return ranks; }
 
     /** @return The player data access object. */
     public PlayerDAO playerDAO() { return playerDAO; }
@@ -733,9 +863,6 @@ public class XCore extends JavaPlugin {
     /** @return The core language manager. */
     public LangManager langManager() { return langManager; }
 
-    /** @return The central cache manager. */
-    public CacheManager getCacheManager() { return cacheManager; }
-
     /** @return The cross-server sync manager. */
     public SyncManager getSyncManager() { return syncManager; }
 
@@ -755,8 +882,42 @@ public class XCore extends JavaPlugin {
         if (!online.isEmpty()) playerCache.getPlayers(online);
     }
 
-    /** @return The GUI manager. */
-    public GuiManager getGuiManager() { return guiManager; }
+    /**
+     * Drops the local copy of the players named in a sync message.
+     *
+     * @param joinedUuids The server UUIDs, separated by commas.
+     */
+    private void invalidatePlayers(String joinedUuids) {
+        if (joinedUuids == null || joinedUuids.isBlank()) return;
+        for (String raw : joinedUuids.split(",")) {
+            String trimmed = raw.trim();
+            if (trimmed.isEmpty()) continue;
+            try {
+                UUID uuid = UUID.fromString(trimmed);
+                playerCache.invalidateByUuid(uuid);
+            } catch (IllegalArgumentException ignored) {
+                // Not a UUID: nothing to invalidate.
+            }
+        }
+    }
+
+    /**
+     * Tells the other servers which players have just been written.
+     *
+     * <p>Sent in one message every quarter of a second rather than one per write, so a player being
+     * paid ten times in a row costs a single notice.</p>
+     */
+    private void publishInvalidations() {
+        if (pendingInvalidations.isEmpty()) return;
+        if (syncManager == null || !syncManager.isRunning()) {
+            pendingInvalidations.clear();
+            return;
+        }
+        java.util.List<String> batch = new java.util.ArrayList<>(pendingInvalidations);
+        pendingInvalidations.removeAll(batch);
+        syncManager.publish(SYNC_CHANNEL, new fr.xyness.XCore.Sync.SyncMessage(
+                "PLAYER_UPDATE", String.join(",", batch)));
+    }
 
     /** @return The addon manager. */
     public AddonManager getAddonManager() { return addonManager; }
