@@ -2,7 +2,7 @@
 version: 1.0.9
 
 # Update date
-date: 17/08/2026
+date: 19/08/2026
 
 # Update notes
 update-notes:
@@ -30,3 +30,13 @@ update-notes:
 - "Sync messages travel in batches"
 - "/xcore diag measures the width of the players table and names the heavy columns"
 - "Removed around 2 200 lines of framework no addon ever used"
+- "The dashboard no longer counts the whole players table on every overview refresh"
+- "Indexed players.last_login, which the dashboard sorts on"
+- "The last_login column check is resolved once instead of on every request"
+- "Added an XCore addons section to /plugins, they were invisible to it"
+- "Added synchronous query methods, for code already off the main thread"
+- "Added database-side paging to PagedGui, for a list too big to hold in memory"
+- "PagedGui only redraws the navigation bar between blinks, not the whole page"
+- "orderBy can be called several times, one clause per column"
+- "A cooldown longer than an hour is no longer cut short at an hour"
+- "A list no longer reopens itself a few ticks after you closed it"

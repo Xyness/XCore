@@ -808,6 +808,32 @@ public class WebPanel {
     /**
      * Handles {@code GET /api/players} — returns player list from database.
      */
+    /** Whether the players table carries last_login, resolved once rather than per request. */
+    private volatile Boolean hasLastLoginColumn;
+
+    /**
+     * Looks for the {@code last_login} column, which an addon registers rather than the core.
+     *
+     * <p>Reading the database metadata is a query of its own, and this was doing it on every
+     * dashboard refresh. A column that appears while the server runs is picked up on the next
+     * restart, which is when it was added anyway.</p>
+     *
+     * @param conn An open connection.
+     * @return Whether the column exists.
+     */
+    private boolean hasLastLoginColumn(java.sql.Connection conn) {
+        Boolean cached = hasLastLoginColumn;
+        if (cached != null) return cached;
+        boolean found = false;
+        try (var rs = conn.getMetaData().getColumns(null, null, "players", "last_login")) {
+            found = rs.next();
+        } catch (Exception ignored) {
+            // Metadata unavailable: fall back to the join date, as before.
+        }
+        hasLastLoginColumn = found;
+        return found;
+    }
+
     private void handlePlayers(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
@@ -836,19 +862,21 @@ public class WebPanel {
         JsonArray players = new JsonArray();
         JsonObject result = new JsonObject();
 
+        // The total is only needed to draw a pager. The overview widget asks for five rows every
+        // five seconds and has no pager, so counting there means a full scan of the table twice a
+        // second for a number nobody reads.
+        boolean wantsTotal = page > 0 || limit >= 25;
+
         try (var conn = fr.xyness.XCore.API.XCoreApiProvider.get().getDataSource().getConnection()) {
-            try (var count = conn.prepareStatement("SELECT COUNT(*) FROM players" + where)) {
-                if (filtered) count.setString(1, "%" + search + "%");
-                try (var rs = count.executeQuery()) {
-                    if (rs.next()) result.addProperty("total", rs.getInt(1));
+            if (wantsTotal) {
+                try (var count = conn.prepareStatement("SELECT COUNT(*) FROM players" + where)) {
+                    if (filtered) count.setString(1, "%" + search + "%");
+                    try (var rs = count.executeQuery()) {
+                        if (rs.next()) result.addProperty("total", rs.getInt(1));
+                    }
                 }
             }
-            // last_login lives in a column the addons register, so it is read when present rather
-            // than assumed: created_at used to be sent under that name, which is the join date.
-            boolean hasLastLogin = false;
-            try (var rs = conn.getMetaData().getColumns(null, null, "players", "last_login")) {
-                hasLastLogin = rs.next();
-            } catch (Exception ignored) {}
+            boolean hasLastLogin = hasLastLoginColumn(conn);
 
             String columns = "player_name, server_uuid, mojang_uuid, created_at"
                     + (hasLastLogin ? ", last_login" : "");

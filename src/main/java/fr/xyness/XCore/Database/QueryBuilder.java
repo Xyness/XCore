@@ -74,8 +74,7 @@ public class QueryBuilder {
     private final List<WhereClause> whereClauses = new ArrayList<>();
     private final List<JoinClause> joinClauses = new ArrayList<>();
     private final List<List<Object>> batchRows = new ArrayList<>();
-    private String orderByColumn;
-    private boolean orderByDesc;
+    private final List<String> orderByClauses = new ArrayList<>();
     private int limitValue = -1;
     private int offsetValue = -1;
 
@@ -365,7 +364,7 @@ public class QueryBuilder {
     }
 
     /**
-     * Adds an ORDER BY clause.
+     * Adds an ORDER BY clause. Called more than once, the clauses stack in the order given.
      *
      * @param column The column to sort by.
      * @param desc   {@code true} for descending, {@code false} for ascending.
@@ -373,8 +372,7 @@ public class QueryBuilder {
      */
     public QueryBuilder orderBy(String column, boolean desc) {
         validateQualified(column);
-        this.orderByColumn = column;
-        this.orderByDesc = desc;
+        orderByClauses.add(column + (desc ? " DESC" : " ASC"));
         return this;
     }
 
@@ -406,32 +404,46 @@ public class QueryBuilder {
      * @return A future containing the list of {@link QueryResult} rows.
      */
     public CompletableFuture<List<QueryResult>> executeAsync() {
-        return CompletableFuture.supplyAsync(() -> {
-            SqlAndParams sp = buildSql();
-            List<QueryResult> results = new ArrayList<>();
-            try (Connection c = dataSource.getConnection();
-                 PreparedStatement ps = c.prepareStatement(sp.sql)) {
-                bindParams(ps, sp.params);
-                try (ResultSet rs = ps.executeQuery()) {
-                    ResultSetMetaData meta = rs.getMetaData();
-                    int colCount = meta.getColumnCount();
-                    while (rs.next()) {
-                        Map<String, Object> row = new LinkedHashMap<>();
-                        for (int i = 1; i <= colCount; i++) {
-                            String colName = meta.getColumnLabel(i);
-                            Object value = rs.getObject(i);
-                            if (value != null) {
-                                row.put(colName, value);
-                            }
+        return CompletableFuture.supplyAsync(this::execute, executor);
+    }
+
+    /**
+     * Runs the SELECT on the calling thread.
+     *
+     * <p>For code that is already off the server thread — a {@code PagedGui} loading its list, a task
+     * on the database pool — and would otherwise have to block on the future. Blocking on a task from
+     * the pool you are running on is what deadlocks; calling this instead never queues anything.</p>
+     *
+     * <p>Called from a tick thread it does what raw JDBC would: it blocks the server. The debug
+     * watchdog names the call site when {@code debug} is on.</p>
+     *
+     * @return The rows.
+     */
+    public List<QueryResult> execute() {
+        SqlAndParams sp = buildSql();
+        List<QueryResult> results = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement(sp.sql)) {
+            bindParams(ps, sp.params);
+            try (ResultSet rs = ps.executeQuery()) {
+                ResultSetMetaData meta = rs.getMetaData();
+                int colCount = meta.getColumnCount();
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    for (int i = 1; i <= colCount; i++) {
+                        String colName = meta.getColumnLabel(i);
+                        Object value = rs.getObject(i);
+                        if (value != null) {
+                            row.put(colName, value);
                         }
-                        results.add(new QueryResult(row));
                     }
+                    results.add(new QueryResult(row));
                 }
-            } catch (SQLException e) {
-                throw new RuntimeException("Query execution failed : " + e.getMessage(), e);
             }
-            return results;
-        }, executor);
+        } catch (SQLException e) {
+            throw new RuntimeException("Query execution failed : " + e.getMessage(), e);
+        }
+        return results;
     }
 
     /**
@@ -444,16 +456,24 @@ public class QueryBuilder {
      * @return A future completing with the number of rows affected.
      */
     public CompletableFuture<Integer> executeUpdateAsync() {
-        return CompletableFuture.supplyAsync(() -> {
-            SqlAndParams sp = buildSql();
-            try (Connection c = dataSource.getConnection();
-                 PreparedStatement ps = c.prepareStatement(sp.sql)) {
-                bindParams(ps, sp.params);
-                return ps.executeUpdate();
-            } catch (SQLException e) {
-                throw new RuntimeException("Update execution failed : " + e.getMessage(), e);
-            }
-        }, executor);
+        return CompletableFuture.supplyAsync(this::executeUpdate, executor);
+    }
+
+    /**
+     * Runs the INSERT, UPDATE or DELETE on the calling thread, for code already off the server
+     * thread. Same warning as {@link #execute()} otherwise.
+     *
+     * @return The number of rows affected.
+     */
+    public int executeUpdate() {
+        SqlAndParams sp = buildSql();
+        try (Connection c = dataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement(sp.sql)) {
+            bindParams(ps, sp.params);
+            return ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Update execution failed : " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -462,25 +482,33 @@ public class QueryBuilder {
      * @return A future containing the count.
      */
     public CompletableFuture<Integer> executeCountAsync() {
-        return CompletableFuture.supplyAsync(() -> {
-            // Build a count query based on the WHERE clauses
-            StringBuilder sb = new StringBuilder();
-            sb.append("SELECT COUNT(*) FROM ").append(tableName);
-            appendJoins(sb);
-            List<Object> params = new ArrayList<>();
-            appendWhere(sb, params);
+        return CompletableFuture.supplyAsync(this::executeCount, executor);
+    }
 
-            try (Connection c = dataSource.getConnection();
-                 PreparedStatement ps = c.prepareStatement(sb.toString())) {
-                bindParams(ps, params);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) return rs.getInt(1);
-                    return 0;
-                }
-            } catch (SQLException e) {
-                throw new RuntimeException("Count query failed : " + e.getMessage(), e);
+    /**
+     * Runs the COUNT on the calling thread, for code already off the server thread. Same warning as
+     * {@link #execute()} otherwise.
+     *
+     * @return The count.
+     */
+    public int executeCount() {
+        // Build a count query based on the WHERE clauses
+        StringBuilder sb = new StringBuilder();
+        sb.append("SELECT COUNT(*) FROM ").append(tableName);
+        appendJoins(sb);
+        List<Object> params = new ArrayList<>();
+        appendWhere(sb, params);
+
+        try (Connection c = dataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement(sb.toString())) {
+            bindParams(ps, params);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt(1);
+                return 0;
             }
-        }, executor);
+        } catch (SQLException e) {
+            throw new RuntimeException("Count query failed : " + e.getMessage(), e);
+        }
     }
 
     // -- SQL building --
@@ -504,8 +532,8 @@ public class QueryBuilder {
                 sb.append(" FROM ").append(tableName);
                 appendJoins(sb);
                 appendWhere(sb, params);
-                if (orderByColumn != null) {
-                    sb.append(" ORDER BY ").append(orderByColumn).append(orderByDesc ? " DESC" : " ASC");
+                if (!orderByClauses.isEmpty()) {
+                    sb.append(" ORDER BY ").append(String.join(", ", orderByClauses));
                 }
                 if (limitValue >= 0) {
                     sb.append(" LIMIT ").append(limitValue);

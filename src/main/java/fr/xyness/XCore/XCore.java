@@ -399,6 +399,15 @@ public class XCore extends JavaPlugin {
             .addColumn("playtime", ColumnType.BIGINT).defaultValue(0)
             .apply();
 
+        // The dashboard lists players most recently seen first, which is a sort of the whole table
+        // without this.
+        try (Connection connection = dataSource.getConnection()) {
+            fr.xyness.XCore.Database.SqlUtils.createIndexIfNotExists(connection, databaseType,
+                    "idx_players_last_login", "players", "last_login");
+        } catch (SQLException e) {
+            logger.sendWarning("Could not index players.last_login : " + e.getMessage());
+        }
+
         // ---- Redis ----
         boolean crossServerEnabled = config.getBoolean("cross-server.enabled", false);
         if (crossServerEnabled && config.getBoolean("cross-server.redis.enabled", false)) {
@@ -507,6 +516,13 @@ public class XCore extends JavaPlugin {
 
         // ---- Listeners ----
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
+
+        // Addons are not Bukkit plugins, so /plugins cannot see them. This answers instead, and
+        // leaves /bukkit:plugins as the way back to the built-in list.
+        if (config.getBoolean("plugins-command.override", true)) {
+            getServer().getPluginManager().registerEvents(
+                    new fr.xyness.XCore.Commands.PluginsCommand(this), this);
+        }
 
         // ---- Commands ----
         new XCoreCommand(this).register();

@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Expiry;
 
 /**
  * Per-player cooldowns. Entries expire on their own, so nothing has to be cleaned up when a player
@@ -27,20 +28,43 @@ public class Cooldowns {
     /** Expiry timestamps, keyed by {@code name:uuid}. */
     private final Cache<String, Long> entries;
 
-    /** Uses a one-hour ceiling for entries nobody reads back. */
+    /** Entries go away when they run out, whenever that is. */
     public Cooldowns() {
-        this(Duration.ofHours(1));
+        this.entries = Caffeine.newBuilder()
+                // Each entry expires at its own deadline. A fixed window would have been simpler,
+                // but it silently caps every cooldown at that window: a one-day ban appeal delay
+                // held in a one-hour cache is a one-hour delay.
+                .expireAfter(new Expiry<String, Long>() {
+                    @Override
+                    public long expireAfterCreate(String key, Long until, long currentTime) {
+                        return TimeUnit.MILLISECONDS.toNanos(
+                                Math.max(0, until - System.currentTimeMillis()));
+                    }
+
+                    @Override
+                    public long expireAfterUpdate(String key, Long until, long currentTime, long currentDuration) {
+                        return expireAfterCreate(key, until, currentTime);
+                    }
+
+                    @Override
+                    public long expireAfterRead(String key, Long until, long currentTime, long currentDuration) {
+                        return currentDuration;
+                    }
+                })
+                .maximumSize(50_000)
+                .build();
     }
 
     /**
-     * @param maxDuration The longest cooldown this instance will ever hold, so entries can be
-     *                    dropped once they cannot possibly still be running.
+     * Kept for callers that used to size the cache themselves. The ceiling is no longer needed —
+     * every entry now expires on its own deadline — and the argument is ignored.
+     *
+     * @param maxDuration Ignored.
+     * @deprecated Use {@link #Cooldowns()}.
      */
+    @Deprecated
     public Cooldowns(Duration maxDuration) {
-        this.entries = Caffeine.newBuilder()
-                .expireAfterWrite(maxDuration.toMillis(), TimeUnit.MILLISECONDS)
-                .maximumSize(50_000)
-                .build();
+        this();
     }
 
     private static String key(String name, UUID player) {

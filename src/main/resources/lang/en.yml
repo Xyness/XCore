@@ -239,3 +239,19 @@ update-available: "<dark_red>[{addon}] <red>An update is available: <underlined>
 # ---------------------------------------------------------------------------
 
 delivery-received: " <yellow>▸ <white>You have received <gray>{count} <white>pending item(s)."
+
+# ---------------------------------------------------------------------------
+# /plugins, answered by XCore so its addons appear next to the server plugins.
+# ---------------------------------------------------------------------------
+
+plugins-header: " <aqua>Server plugins <gray>({count})"
+plugins-section-paper: " <yellow>▸ <white>Paper plugins"
+plugins-section-bukkit: " <yellow>▸ <white>Bukkit plugins"
+plugins-section-addons: " <yellow>▸ <white>XCore addons <gray>({count})"
+plugins-addons-none: "   <gray>none installed"
+plugins-separator: "<gray>, "
+plugins-entry-enabled: "<green>{name}"
+plugins-entry-disabled: "<red>{name}"
+plugins-entry-loading: "<yellow>{name}"
+plugins-hover: "<white>{name} <gray>{version}<newline><gray>by {author}"
+plugins-addon-hover: "<white>{name} <gray>{version}<newline><gray>by {author}<newline><newline><gray>{description}<newline><newline><gray>Click to reload it"
