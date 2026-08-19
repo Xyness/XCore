@@ -103,6 +103,12 @@ web-dashboard:
   # port above; set it when a reverse proxy or a domain sits in front (e.g. https://panel.example.com)
   public-url: ""
 
+# /plugins does not know about the addons: they are loaded by XCore, not by the server. With this
+# on, the command answers with a third section listing them. /bukkit:plugins still gives the
+# server's own list.
+plugins-command:
+  override: true
+
 # Deliveries: what an addon owes a player but could not hand over — a reward when the inventory was
 # full, a payment for somebody offline. Any addon can use it; nothing is ever lost in the meantime.
 delivery:

@@ -450,6 +450,13 @@ cannot both read the old value and write back a total that loses the other's cha
 `executeUpdateAsync()` returns the number of rows affected, which is what makes a conditional write
 usable: `UPDATE ... WHERE stock > 0` touching one row is a sale, touching none is "out of stock".
 
+`execute()`, `executeUpdate()` and `executeCount()` are the same queries run on the calling thread,
+for code that is already off the main one — a `PagedGui` loading its list, a task on the database
+pool. They save a `join()`, and a `join()` from the database pool onto the database pool is exactly
+what deadlocks. From a tick thread they block the server, and the debug watchdog names the call site.
+
+`orderBy` can be called more than once; the clauses stack in the order given.
+
 ```java
 // Write the row, or update it if it is already there. The key columns need a unique index.
 api().query("homes").insert()
@@ -709,6 +716,17 @@ public class WarpGui extends PagedGui<Warp> {
     }
 }
 ```
+
+`items()` runs off the server thread, on every open and every page change, so reading the database
+in it is the expected thing to do.
+
+Entries are drawn once per page. `itemsBlink()` returns true for a list whose entries have two
+faces; they then go through the blink cache, which is dropped every `itemCacheTicks()` so a
+remaining time in a lore still moves.
+
+A list too large to hold in memory — every account a server has ever seen, for one — pages in the
+database instead: override `totalItems(viewer)` with the count and `loadPage(viewer, page, perPage)`
+with that one page. `items()` is then never called.
 
 #### Blinking buttons
 

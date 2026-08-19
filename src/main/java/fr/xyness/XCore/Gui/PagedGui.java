@@ -61,6 +61,7 @@ public abstract class PagedGui<T> implements InventoryHolder {
     private final BlinkCache blink = new BlinkCache();
     private final boolean[] blinkState = {true};
     private Object blinkTask;
+    private long ticksSinceRefresh;
 
     /**
      * @param scheduler  The scheduler, for the blink task.
@@ -80,10 +81,47 @@ public abstract class PagedGui<T> implements InventoryHolder {
     // -------------------------------------------------------------------------
 
     /**
+     * Everything to page through.
+     *
+     * <p>Called off the server thread, once per open and per page change, so reading the database
+     * here is the expected thing to do.</p>
+     *
      * @param viewer Who is looking.
-     * @return Everything to page through. Called once per open and per page change.
+     * @return The full list; paging is handled for you.
      */
     protected abstract List<T> items(Player viewer);
+
+    /**
+     * How many entries there are in total, when the list is paged by the database.
+     *
+     * <p>Left at -1 the whole list comes from {@link #items(Player)} and is paged in memory, which
+     * is what almost every screen wants. Override this together with
+     * {@link #loadPage(Player, int, int)} when the list is large enough that holding it per viewer
+     * is out of the question — the player table of a server that has seen fifty thousand people,
+     * for one.</p>
+     *
+     * <p>Called off the server thread, before the page is loaded.</p>
+     *
+     * @param viewer Who is looking.
+     * @return The total count, or -1 to page in memory.
+     */
+    protected int totalItems(Player viewer) {
+        return -1;
+    }
+
+    /**
+     * One page of entries, when {@link #totalItems(Player)} says the database does the paging.
+     *
+     * <p>Called off the server thread, once per open and per page change.</p>
+     *
+     * @param viewer  Who is looking.
+     * @param page    The page, 1-based and already clamped.
+     * @param perPage How many entries fit on a page.
+     * @return That page's entries.
+     */
+    protected List<T> loadPage(Player viewer, int page, int perPage) {
+        return List.of();
+    }
 
     /**
      * Draws one entry.
@@ -146,6 +184,45 @@ public abstract class PagedGui<T> implements InventoryHolder {
         return new String[0];
     }
 
+    /**
+     * The language key of the title. The definition's own key unless a screen serves several lists
+     * from one YAML file and each wants its own heading.
+     *
+     * @return The key to look up.
+     */
+    protected String titleKey() {
+        return definition.getTitleKey();
+    }
+
+    /**
+     * Whether {@link #render} has to run again on every blink tick.
+     *
+     * <p>Off by default, and that is the answer for nearly every list: the entries are drawn once
+     * per page and only the bar alternates. Turning it on means rebuilding a full page of items
+     * twice a second — worth it only when an entry really does have two faces.</p>
+     *
+     * @return {@code true} to redraw the entries along with the bar.
+     */
+    protected boolean itemsBlink() {
+        return false;
+    }
+
+    /**
+     * How long a rendered entry is kept before being built again, in ticks.
+     *
+     * <p>Only consulted when {@link #itemsBlink()} is on. The two faces of an entry are cached, so
+     * the blink task places an item instead of parsing a lore; every so often the cache is dropped
+     * so anything live in there — a remaining time, a current bid — catches up. Five seconds is a
+     * fair trade for a countdown shown in minutes.</p>
+     *
+     * <p>Return 0 for a value that must be exact on every tick, and accept the cost.</p>
+     *
+     * @return The lifetime in ticks, 0 to disable the cache.
+     */
+    protected long itemCacheTicks() {
+        return 100L;
+    }
+
     // -------------------------------------------------------------------------
     // Opening and drawing
     // -------------------------------------------------------------------------
@@ -153,18 +230,64 @@ public abstract class PagedGui<T> implements InventoryHolder {
     /**
      * Opens the screen at a given page.
      *
+     * <p>{@link #items(Player)} is called off the server thread, because a list screen almost
+     * always reads the database to build it. Everything after that — creating the inventory,
+     * drawing it, opening it — happens on the viewer's own thread.</p>
+     *
      * @param player The viewer.
      * @param page   The page, 1-based; clamped to what exists.
      */
     public void open(Player player, int page) {
         this.viewer = player;
-        this.page = Math.max(1, page);
+        int requested = Math.max(1, page);
 
-        List<T> all = items(player);
-        Pagination<T> pagination = new Pagination<>(all, Math.max(1, definition.pageSlots().size()));
-        this.maxPage = pagination.getMaxPage();
-        if (this.page > maxPage) this.page = maxPage;
-        this.pageItems = pagination.getPage(this.page);
+        scheduler.runAsyncTask(() -> {
+            int perPage = Math.max(1, definition.pageSlots().size());
+            List<T> loaded;
+            int pages;
+            int shown;
+            try {
+                int total = totalItems(player);
+                if (total >= 0) {
+                    // The database pages: only the entries actually shown are read.
+                    pages = Math.max(1, (int) Math.ceil(total / (double) perPage));
+                    shown = Math.min(Math.max(1, requested), pages);
+                    loaded = loadPage(player, shown, perPage);
+                } else {
+                    List<T> all = items(player);
+                    Pagination<T> pagination = new Pagination<>(all == null ? List.of() : all, perPage);
+                    pages = pagination.getMaxPage();
+                    shown = Math.min(Math.max(1, requested), pages);
+                    loaded = pagination.getPage(shown);
+                }
+            } catch (Throwable t) {
+                loaded = List.of();
+                pages = 1;
+                shown = 1;
+            }
+            final List<T> items = loaded == null ? List.<T>of() : loaded;
+            final int finalPages = pages;
+            final int finalPage = shown;
+            scheduler.runEntityTask(player, () -> {
+                if (!player.isOnline()) return;
+                build(items, finalPage, finalPages);
+                player.openInventory(inventory);
+                startBlinking();
+            });
+        });
+    }
+
+    /**
+     * Fills the fields for one page and creates the inventory. On the viewer's thread.
+     *
+     * @param items   The entries of the page.
+     * @param shown   The page being shown.
+     * @param pages   How many pages there are.
+     */
+    private void build(List<T> items, int shown, int pages) {
+        this.maxPage = pages;
+        this.page = shown;
+        this.pageItems = items;
 
         String[] extra = titlePlaceholders();
         String[] placeholders = new String[extra.length + 4];
@@ -175,25 +298,39 @@ public abstract class PagedGui<T> implements InventoryHolder {
         System.arraycopy(extra, 0, placeholders, 4, extra.length);
 
         this.inventory = Bukkit.createInventory(this, definition.getRows() * 9,
-                lang.getComponent(definition.getTitleKey(), placeholders));
+                lang.getComponent(titleKey(), placeholders));
 
         blink.clear();
+        ticksSinceRefresh = 0;
         draw();
-
-        scheduler.runEntityTask(player, () -> {
-            player.openInventory(inventory);
-            startBlinking();
-        });
     }
 
     /**
      * Moves to another page, keeping the screen open.
      *
+     * <p>The title carries the page number, so a new inventory is opened rather than the current
+     * one being refilled.</p>
+     *
      * @param page The page to show.
      */
     public void goTo(int page) {
         if (viewer == null) return;
+        stopBlinking();
         open(viewer, page);
+    }
+
+    /**
+     * Reads the list again and redraws the page being shown. What to call after an action that
+     * changed the list — a sanction lifted, an item bought.
+     *
+     * <p>A refresh usually runs a few ticks after the action, to let the command finish writing.
+     * If the viewer has closed the screen in the meantime, nothing happens: reopening a menu
+     * somebody just walked away from is not a refresh, it is a menu that will not go away.</p>
+     */
+    public void refresh() {
+        if (viewer == null || inventory == null) return;
+        if (!inventory.equals(viewer.getOpenInventory().getTopInventory())) return;
+        goTo(page);
     }
 
     /** Fills the inventory with the current page. */
@@ -203,15 +340,39 @@ public abstract class PagedGui<T> implements InventoryHolder {
 
         for (int i = 0; i < slots.size(); i++) {
             int slot = slots.get(i);
-            if (i < pageItems.size()) {
-                inventory.setItem(slot, render(pageItems.get(i), viewer, on));
-            } else {
+            if (i >= pageItems.size()) {
                 inventory.setItem(slot, null);
+                continue;
+            }
+            T item = pageItems.get(i);
+            if (itemsBlink() && itemCacheTicks() > 0) {
+                inventory.setItem(slot, blink.get(slot, on, () -> render(item, viewer, on)));
+            } else {
+                inventory.setItem(slot, render(item, viewer, on));
             }
         }
 
         decorate(inventory, viewer, on);
         drawBar(on);
+    }
+
+    /**
+     * What the blink task redraws. The entries stay as they are unless {@link #itemsBlink()} says
+     * otherwise, so a page of heads is built once and not forty-five times a second.
+     */
+    private void blinkTick() {
+        if (itemsBlink()) {
+            long lifetime = itemCacheTicks();
+            ticksSinceRefresh += BLINK_PERIOD;
+            if (lifetime > 0 && ticksSinceRefresh >= lifetime) {
+                ticksSinceRefresh = 0;
+                blink.clear();
+            }
+            draw();
+            return;
+        }
+        decorate(inventory, viewer, blinkState[0]);
+        drawBar(blinkState[0]);
     }
 
     /** Draws the three navigation buttons, from the definition when it declares them. */
@@ -247,7 +408,7 @@ public abstract class PagedGui<T> implements InventoryHolder {
                 return;
             }
             blinkState[0] = !blinkState[0];
-            draw();
+            blinkTick();
         }, BLINK_PERIOD, BLINK_PERIOD);
     }
 
