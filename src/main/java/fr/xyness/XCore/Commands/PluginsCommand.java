@@ -41,15 +41,22 @@ import net.kyori.adventure.text.format.TextColor;
  * <h2>How it takes the command over</h2>
  * By swapping the entry in the command map, which Paper exposes through
  * {@link org.bukkit.Server#getCommandMap()} — public API, no reflection and nothing out of
- * CraftBukkit. Only the unqualified {@code plugins} and {@code pl} are replaced; the server's own
- * version keeps its namespaced form, {@code /bukkit:plugins}, so there is always a way back. The
- * originals go back on disable, and the whole thing is off with
- * {@code plugins-command.override: false}.
+ * CraftBukkit. Both the short forms and the namespaced {@code bukkit:} ones are replaced, so there
+ * is one answer to the question rather than two that disagree. The originals are kept and put back
+ * on disable, and the whole thing is off with {@code plugins-command.override: false}, which is
+ * what to reach for if this ever gets in the way.
  */
 public class PluginsCommand extends Command {
 
-    /** What we take over. The namespaced forms are deliberately left alone. */
-    private static final List<String> LABELS = List.of("plugins", "pl");
+    /**
+     * Every key we take over, the namespaced forms included.
+     *
+     * <p>{@code SimpleCommandMap} registers a command twice: under its label and under
+     * {@code fallbackPrefix:label}. Replacing only the short forms left {@code /bukkit:plugins}
+     * printing a list with no addons in it, which is a second answer to the same question.</p>
+     */
+    private static final List<String> LABELS =
+            List.of("plugins", "pl", "bukkit:plugins", "bukkit:pl");
 
     /** What was in the map before, so disable can put it back. */
     private static final Map<String, Command> REPLACED = new java.util.HashMap<>();

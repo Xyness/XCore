@@ -104,8 +104,9 @@ web-dashboard:
   public-url: ""
 
 # /plugins does not know about the addons: they are loaded by XCore, not by the server. With this
-# on, the command answers with a third section listing them. /bukkit:plugins still gives the
-# server's own list.
+# on, the command answers with Paper's own list plus a third section for them. /bukkit:plugins and
+# /bukkit:pl answer the same way, so the two forms cannot disagree.
+# Turn this off to hand the command back to the server exactly as it was.
 plugins-command:
   override: true
 
