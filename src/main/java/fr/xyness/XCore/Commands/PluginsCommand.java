@@ -67,7 +67,7 @@ public class PluginsCommand extends Command {
     private static final TextColor BUKKIT_COLOR = TextColor.color(0xED8106);
 
     /** The addon section. */
-    private static final TextColor ADDON_COLOR = TextColor.color(0xED815F);
+    private static final TextColor ADDON_COLOR = TextColor.color(0xA855F7);
 
     private static final Component PLUGIN_TICK = Component.text("- ", NamedTextColor.DARK_GRAY);
     private static final Component PLUGIN_TICK_EMPTY = Component.text(" ");
