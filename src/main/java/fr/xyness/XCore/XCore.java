@@ -103,6 +103,7 @@ public class XCore extends JavaPlugin {
      * on a task queued behind itself. Sized after the connection pool: more threads than
      * connections only means more threads waiting for one.
      */
+    private volatile boolean migrateUuidChanges = true;
     private ExecutorService dbExecutor;
 
     private ExecutorService buildPool(String name, int size) {
@@ -251,6 +252,7 @@ public class XCore extends JavaPlugin {
         // ---- Lang ----
         langManager = new LangManager(this);
         logger.setDebug(config.getBoolean("debug", false));
+        migrateUuidChanges = config.getBoolean("migrate-uuid-changes", true);
         profiler.setEnabled(config.getBoolean("profiling", false));
 
         // ---- Database (HikariCP) ----
@@ -834,6 +836,16 @@ public class XCore extends JavaPlugin {
 
     /** @return The pool database work runs on. */
     public ExecutorService getDbExecutor() { return dbExecutor; }
+
+    /**
+     * Whether a returning player whose UUID changed is moved onto the new one.
+     *
+     * <p>Held rather than read: the join handler asked the configuration for it on every
+     * connection, and a listener reading config.yml is what a Settings holder exists to avoid.</p>
+     *
+     * @return {@code true} when the row is migrated.
+     */
+    public boolean isMigrateUuidChanges() { return migrateUuidChanges; }
 
     /** @return The table and query builder entry point. */
     public fr.xyness.XCore.Database.TableManager tableManager() { return tableManager; }

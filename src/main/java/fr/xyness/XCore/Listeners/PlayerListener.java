@@ -125,7 +125,7 @@ public class PlayerListener implements Listener {
      * @return A future holding the previous row, or empty when this really is a new player.
      */
     private CompletableFuture<Optional<PlayerData>> findPreviousIdentity(UUID playerId, String playerName, String mojangUuid) {
-        if (!core.getConfig().getBoolean("migrate-uuid-changes", true)) {
+        if (!core.isMigrateUuidChanges()) {
             return CompletableFuture.completedFuture(Optional.empty());
         }
 
