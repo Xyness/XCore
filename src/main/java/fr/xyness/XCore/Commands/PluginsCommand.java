@@ -66,8 +66,8 @@ public class PluginsCommand extends Command {
     private static final TextColor PAPER_COLOR = TextColor.color(0x0288D1);
     private static final TextColor BUKKIT_COLOR = TextColor.color(0xED8106);
 
-    /** The addon section. Green, because that is the colour of XCore's own console output. */
-    private static final TextColor ADDON_COLOR = TextColor.color(0x4CAF50);
+    /** The addon section, in XCore's own blue. */
+    private static final TextColor ADDON_COLOR = TextColor.color(0x262FDE);
 
     private static final Component PLUGIN_TICK = Component.text("- ", NamedTextColor.DARK_GRAY);
     private static final Component PLUGIN_TICK_EMPTY = Component.text(" ");
