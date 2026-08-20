@@ -42,3 +42,4 @@ update-notes:
 - "A cooldown longer than an hour is no longer cut short at an hour"
 - "A list no longer reopens itself a few ticks after you closed it"
 - "A paginated screen can re-read its list on a timer, for a list other people change while you watch"
+- "The UUID migration setting is held instead of read from the config on every join"
