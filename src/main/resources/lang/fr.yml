@@ -245,14 +245,3 @@ delivery-received: " <yellow>▸ <white>Vous avez reçu <gray>{count} <white>obj
 # /plugins, answered by XCore so its addons appear next to the server plugins.
 # ---------------------------------------------------------------------------
 
-plugins-header: " <aqua>Plugins du serveur <gray>({count})"
-plugins-section-paper: " <yellow>▸ <white>Plugins Paper"
-plugins-section-bukkit: " <yellow>▸ <white>Plugins Bukkit"
-plugins-section-addons: " <yellow>▸ <white>Addons XCore <gray>({count})"
-plugins-addons-none: "   <gray>aucun installé"
-plugins-separator: "<gray>, "
-plugins-entry-enabled: "<green>{name}"
-plugins-entry-disabled: "<red>{name}"
-plugins-entry-loading: "<yellow>{name}"
-plugins-hover: "<white>{name} <gray>{version}<newline><gray>par {author}"
-plugins-addon-hover: "<white>{name} <gray>{version}<newline><gray>par {author}<newline><newline><gray>{description}<newline><newline><gray>Cliquez pour le recharger"

@@ -1,18 +1,16 @@
 package fr.xyness.XCore.Commands;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import org.bukkit.Bukkit;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandMap;
 import org.bukkit.command.CommandSender;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerCommandPreprocessEvent;
-import org.bukkit.event.server.ServerCommandEvent;
 import org.bukkit.plugin.Plugin;
+import org.jetbrains.annotations.NotNull;
 
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Addon.AddonManager;
@@ -20,24 +18,69 @@ import fr.xyness.XCore.Addon.AddonState;
 import fr.xyness.XCore.Addon.XAddon;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
+import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextColor;
 
 /**
- * Replaces {@code /plugins} so the XCore addons appear next to the server's plugins.
+ * Adds the XCore addons to {@code /plugins}.
  *
  * <p>Addons are not Bukkit plugins — XCore loads them from its own folder with its own class
  * loader — so the server has no way of listing them. Somebody looking at {@code /plugins} to see
  * what is installed gets half the picture.</p>
  *
- * <p>The command is intercepted rather than re-registered: the built-in stays reachable as
- * {@code /bukkit:plugins}, and nothing is patched into the command map. Switch it off with
- * {@code plugins-command.override: false}.</p>
+ * <h2>The output is Paper's</h2>
+ * Deliberately, down to the information icon, the section colours, the ten-per-line wrapping and
+ * the click that runs {@code /version}. This is the same list with one more section, not a
+ * different list: an administrator should not have to learn a second layout because an addon
+ * framework is installed.
+ *
+ * <h2>How it takes the command over</h2>
+ * By swapping the entry in the command map, which Paper exposes through
+ * {@link org.bukkit.Server#getCommandMap()} — public API, no reflection and nothing out of
+ * CraftBukkit. Only the unqualified {@code plugins} and {@code pl} are replaced; the server's own
+ * version keeps its namespaced form, {@code /bukkit:plugins}, so there is always a way back. The
+ * originals go back on disable, and the whole thing is off with
+ * {@code plugins-command.override: false}.
  */
-public class PluginsCommand implements Listener {
+public class PluginsCommand extends Command {
 
-    /** What we answer to, once the leading slash and any arguments are removed. */
+    /** What we take over. The namespaced forms are deliberately left alone. */
     private static final List<String> LABELS = List.of("plugins", "pl");
+
+    /** What was in the map before, so disable can put it back. */
+    private static final Map<String, Command> REPLACED = new java.util.HashMap<>();
+
+    // Paper's own palette, so the sections do not shift colour when this is installed.
+    private static final TextColor INFO_COLOR = TextColor.color(52, 159, 218);
+    private static final TextColor PAPER_COLOR = TextColor.color(0x0288D1);
+    private static final TextColor BUKKIT_COLOR = TextColor.color(0xED8106);
+
+    /** The addon section. Green, because that is the colour of XCore's own console output. */
+    private static final TextColor ADDON_COLOR = TextColor.color(0x4CAF50);
+
+    private static final Component PLUGIN_TICK = Component.text("- ", NamedTextColor.DARK_GRAY);
+    private static final Component PLUGIN_TICK_EMPTY = Component.text(" ");
+
+    private static final Component SERVER_PLUGIN_INFO = Component.text("ℹ What is a server plugin?", INFO_COLOR)
+            .append(plainLines("Server plugins can add new behavior to your server!\n"
+                    + "You can find new plugins on Paper's plugin repository, Hangar.\n\n"
+                    + "https://hangar.papermc.io/\n"));
+
+    private static final Component ADDON_INFO = Component.text("ℹ What is an XCore addon?", INFO_COLOR)
+            .append(plainLines("An addon is a plugin that runs inside XCore.\n"
+                    + "It is loaded from plugins/XCore/addons/, not from plugins/,\n"
+                    + "which is why the server does not list it as a plugin.\n"));
+
+    private static final Component INFO_ICON_SERVER_PLUGIN = Component.text("ℹ ", INFO_COLOR)
+            .hoverEvent(HoverEvent.showText(SERVER_PLUGIN_INFO))
+            .clickEvent(ClickEvent.openUrl("https://docs.papermc.io/paper/adding-plugins"));
+
+    private static final Component INFO_ICON_ADDON = Component.text("ℹ ", INFO_COLOR)
+            .hoverEvent(HoverEvent.showText(ADDON_INFO));
 
     private final XCore core;
 
@@ -45,139 +88,201 @@ public class PluginsCommand implements Listener {
      * @param core The plugin instance.
      */
     public PluginsCommand(XCore core) {
+        super("plugins", "Gets a list of plugins running on the server", "/plugins", List.of("pl"));
         this.core = core;
+        // The permission the built-in uses, so an existing setup keeps working.
+        setPermission("bukkit.command.plugins");
     }
 
     /**
-     * Intercepts the command typed by a player.
+     * Puts this command in the map in place of the server's.
      *
-     * @param event The command event.
+     * @param core The plugin instance.
+     * @return {@code true} when the swap happened.
      */
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
-    public void onPlayerCommand(PlayerCommandPreprocessEvent event) {
-        if (!matches(event.getMessage())) return;
-        if (!event.getPlayer().hasPermission("bukkit.command.plugins")) return;
-        event.setCancelled(true);
-        send(event.getPlayer());
-    }
-
-    /**
-     * Intercepts the command typed in the console.
-     *
-     * @param event The command event.
-     */
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
-    public void onServerCommand(ServerCommandEvent event) {
-        if (!matches("/" + event.getCommand())) return;
-        event.setCancelled(true);
-        send(event.getSender());
-    }
-
-    /**
-     * Whether this is a bare {@code /plugins} or {@code /pl}.
-     *
-     * <p>A namespaced form such as {@code /bukkit:plugins} is deliberately left alone, so the
-     * server's own list stays one command away.</p>
-     *
-     * @param message The full command line, slash included.
-     * @return {@code true} when we should answer instead.
-     */
-    private boolean matches(String message) {
-        if (message == null || message.isEmpty()) return false;
-        String label = message.startsWith("/") ? message.substring(1) : message;
-        int space = label.indexOf(' ');
-        if (space >= 0) label = label.substring(0, space);
-        return LABELS.contains(label.toLowerCase());
-    }
-
-    /**
-     * Writes the three lists.
-     *
-     * @param sender Who asked.
-     */
-    private void send(CommandSender sender) {
-        List<Plugin> paper = new ArrayList<>();
-        List<Plugin> bukkit = new ArrayList<>();
-        for (Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
-            (isPaperPlugin(plugin) ? paper : bukkit).add(plugin);
+    public static boolean install(XCore core) {
+        try {
+            CommandMap map = Bukkit.getCommandMap();
+            Map<String, Command> known = map.getKnownCommands();
+            PluginsCommand ours = new PluginsCommand(core);
+            for (String label : LABELS) {
+                Command previous = known.put(label, ours);
+                if (previous != null) REPLACED.put(label, previous);
+            }
+            // A map that handed back a copy would leave the built-in in place and no error behind.
+            return known.get("plugins") == ours;
+        } catch (Throwable t) {
+            core.getLogger().warning("Could not take over /plugins, leaving the server's own: " + t.getMessage());
+            return false;
         }
-        paper.sort(Comparator.comparing(p -> p.getName().toLowerCase()));
-        bukkit.sort(Comparator.comparing(p -> p.getName().toLowerCase()));
+    }
 
-        AddonManager addons = core.getAddonManager();
-        Map<String, XAddon> loaded = addons == null ? Map.of() : addons.getAddons();
+    /** Puts the server's own command back. */
+    public static void uninstall() {
+        if (REPLACED.isEmpty()) return;
+        try {
+            Map<String, Command> known = Bukkit.getCommandMap().getKnownCommands();
+            REPLACED.forEach(known::put);
+        } catch (Throwable ignored) {
+            // Shutting down: an unrestored entry outlives nothing.
+        }
+        REPLACED.clear();
+    }
 
-        int total = paper.size() + bukkit.size() + loaded.size();
-        sender.sendMessage(core.langManager().getComponent("plugins-header", "count", String.valueOf(total)));
+    @Override
+    public boolean execute(@NotNull CommandSender sender, @NotNull String label, @NotNull String[] args) {
+        if (!testPermission(sender)) return true;
+
+        TreeMap<String, Plugin> paper = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        TreeMap<String, Plugin> bukkit = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for (Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
+            (isPaperPlugin(plugin) ? paper : bukkit).put(plugin.getName(), plugin);
+        }
+
+        AddonManager manager = core.getAddonManager();
+        Map<String, XAddon> addons = manager == null ? Map.of() : new TreeMap<>(manager.getAddons());
+
+        // Paper only shows the per-section counts when there is more than one section to tell
+        // apart. Counting the addons in, the rule is the same.
+        int sections = (paper.isEmpty() ? 0 : 1) + (bukkit.isEmpty() ? 0 : 1) + (addons.isEmpty() ? 0 : 1);
+        boolean showSizes = sections > 1;
+
+        sender.sendMessage(Component.text()
+                .append(INFO_ICON_SERVER_PLUGIN)
+                .append(Component.text("Server Plugins (%s):".formatted(paper.size() + bukkit.size()),
+                        NamedTextColor.WHITE))
+                .build());
 
         if (!paper.isEmpty()) {
-            sender.sendMessage(core.langManager().getComponent("plugins-section-paper"));
-            sender.sendMessage(joinPlugins(paper));
+            sender.sendMessage(header("Paper Plugins", PAPER_COLOR, paper.size(), showSizes));
+            for (Component line : lines(paper.values().stream().map(this::formatPlugin).toList())) {
+                sender.sendMessage(line);
+            }
         }
         if (!bukkit.isEmpty()) {
-            sender.sendMessage(core.langManager().getComponent("plugins-section-bukkit"));
-            sender.sendMessage(joinPlugins(bukkit));
+            sender.sendMessage(header("Bukkit Plugins", BUKKIT_COLOR, bukkit.size(), showSizes));
+            for (Component line : lines(bukkit.values().stream().map(this::formatPlugin).toList())) {
+                sender.sendMessage(line);
+            }
         }
 
-        sender.sendMessage(core.langManager().getComponent("plugins-section-addons",
-                "count", String.valueOf(loaded.size())));
-        if (loaded.isEmpty()) {
-            sender.sendMessage(core.langManager().getComponent("plugins-addons-none"));
-        } else {
-            sender.sendMessage(joinAddons(addons, loaded));
+        // The one section the server cannot produce.
+        sender.sendMessage(Component.text()
+                .append(INFO_ICON_ADDON)
+                .append(header("XCore Addons", ADDON_COLOR, addons.size(), showSizes))
+                .build());
+        if (!addons.isEmpty()) {
+            List<Component> entries = new ArrayList<>(addons.size());
+            for (Map.Entry<String, XAddon> entry : addons.entrySet()) {
+                entries.add(formatAddon(manager, entry.getKey(), entry.getValue()));
+            }
+            for (Component line : lines(entries)) sender.sendMessage(line);
         }
+        return true;
     }
 
-    /** Renders one comma-separated line of plugin names, coloured by state. */
-    private Component joinPlugins(List<Plugin> plugins) {
-        Component line = Component.empty();
-        for (int i = 0; i < plugins.size(); i++) {
-            Plugin plugin = plugins.get(i);
-            if (i > 0) line = line.append(core.langManager().getComponent("plugins-separator"));
-            line = line.append(core.langManager().getComponent(
-                    plugin.isEnabled() ? "plugins-entry-enabled" : "plugins-entry-disabled",
-                    "name", plugin.getName())
-                    .hoverEvent(HoverEvent.showText(core.langManager().getComponent("plugins-hover",
-                            "name", plugin.getName(),
-                            "version", plugin.getPluginMeta().getVersion(),
-                            "author", String.join(", ", plugin.getPluginMeta().getAuthors())))));
-        }
-        return line;
+    @Override
+    public @NotNull List<String> tabComplete(@NotNull CommandSender sender, @NotNull String alias,
+                                             @NotNull String[] args) {
+        return List.of();
     }
 
-    /** Renders the addon line: same shape, plus a click that reloads the one you point at. */
-    private Component joinAddons(AddonManager manager, Map<String, XAddon> addons) {
-        Component line = Component.empty();
+    /**
+     * One section heading, the shape Paper uses.
+     *
+     * @param text      The heading.
+     * @param color     Its colour.
+     * @param count     How many entries follow.
+     * @param showCount Whether to show that number.
+     * @return The heading.
+     */
+    private static Component header(String text, TextColor color, int count, boolean showCount) {
+        TextComponent.Builder builder = Component.text().color(color).append(Component.text(text));
+        if (showCount) builder.appendSpace().append(Component.text("(" + count + ")"));
+        return builder.append(Component.text(":")).build();
+    }
+
+    /**
+     * Lays entries out ten to a line, the first indented with a dash and the rest aligned under it.
+     *
+     * @param entries The formatted entries.
+     * @return One component per line.
+     */
+    private static List<Component> lines(List<Component> entries) {
+        List<Component> out = new ArrayList<>();
         boolean first = true;
-        for (Map.Entry<String, XAddon> entry : addons.entrySet()) {
-            String name = entry.getKey();
-            AddonState state = manager.getState(name);
-            String key = switch (state == null ? AddonState.ERRORED : state) {
-                case ENABLED -> "plugins-entry-enabled";
-                case LOADED, ENABLING, DISABLING -> "plugins-entry-loading";
-                default -> "plugins-entry-disabled";
-            };
-            if (!first) line = line.append(core.langManager().getComponent("plugins-separator"));
+        for (int i = 0; i < entries.size(); i += 10) {
+            List<Component> slice = entries.subList(i, Math.min(i + 10, entries.size()));
+            Component prefix = first ? Component.space().append(PLUGIN_TICK) : PLUGIN_TICK_EMPTY;
             first = false;
-
-            var descriptor = entry.getValue().getDescriptor();
-            line = line.append(core.langManager().getComponent(key, "name", name)
-                    .hoverEvent(HoverEvent.showText(core.langManager().getComponent("plugins-addon-hover",
-                            "name", name,
-                            "version", descriptor.getVersion(),
-                            "author", descriptor.getAuthor(),
-                            "description", descriptor.getDescription())))
-                    .clickEvent(ClickEvent.suggestCommand("/xcore reload " + name)));
+            out.add(prefix.append(Component.join(JoinConfiguration.commas(true), slice)));
         }
-        return line;
+        return out;
+    }
+
+    /**
+     * One plugin: green when enabled, red when not, clickable to its version.
+     *
+     * @param plugin The plugin.
+     * @return The entry.
+     */
+    private Component formatPlugin(Plugin plugin) {
+        String name = plugin.getName();
+        return Component.text(name, plugin.isEnabled() ? NamedTextColor.GREEN : NamedTextColor.RED)
+                .clickEvent(ClickEvent.runCommand("/version " + name));
+    }
+
+    /**
+     * One addon: same shape, with the states an addon can be in and a click that reloads it.
+     *
+     * @param manager The addon manager.
+     * @param name    The addon's name.
+     * @param addon   The addon.
+     * @return The entry.
+     */
+    private Component formatAddon(AddonManager manager, String name, XAddon addon) {
+        AddonState state = manager == null ? null : manager.getState(name);
+        TextColor color = switch (state == null ? AddonState.ERRORED : state) {
+            case ENABLED -> NamedTextColor.GREEN;
+            case LOADED, ENABLING, DISABLING -> NamedTextColor.YELLOW;
+            default -> NamedTextColor.RED;
+        };
+        var descriptor = addon.getDescriptor();
+        Component hover = Component.text(name, color)
+                .append(Component.text(" " + descriptor.getVersion(), NamedTextColor.GRAY))
+                .append(Component.newline())
+                .append(Component.text("by " + descriptor.getAuthor(), NamedTextColor.GRAY))
+                .append(Component.newline()).append(Component.newline())
+                .append(Component.text(descriptor.getDescription() == null ? "" : descriptor.getDescription(),
+                        NamedTextColor.WHITE))
+                .append(Component.newline()).append(Component.newline())
+                .append(Component.text("Click to reload it", NamedTextColor.DARK_GRAY));
+        return Component.text(name, color)
+                .hoverEvent(HoverEvent.showText(hover))
+                .clickEvent(ClickEvent.suggestCommand("/xcore reload " + name));
+    }
+
+    /**
+     * Turns a block of text into the newline-separated white component Paper uses in its hovers.
+     *
+     * @param text The text.
+     * @return The component.
+     */
+    private static Component plainLines(String text) {
+        TextComponent.Builder builder = Component.text();
+        for (String line : text.split("\n")) {
+            builder.append(Component.newline()).append(Component.text(line, NamedTextColor.WHITE));
+        }
+        return builder.build();
     }
 
     /**
      * Tells a Paper plugin from a Bukkit one.
      *
-     * <p>There is no API for this, so the class loader is what answers: Paper gives its own plugins
-     * a different one. A fork that names it something else lands everything in the Bukkit list,
-     * which is a cosmetic loss and never an error.</p>
+     * <p>Paper decides this from its plugin providers, which are server internals an addon
+     * framework has no business reaching into. The class loader answers the same question from the
+     * API: Paper gives its own plugins a different one. A fork that names it something else lands
+     * everything in the Bukkit list, which is a cosmetic loss and never an error.</p>
      *
      * @param plugin The plugin to classify.
      * @return {@code true} when it looks like a Paper plugin.
