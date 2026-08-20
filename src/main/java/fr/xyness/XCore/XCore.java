@@ -517,11 +517,11 @@ public class XCore extends JavaPlugin {
         // ---- Listeners ----
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
 
-        // Addons are not Bukkit plugins, so /plugins cannot see them. This answers instead, and
-        // leaves /bukkit:plugins as the way back to the built-in list.
+        // Addons are not Bukkit plugins, so /plugins cannot see them. Ours takes the command's
+        // place in the map and prints Paper's own list with one more section;
+        // /bukkit:plugins stays as the way back to the built-in.
         if (config.getBoolean("plugins-command.override", true)) {
-            getServer().getPluginManager().registerEvents(
-                    new fr.xyness.XCore.Commands.PluginsCommand(this), this);
+            fr.xyness.XCore.Commands.PluginsCommand.install(this);
         }
 
         // ---- Commands ----
@@ -710,6 +710,9 @@ public class XCore extends JavaPlugin {
     public void stop() {
         logger.sendRawBar();
         logger.sendInfo("Stopping the plugin.");
+
+        // Put /plugins back before anything else: the addon list it prints is about to be empty.
+        fr.xyness.XCore.Commands.PluginsCommand.uninstall();
 
         // Addons first (reverse dependency order)
         if (addonManager != null) addonManager.disableAddons();
