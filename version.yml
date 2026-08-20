@@ -34,6 +34,7 @@ update-notes:
 - "Indexed players.last_login, which the dashboard sorts on"
 - "The last_login column check is resolved once instead of on every request"
 - "Added an XCore addons section to /plugins, they were invisible to it, in Paper's own layout"
+- "/bukkit:plugins and /bukkit:pl answer the same way, so the two forms cannot disagree"
 - "Added synchronous query methods, for code already off the main thread"
 - "Added database-side paging to PagedGui, for a list too big to hold in memory"
 - "PagedGui only redraws the navigation bar between blinks, not the whole page"

@@ -518,8 +518,8 @@ public class XCore extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
 
         // Addons are not Bukkit plugins, so /plugins cannot see them. Ours takes the command's
-        // place in the map and prints Paper's own list with one more section;
-        // /bukkit:plugins stays as the way back to the built-in.
+        // place in the map — short and bukkit: forms alike — and prints Paper's own list with one
+        // more section. Set plugins-command.override to false to hand it back.
         if (config.getBoolean("plugins-command.override", true)) {
             fr.xyness.XCore.Commands.PluginsCommand.install(this);
         }
