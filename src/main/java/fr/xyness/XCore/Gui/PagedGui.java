@@ -61,6 +61,7 @@ public abstract class PagedGui<T> implements InventoryHolder {
     private final BlinkCache blink = new BlinkCache();
     private final boolean[] blinkState = {true};
     private Object blinkTask;
+    private Object refreshTask;
     private long ticksSinceRefresh;
 
     /**
@@ -223,6 +224,19 @@ public abstract class PagedGui<T> implements InventoryHolder {
         return 100L;
     }
 
+    /**
+     * How often the list is read again while the screen stays open, in ticks.
+     *
+     * <p>0 — the default — never: a list of warps or of sanctions does not change under the reader
+     * often enough to be worth a query. A screen showing something other people are changing while
+     * it is open, an auction house being the obvious one, returns an interval here.</p>
+     *
+     * @return The interval in ticks, 0 to never re-read.
+     */
+    protected long refreshTicks() {
+        return 0L;
+    }
+
     // -------------------------------------------------------------------------
     // Opening and drawing
     // -------------------------------------------------------------------------
@@ -242,37 +256,82 @@ public abstract class PagedGui<T> implements InventoryHolder {
         int requested = Math.max(1, page);
 
         scheduler.runAsyncTask(() -> {
-            int perPage = Math.max(1, definition.pageSlots().size());
-            List<T> loaded;
-            int pages;
-            int shown;
-            try {
-                int total = totalItems(player);
-                if (total >= 0) {
-                    // The database pages: only the entries actually shown are read.
-                    pages = Math.max(1, (int) Math.ceil(total / (double) perPage));
-                    shown = Math.min(Math.max(1, requested), pages);
-                    loaded = loadPage(player, shown, perPage);
-                } else {
-                    List<T> all = items(player);
-                    Pagination<T> pagination = new Pagination<>(all == null ? List.of() : all, perPage);
-                    pages = pagination.getMaxPage();
-                    shown = Math.min(Math.max(1, requested), pages);
-                    loaded = pagination.getPage(shown);
-                }
-            } catch (Throwable t) {
-                loaded = List.of();
-                pages = 1;
-                shown = 1;
-            }
-            final List<T> items = loaded == null ? List.<T>of() : loaded;
-            final int finalPages = pages;
-            final int finalPage = shown;
+            Loaded<T> loaded = read(player, requested);
             scheduler.runEntityTask(player, () -> {
                 if (!player.isOnline()) return;
-                build(items, finalPage, finalPages);
+                build(loaded.items(), loaded.page(), loaded.pages());
                 player.openInventory(inventory);
                 startBlinking();
+            });
+        });
+    }
+
+    /**
+     * One page's worth of entries and where it sits.
+     *
+     * @param items The entries.
+     * @param page  The page they belong to.
+     * @param pages How many pages there are.
+     * @param <E>   What one slot shows.
+     */
+    private record Loaded<E>(List<E> items, int page, int pages) {}
+
+    /**
+     * Reads one page. Off the server thread.
+     *
+     * @param player    The viewer.
+     * @param requested The page asked for.
+     * @return What to draw.
+     */
+    private Loaded<T> read(Player player, int requested) {
+        int perPage = Math.max(1, definition.pageSlots().size());
+        try {
+            int total = totalItems(player);
+            if (total >= 0) {
+                // The database pages: only the entries actually shown are read.
+                int pages = Math.max(1, (int) Math.ceil(total / (double) perPage));
+                int shown = Math.min(Math.max(1, requested), pages);
+                List<T> loaded = loadPage(player, shown, perPage);
+                return new Loaded<>(loaded == null ? List.of() : loaded, shown, pages);
+            }
+            List<T> all = items(player);
+            Pagination<T> pagination = new Pagination<>(all == null ? List.of() : all, perPage);
+            int pages = pagination.getMaxPage();
+            int shown = Math.min(Math.max(1, requested), pages);
+            return new Loaded<>(pagination.getPage(shown), shown, pages);
+        } catch (Throwable t) {
+            return new Loaded<>(List.of(), 1, 1);
+        }
+    }
+
+    /**
+     * Reads the list again into the screen already open, without reopening it.
+     *
+     * <p>What a live list needs: the auction house showed a new listing appearing while the player
+     * watched, and losing that was not the point of moving it onto this class. Unlike
+     * {@link #refresh()} nothing is closed and nothing is opened, so it can run on a timer without
+     * fighting the player.</p>
+     *
+     * <p>The page number in the title is fixed when the screen opens, so a list that grows past a
+     * page boundary shows the new count only after a page change. The screens this replaced had
+     * the same limitation.</p>
+     */
+    public void reload() {
+        if (viewer == null || inventory == null) return;
+        if (!inventory.equals(viewer.getOpenInventory().getTopInventory())) return;
+        final Player player = viewer;
+        final int requested = page;
+        scheduler.runAsyncTask(() -> {
+            Loaded<T> loaded = read(player, requested);
+            scheduler.runEntityTask(player, () -> {
+                if (!player.isOnline() || inventory == null) return;
+                if (!inventory.equals(player.getOpenInventory().getTopInventory())) return;
+                this.maxPage = loaded.pages();
+                this.page = loaded.page();
+                this.pageItems = loaded.items();
+                blink.clear();
+                ticksSinceRefresh = 0;
+                draw();
             });
         });
     }
@@ -402,6 +461,10 @@ public abstract class PagedGui<T> implements InventoryHolder {
 
     private void startBlinking() {
         stopBlinking();
+        long every = refreshTicks();
+        if (every > 0) {
+            refreshTask = scheduler.runEntityTaskTimer(viewer, this::reload, every, every);
+        }
         blinkTask = scheduler.runEntityTaskTimer(viewer, () -> {
             if (viewer == null || !viewer.isOnline()) {
                 stopBlinking();
@@ -417,6 +480,10 @@ public abstract class PagedGui<T> implements InventoryHolder {
         if (blinkTask != null) {
             scheduler.cancelTask(blinkTask);
             blinkTask = null;
+        }
+        if (refreshTask != null) {
+            scheduler.cancelTask(refreshTask);
+            refreshTask = null;
         }
     }
 
