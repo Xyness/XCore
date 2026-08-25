@@ -29,3 +29,6 @@ addons/
 
 # Build all script (local dev tool)
 build-all.bat
+
+# Tools
+tools/
