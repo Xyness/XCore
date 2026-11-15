@@ -1,45 +1,9 @@
 # Version
-version: 1.0.9
+version: 1.1
 
 # Update date
-date: 19/08/2026
+date: 24/08/2026
 
 # Update notes
 update-notes:
-- "Fixed the plugin refusing to start when PlaceholderAPI loads after it"
-- "Fixed player data staying stale on the other servers after a change, balances included"
-- "Fixed the currency list coming back after a rename, and any other section you name yourself"
-- "Fixed teleports loading their chunk on the main thread outside Folia"
-- "Fixed obsolete keys never being removed from a language file"
-- "Fixed last login and last logout never reaching the cache"
-- "Fixed the update builder throwing away the number of rows it touched"
-- "Added the database API to XCoreApi, api().query() and api().tableManager() now exist"
-- "Added transactions, upserts, unique indexes and versioned migrations"
-- "Added a delivery service, an addon can give an item or money to an offline player"
-- "Added play time tracking, with %xcore_playtime%"
-- "Added leaderboards, declared once and served as placeholders and on the dashboard"
-- "Added a network registry, which servers are up and where each player is"
-- "Added a shared Discord sender with a queue, retries and rate limit handling"
-- "Added PagedGui, the paginated screen every addon was writing by hand"
-- "Added cooldowns, item serialisation, rank lookups and placeholder registration to the API"
-- "Added duration parsing to Formats, 1d12h and the like"
-- "XCore registers its own placeholders, which it never did"
-- "Column writes are grouped, one statement per player instead of one per column"
-- "Database work runs on its own pool, so a query can no longer starve the one waiting for it"
-- "Redis holds one copy of a player instead of two"
-- "Sync messages travel in batches"
-- "/xcore diag measures the width of the players table and names the heavy columns"
-- "Removed around 2 200 lines of framework no addon ever used"
-- "The dashboard no longer counts the whole players table on every overview refresh"
-- "Indexed players.last_login, which the dashboard sorts on"
-- "The last_login column check is resolved once instead of on every request"
-- "Added an XCore addons section to /plugins, they were invisible to it, in Paper's own layout"
-- "/bukkit:plugins and /bukkit:pl answer the same way, so the two forms cannot disagree"
-- "Added synchronous query methods, for code already off the main thread"
-- "Added database-side paging to PagedGui, for a list too big to hold in memory"
-- "PagedGui only redraws the navigation bar between blinks, not the whole page"
-- "orderBy can be called several times, one clause per column"
-- "A cooldown longer than an hour is no longer cut short at an hour"
-- "A list no longer reopens itself a few ticks after you closed it"
-- "A paginated screen can re-read its list on a timer, for a list other people change while you watch"
-- "The UUID migration setting is held instead of read from the config on every join"
+- "Multiple fixes"
