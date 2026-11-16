@@ -1178,14 +1178,9 @@ public class WebPanel {
     public boolean authenticate(HttpExchange exchange) throws IOException {
         String ip = clientIp(exchange);
 
-        // A wrong token costs an attempt. Ten failures inside a minute and the source is turned
-        // away without the comparison even running, which is what turns a 32-character token from
-        // "guessable eventually" into "not guessable".
-        if (!allow(authAttempts, ip, AUTH_LIMIT)) {
-            sendJson(exchange, 429, "{\"error\":\"Too many authentication attempts\"}");
-            return false;
-        }
-
+        // A live session is let in whatever its address has been doing. The count below is kept per
+        // address, and behind a reverse proxy every reader has the proxy's: ten bad requests a
+        // minute from anybody used to shut every administrator out of the dashboard.
         String auth = exchange.getRequestHeaders().getFirst("Authorization");
         if (auth != null && auth.startsWith("Bearer ")) {
             String presented = auth.substring(7);
@@ -1194,9 +1189,30 @@ public class WebPanel {
                 return true;
             }
         }
+
+        // A wrong token costs an attempt: ten failures inside a minute and the source is told to
+        // slow down instead of being answered.
+        if (!allow(authAttempts, ip, AUTH_LIMIT)) {
+            sendJson(exchange, 429, "{\"error\":\"Too many authentication attempts\"}");
+            return false;
+        }
         record(authAttempts, ip);
         sendJson(exchange, 401, "{\"error\":\"Unauthorized\"}");
         return false;
+    }
+
+    /**
+     * The player behind a request: whoever opened the session it carries.
+     *
+     * <p>For a module that records who did something. An action taken from the dashboard used to be
+     * written down as done by "WebPanel", whoever was sitting at it.</p>
+     *
+     * @param exchange The HTTP exchange, already authenticated.
+     * @return The player's name, or {@code null} when the request carries no live session.
+     */
+    public String sessionOwner(HttpExchange exchange) {
+        Session session = sessionOf(exchange);
+        return session == null ? null : session.owner();
     }
 
     /**

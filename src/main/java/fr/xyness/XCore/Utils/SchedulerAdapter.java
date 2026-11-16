@@ -262,7 +262,8 @@ public class SchedulerAdapter {
 	 * @param delayTicks The delay in server ticks before execution.
 	 */
 	public void runEntityTaskLater(Entity entity, Runnable task, long delayTicks) {
-	    if (entity == null) { runAsyncTaskLater(task, delayTicks); return; }
+	    // No entity to follow: a tick thread all the same, since that is what the task was written for.
+	    if (entity == null) { runGlobalTaskLater(task, delayTicks); return; }
 	    if (isFolia) {
 	        try {
 	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
@@ -514,7 +515,10 @@ public class SchedulerAdapter {
 	            return null;
 	        }
 	    } else {
-	        return Bukkit.getScheduler().runTaskLater(main, task, delayTicks);
+	        // Asynchronously, as the name says. This called runTaskLater, so off Folia every delayed
+	        // "async" task ran on the server thread: its queries were made there, and one that waited
+	        // on a task the server thread itself had to run froze the server for good.
+	        return Bukkit.getScheduler().runTaskLaterAsynchronously(main, task, delayTicks);
 	    }
 	}
 

@@ -449,6 +449,7 @@ public abstract class XAddon {
             return;
         }
 
+        setAsideIfUnreadable(configFile);
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
         try (InputStream defStream = getClass().getClassLoader().getResourceAsStream("config.yml")) {
             if (defStream == null) return;
@@ -597,6 +598,41 @@ public abstract class XAddon {
      * @param available The language codes bundled in the jar, English first.
      */
     /**
+     * Copies a YAML file aside when it cannot be parsed, and says so.
+     *
+     * <p>{@code YamlConfiguration.loadConfiguration} answers an unreadable file with an empty
+     * configuration. To the merge that follows, every default then looks missing: it adds them all
+     * and writes the result back — over the file. One stray tab in a config.yml used to cost every
+     * setting in it at the next start, with nothing left to recover them from. The file is now kept
+     * under another name first, and the console names it.</p>
+     *
+     * @param file The file about to be merged with its defaults.
+     * @return {@code true} when the file could not be read and a copy was made.
+     */
+    protected final boolean setAsideIfUnreadable(File file) {
+        if (file == null || !file.isFile()) return false;
+        try {
+            new YamlConfiguration().load(file);
+            return false;
+        } catch (org.bukkit.configuration.InvalidConfigurationException e) {
+            File copy = new File(file.getParentFile(), file.getName() + ".unreadable-" + System.currentTimeMillis());
+            try {
+                java.nio.file.Files.copy(file.toPath(), copy.toPath());
+            } catch (IOException copyError) {
+                logger.sendError(file.getName() + " is not valid YAML and could not be copied aside: " + copyError.getMessage());
+                return false;
+            }
+            String reason = String.valueOf(e.getMessage());
+            int cut = reason.indexOf('\n');
+            logger.sendError(file.getName() + " is not valid YAML and was not read: " + (cut > 0 ? reason.substring(0, cut) : reason));
+            logger.sendError("Your file is kept as " + copy.getName() + ". The defaults are used until it is repaired and put back.");
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
      * Adds to a file on disk the keys its bundled version has and it does not.
      *
      * <p>Never overwrites: an administrator's translation is theirs. Used for the dashboard string
@@ -607,6 +643,7 @@ public abstract class XAddon {
     private void mergeMissingKeys(String resourcePath) {
         File target = new File(dataFolder, resourcePath.replace('/', File.separatorChar));
         if (!target.isFile()) return;
+        setAsideIfUnreadable(target);
         try (InputStream defaults = getClass().getClassLoader().getResourceAsStream(resourcePath)) {
             if (defaults == null) return;
             YamlConfiguration bundled = YamlConfiguration.loadConfiguration(

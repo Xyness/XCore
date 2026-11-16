@@ -32,6 +32,16 @@ import redis.clients.jedis.JedisPool;
 public class SyncManager {
 
     private final String serverId;
+
+    /**
+     * What this running server signs its messages with, besides its name.
+     *
+     * <p>A message whose sender is "us" is dropped, and "us" used to be the server name alone. Two
+     * servers left on the default name therefore ignored everything the other one said, with no
+     * warning anywhere. The name still addresses a message to one server; this tells our own from
+     * a namesake's.</p>
+     */
+    private final String instanceId = UUID.randomUUID().toString().substring(0, 8);
     private final JedisPool jedisPool;
     private final DataSource dataSource;
     private final DatabaseType databaseType;
@@ -157,6 +167,7 @@ public class SyncManager {
         }
         JsonObject json = new JsonObject();
         json.addProperty("s", serverId);
+        json.addProperty("i", instanceId);
         json.addProperty("c", channelName);
         json.addProperty("a", message.action());
         json.addProperty("k", message.key() == null ? "" : message.key());
@@ -287,7 +298,10 @@ public class SyncManager {
         String payload = json.has("p") ? json.get("p").getAsString() : "";
         String target = json.has("t") ? json.get("t").getAsString() : "";
 
-        if (sourceServerId.equals(serverId)) return;                    // our own message
+        // Our own message. A sender from before the instance id carries none: for those the name
+        // is all there is to go by, as it always was.
+        String sourceInstance = json.has("i") ? json.get("i").getAsString() : "";
+        if (sourceInstance.isEmpty() ? sourceServerId.equals(serverId) : sourceInstance.equals(instanceId)) return;
         if (!target.isEmpty() && !target.equals(serverId)) return;      // addressed to somebody else
 
         SyncChannel channel = channels.get(channelName);

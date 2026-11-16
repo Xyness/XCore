@@ -87,6 +87,10 @@ public class PlayerCache<P> {
     private final LoadingCache<String, String> skinCache;
     private final LoadingCache<UUID, PlayerTempData> playersTempCache;
 
+    /** Temporary data of the players who are connected: held here, it does not expire. */
+    private final java.util.concurrent.ConcurrentHashMap<UUID, PlayerTempData> connectedTempData =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private final LongAdder mojangCacheHits = new LongAdder();
     private final LongAdder mojangCacheMisses = new LongAdder();
     private final LongAdder skinCacheHits = new LongAdder();
@@ -705,6 +709,7 @@ public class PlayerCache<P> {
         nameToPlayers.synchronous().invalidateAll();
         mojangUUIDCache.invalidateAll();
         skinCache.invalidateAll();
+        connectedTempData.clear();
         playersTempCache.invalidateAll();
     }
 
@@ -744,7 +749,23 @@ public class PlayerCache<P> {
      * @return The {@link PlayerTempData} instance (never null).
      */
     public PlayerTempData getTempPlayerData(UUID playerId) {
-        return playersTempCache.get(playerId);
+        PlayerTempData held = connectedTempData.get(playerId);
+        return held != null ? held : playersTempCache.get(playerId);
+    }
+
+    /**
+     * Keeps a player's temporary data for as long as they are connected.
+     *
+     * <p>The cache drops an entry five minutes after it was last read. Menus keep their state in
+     * it — the target of a punish menu, the listing being confirmed, the task that makes a button
+     * blink — and nothing reads it while a menu simply sits open: after five minutes the buttons
+     * found an empty object and did nothing, and the blink task could never be cancelled again. The
+     * session start used for play time went the same way. Called at join; the entry goes at quit.</p>
+     *
+     * @param playerId The player's server UUID.
+     */
+    public void holdTempPlayerData(UUID playerId) {
+        connectedTempData.computeIfAbsent(playerId, playersTempCache::get);
     }
 
     /**
@@ -756,6 +777,7 @@ public class PlayerCache<P> {
     public boolean removePlayerTempDataFromCache(UUID playerId) {
         // invalidate() retire l'entrée de façon synchrone : la relire pour s'en assurer était un
         // second passage dans le cache, sur le thread de jeu, pour une réponse déjà connue.
+        connectedTempData.remove(playerId);
         playersTempCache.invalidate(playerId);
         return true;
     }

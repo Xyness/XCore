@@ -147,8 +147,8 @@ public class AddonManager {
 
                 try {
                     addon.onLoad();
-                } catch (Exception e) {
-                    logger.sendError("Error in onLoad() for addon '" + name + "': " + e.getMessage());
+                } catch (Throwable e) {
+                    logger.sendError("Error in onLoad() for addon '" + name + "': " + e);
                     states.put(name, AddonState.ERRORED);
                     closeLoaderSilently(loader);
                     continue;
@@ -200,9 +200,12 @@ public class AddonManager {
                     states.put(name, AddonState.ERRORED);
                     logger.sendError("Addon '" + name + "' returned false from onEnable().");
                 }
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // Throwable: an addon built against another XCore or another server fails with a
+                // LinkageError, which is not an Exception. Left uncaught it ended XCore's own enable,
+                // and with it every addon after this one.
                 states.put(name, AddonState.ERRORED);
-                logger.sendError("Error enabling addon '" + name + "': " + e.getMessage());
+                logger.sendError("Error enabling addon '" + name + "': " + e);
             }
         }
     }

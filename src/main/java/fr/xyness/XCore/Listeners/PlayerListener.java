@@ -219,6 +219,7 @@ public class PlayerListener implements Listener {
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
 
+        core.playerCache().holdTempPlayerData(uuid);
         core.playerCache().getTempPlayerData(uuid).put(SESSION_START, System.currentTimeMillis());
         if (core.network() != null) core.network().announceJoin(player);
 

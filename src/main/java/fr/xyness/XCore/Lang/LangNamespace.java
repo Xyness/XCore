@@ -114,6 +114,22 @@ public class LangNamespace {
     }
 
     /**
+     * Makes a value safe to pass to a message as a replacement.
+     *
+     * <p>Replacements are substituted before the message is parsed, so a value is read as MiniMessage
+     * like the rest of the line. That is what lets a colour or another message be passed in, and it
+     * is also what turned text typed by a player — a report reason, an appeal, a client brand — into
+     * a live component in a moderator's chat: a {@code <click:run_command:...>} written by the
+     * player ran with the moderator's permissions. Anything a player wrote goes through here first.</p>
+     *
+     * @param value The text as the player wrote it.
+     * @return The same text with its tags neutralised; empty for {@code null}.
+     */
+    public static String escape(String value) {
+        return value == null ? "" : MiniMessage.miniMessage().escapeTags(value);
+    }
+
+    /**
      * Returns a parsed Adventure {@link Component} for the given key with placeholder replacements.
      *
      * @param key          The message key.

@@ -43,6 +43,27 @@ class DatabaseSyncTransport implements SyncManager.SyncTransport {
     private final SyncManager.LogCallback logDebug;
     private final SyncManager.LogCallback logError;
     private final AtomicLong lastSeenId = new AtomicLong(0);
+
+    /** The highest id present when this server started: nothing at or below it is ours to read. */
+    private volatile long startId = 0L;
+
+    /**
+     * How many ids below the last one seen each poll reads again.
+     *
+     * <p>Ids are handed out when a row is inserted, and rows become visible when they are committed:
+     * with several servers writing at once, a row can appear after one with a higher id has already
+     * been read. Reading strictly above the last id seen skipped such a row for good. Each poll now
+     * looks a little way back and leaves out what it has already dispatched.</p>
+     */
+    private static final long LOOK_BACK = 256L;
+
+    /** Ids already dispatched, newest kept. Only the poll thread touches it. */
+    private final java.util.LinkedHashMap<Long, Boolean> dispatched = new java.util.LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(java.util.Map.Entry<Long, Boolean> eldest) {
+            return size() > 4096;
+        }
+    };
     private volatile ScheduledExecutorService pollScheduler;
 
     /** Wall-clock of the last retention sweep. */
@@ -105,12 +126,13 @@ class DatabaseSyncTransport implements SyncManager.SyncTransport {
         try (Connection c = dataSource.getConnection()) {
             String selectSql = "SELECT id, message FROM xcore_sync WHERE id > ? ORDER BY id ASC";
             try (PreparedStatement ps = c.prepareStatement(selectSql)) {
-                ps.setLong(1, lastSeenId.get());
+                ps.setLong(1, Math.max(startId, lastSeenId.get() - LOOK_BACK));
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         long id = rs.getLong("id");
+                        if (dispatched.put(id, Boolean.TRUE) != null) continue;
                         String message = rs.getString("message");
-                        lastSeenId.set(id);
+                        if (id > lastSeenId.get()) lastSeenId.set(id);
 
                         // Dispatch to handler on the provided executor
                         handlerExecutor.execute(() -> {
@@ -192,6 +214,7 @@ class DatabaseSyncTransport implements SyncManager.SyncTransport {
              ResultSet rs = stmt.executeQuery("SELECT COALESCE(MAX(id), 0) FROM xcore_sync")) {
             if (rs.next()) {
                 lastSeenId.set(rs.getLong(1));
+                startId = rs.getLong(1);
             }
         } catch (SQLException e) {
             logError.log("Failed to init last seen id for xcore_sync : " + e.getMessage());
