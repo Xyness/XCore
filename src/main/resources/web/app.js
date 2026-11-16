@@ -2655,6 +2655,9 @@
      *
      * The link is single-use in practice: the token is taken out of the address bar and out of the
      * history entry straight away, so it does not sit in a shared screenshot or a bookmark.
+     *
+     * Links carry it in the fragment (#token=), which a browser never sends to any server, so no
+     * access log on the way records it. ?token= is still read: links from older versions use it.
      */
     function consumeLoginLink() {
         var match = /[?&#]token=([^&#]+)/.exec(window.location.search + window.location.hash);

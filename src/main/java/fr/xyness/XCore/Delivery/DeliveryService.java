@@ -8,8 +8,10 @@ import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -37,6 +39,9 @@ public class DeliveryService {
 
     /** How many items to hand over per join, so a huge backlog does not freeze a login. */
     private volatile int perJoinLimit;
+
+    /** Players whose deliveries are being handed over: one claim at a time per player. */
+    private final Set<UUID> claiming = ConcurrentHashMap.newKeySet();
 
     /**
      * @param main The plugin instance.
@@ -189,65 +194,144 @@ public class DeliveryService {
     /**
      * Hands over everything a player can take right now.
      *
-     * <p>Money always goes through. An item is only marked as taken once it is in the inventory, so
-     * a full inventory postpones it instead of losing it.</p>
+     * <p>Money always goes through: its row is closed first ({@code claimed = 0} to {@code 1}, so
+     * only one claim can win it), paid next, and reopened when the deposit fails. An item is only
+     * marked as taken once it is in the inventory, so a full inventory postpones it instead of
+     * losing it. Only one claim runs at a time for a given player.</p>
      *
      * @param player The player, who must be online.
      * @return A future completing with the number of deliveries handed over.
      */
     public CompletableFuture<Integer> claim(Player player) {
         UUID owner = player.getUniqueId();
-        return pending(owner, perJoinLimit).thenCompose(list -> {
-            if (list.isEmpty()) return CompletableFuture.completedFuture(0);
-
-            // Money first, off the server thread. A delivery is only closed once the deposit has
-            // gone through, otherwise a failed payment counts as delivered and is lost.
-            List<CompletableFuture<Long>> money = new ArrayList<>();
-            List<Delivery> items = new ArrayList<>();
-            for (Delivery delivery : list) {
-                if (delivery.kind() != Delivery.Kind.MONEY) {
-                    items.add(delivery);
-                    continue;
-                }
-                if (main.getCoinsManager() == null) continue;   // stays pending until it is back
-                money.add(main.getCoinsManager()
-                        .deposit(owner, delivery.currency(), delivery.amount())
-                        .thenApply(balance -> balance == null ? null : delivery.id())
-                        .exceptionally(error -> null));
+        // Two claims side by side (a quick reconnect, or a join and a command) would both read the
+        // same pending rows and hand them over twice.
+        if (!claiming.add(owner)) return CompletableFuture.completedFuture(0);
+        CompletableFuture<Integer> result;
+        try {
+            result = pending(owner, perJoinLimit).thenCompose(list -> handOver(player, list));
+        } catch (RuntimeException e) {
+            claiming.remove(owner);
+            throw e;
+        }
+        return result.handle((count, error) -> {
+            claiming.remove(owner);
+            if (error != null) {
+                main.logger().sendError("Failed to hand deliveries over to " + owner + " : " + error.getMessage());
+                return 0;
             }
-
-            CompletableFuture<Void> deposits = CompletableFuture.allOf(money.toArray(new CompletableFuture[0]));
-
-            return deposits.thenCompose(ignored -> {
-                List<Long> handed = new ArrayList<>();
-                for (CompletableFuture<Long> paid : money) {
-                    Long id = paid.getNow(null);
-                    if (id != null) handed.add(id);
-                }
-
-                CompletableFuture<Integer> done = new CompletableFuture<>();
-                main.schedulerAdapter().runEntityTask(player, () -> {
-                    for (Delivery delivery : items) {
-                        if (!player.isOnline()) break;
-                        ItemStack item = delivery.item();
-                        if (item == null) {
-                            // Nothing readable in the row; close it rather than retry forever.
-                            handed.add(delivery.id());
-                            continue;
-                        }
-                        if (Items.roomFor(player.getInventory(), item) < item.getAmount()) continue;
-                        Items.give(player, item);
-                        handed.add(delivery.id());
-                    }
-                    if (handed.isEmpty()) {
-                        done.complete(0);
-                        return;
-                    }
-                    markClaimed(handed).thenAccept(done::complete);
-                });
-                return done;
-            });
+            return count;
         });
+    }
+
+    private CompletableFuture<Integer> handOver(Player player, List<Delivery> list) {
+        if (list.isEmpty()) return CompletableFuture.completedFuture(0);
+        UUID owner = player.getUniqueId();
+
+        // Money first, off the server thread.
+        List<CompletableFuture<Boolean>> money = new ArrayList<>();
+        List<Delivery> items = new ArrayList<>();
+        for (Delivery delivery : list) {
+            if (delivery.kind() != Delivery.Kind.MONEY) {
+                items.add(delivery);
+                continue;
+            }
+            if (main.getCoinsManager() == null) continue;   // stays pending until it is back
+            money.add(payOut(owner, delivery));
+        }
+
+        CompletableFuture<Void> deposits = CompletableFuture.allOf(money.toArray(new CompletableFuture[0]));
+
+        return deposits.thenCompose(ignored -> {
+            int paid = 0;
+            for (CompletableFuture<Boolean> payment : money) {
+                if (Boolean.TRUE.equals(payment.getNow(false))) paid++;
+            }
+            if (items.isEmpty()) return CompletableFuture.completedFuture(paid);
+
+            int paidCount = paid;
+            CompletableFuture<Integer> done = new CompletableFuture<>();
+            // The retired callback matters: on Folia a task for a player who has just logged out is
+            // dropped without a word, and the claim would never finish.
+            main.schedulerAdapter().runEntityTask(player, () -> {
+                List<Long> handed = new ArrayList<>();
+                int given = 0;
+                for (Delivery delivery : items) {
+                    if (!player.isOnline()) break;
+                    ItemStack item = delivery.item();
+                    if (item == null) {
+                        // Nothing readable in the row; close it rather than retry forever.
+                        handed.add(delivery.id());
+                        continue;
+                    }
+                    if (Items.roomFor(player.getInventory(), item) < item.getAmount()) continue;
+                    Items.give(player, item);
+                    handed.add(delivery.id());
+                    given++;
+                }
+                if (handed.isEmpty()) {
+                    done.complete(paidCount);
+                    return;
+                }
+                int givenCount = given;
+                markClaimed(handed).thenAccept(closed -> {
+                    if (closed < handed.size()) {
+                        main.logger().sendError("Only " + closed + " of " + handed.size()
+                                + " delivered items of " + owner + " could be closed.");
+                    }
+                    done.complete(paidCount + givenCount);
+                });
+            }, () -> done.complete(paidCount));
+            return done;
+        });
+    }
+
+    /**
+     * Pays one money delivery: closes the row, then deposits, then reopens the row if the deposit
+     * did not go through.
+     *
+     * @return A future completing with {@code true} when this call paid the delivery.
+     */
+    private CompletableFuture<Boolean> payOut(UUID owner, Delivery delivery) {
+        return setClaimed(delivery.id(), 0, 1).thenCompose(closed -> {
+            if (!closed) return CompletableFuture.completedFuture(false);   // already taken elsewhere
+            return main.getCoinsManager()
+                    .deposit(owner, delivery.currency(), delivery.amount())
+                    .exceptionally(error -> null)
+                    .thenCompose(balance -> {
+                        if (balance != null) return CompletableFuture.completedFuture(true);
+                        // The deposit failed: back to pending, so it is paid next time instead of lost.
+                        return setClaimed(delivery.id(), 1, 0).thenApply(reopened -> {
+                            if (!reopened) {
+                                main.logger().sendError("Delivery " + delivery.id() + " of " + owner
+                                        + " could not be paid nor reopened (" + delivery.amount() + " "
+                                        + delivery.currency() + ").");
+                            }
+                            return false;
+                        });
+                    });
+        });
+    }
+
+    /**
+     * Moves one delivery from one state to another, only if it is still in the first.
+     *
+     * @return A future completing with {@code true} when the row changed.
+     */
+    private CompletableFuture<Boolean> setClaimed(long id, int from, int to) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (Connection conn = main.getDataSource().getConnection();
+                 PreparedStatement ps = conn.prepareStatement("UPDATE " + TABLE
+                         + " SET claimed = ? WHERE id = ? AND claimed = ?")) {
+                ps.setInt(1, to);
+                ps.setLong(2, id);
+                ps.setInt(3, from);
+                return ps.executeUpdate() == 1;
+            } catch (SQLException e) {
+                main.logger().sendError("Failed to update delivery " + id + " : " + e.getMessage());
+                return false;
+            }
+        }, main.getDbExecutor());
     }
 
     /**

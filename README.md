@@ -157,9 +157,10 @@ cache:
 web-dashboard:
   enabled: true
   port: 8085
+  bind-address: "0.0.0.0"  # "127.0.0.1" behind a reverse proxy on the same machine
   session-ttl-hours: 24    # 0 = until revoked
   metrics-public: true
-  cors-origin: "*"
+  cors-origin: "*"         # one origin, or several separated by commas
   public-url: ""           # when a proxy or a domain sits in front
 
 # What an addon owes a player but could not hand over. Given on their next join.
@@ -247,12 +248,18 @@ whole section around it is new.
 
 ### Logging in
 
-`/xcore dashboard` answers with a link that opens the dashboard authenticated. The page strips the
-token from the address bar on arrival. Links expire after `session-ttl-hours`;
-`/xcore dashboard revoke` closes every session you opened.
+`/xcore dashboard` answers with a link that opens the dashboard authenticated. The token travels in
+the link's fragment (`/#token=…`), which a browser never sends to a server, so no access log or
+proxy log records it; the page strips it from the address bar on arrival. Links expire after
+`session-ttl-hours`; `/xcore dashboard revoke` closes every session you opened.
 
 Sessions are stored as SHA-256 hashes in `web-sessions.json`. A script needing API access takes its
 token from the link.
+
+Every response forbids framing (`X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors
+'none'`) and content sniffing (`X-Content-Type-Options: nosniff`). With several origins in
+`cors-origin`, each request is answered with its own `Origin` when it is on the list, and with no
+CORS header otherwise.
 
 ### Endpoints
 

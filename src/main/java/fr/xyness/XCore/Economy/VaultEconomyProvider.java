@@ -67,8 +67,17 @@ public class VaultEconomyProvider implements Economy {
         // Vault's contract is synchronous: a plugin hands over goods based on what this returns.
         // The withdrawal is therefore awaited (bounded) and its real outcome reported, rather than
         // checking has() and firing an update that may quietly take nothing.
-        Boolean ok = await(coins.withdraw(player.getUniqueId(), amount));
+        java.util.concurrent.CompletableFuture<Boolean> withdrawal = coins.withdraw(player.getUniqueId(), amount);
+        Boolean ok = await(withdrawal);
         if (ok == null) {
+            // Still running past the bound. The caller is told it failed, so whatever lands after
+            // all is given back: otherwise the money would be gone with nothing in return.
+            withdrawal.thenAccept(taken -> {
+                if (!Boolean.TRUE.equals(taken)) return;
+                coins.deposit(player.getUniqueId(), amount);
+                org.bukkit.Bukkit.getLogger().warning("[XCore] Vault : retrait tardif de " + amount
+                        + " pour " + player.getUniqueId() + " annulé (déjà répondu en échec).");
+            });
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Economy timed out.");
         }
         if (!ok) {
@@ -87,8 +96,17 @@ public class VaultEconomyProvider implements Economy {
         if (amount < 0) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Cannot deposit negative amount.");
         }
-        Double newBalance = await(coins.deposit(player.getUniqueId(), amount));
+        java.util.concurrent.CompletableFuture<Double> deposit = coins.deposit(player.getUniqueId(), amount);
+        Double newBalance = await(deposit);
         if (newBalance == null) {
+            // Same as above: a deposit answered as failed must not land afterwards, or a caller that
+            // retries or refunds on failure would pay twice.
+            deposit.thenAccept(balance -> {
+                if (balance == null) return;
+                coins.withdraw(player.getUniqueId(), amount);
+                org.bukkit.Bukkit.getLogger().warning("[XCore] Vault : dépôt tardif de " + amount
+                        + " pour " + player.getUniqueId() + " repris (déjà répondu en échec).");
+            });
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Economy timed out.");
         }
         return new EconomyResponse(amount, newBalance, ResponseType.SUCCESS, null);
@@ -100,13 +118,17 @@ public class VaultEconomyProvider implements Economy {
     }
 
     /**
-     * Awaits an economy future for at most two seconds.
+     * Awaits an economy future for at most ten seconds.
+     *
+     * <p>Two seconds used to be enough to answer "failed" while a busy database queue was still
+     * about to apply the operation. The bound is now generous, and the callers above undo anything
+     * that lands after it, so a failure answer is always true.</p>
      *
      * @return The result, or {@code null} when it failed or did not complete in time.
      */
     private static <T> T await(java.util.concurrent.CompletableFuture<T> future) {
         try {
-            return future.get(2, java.util.concurrent.TimeUnit.SECONDS);
+            return future.get(10, java.util.concurrent.TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;

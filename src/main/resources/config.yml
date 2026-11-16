@@ -92,12 +92,21 @@ cache:
 web-dashboard:
   enabled: true
   port: 8085
+  # Network address the dashboard listens on. "0.0.0.0" = every interface: anyone who can reach
+  # this machine on the port above reaches the dashboard. Behind a reverse proxy (nginx, Caddy...)
+  # on the same machine, set "127.0.0.1": the dashboard is then only reachable through the proxy
+  # and its HTTPS, never directly. Read at startup: restart the server to change it.
+  bind-address: "0.0.0.0"
   # How long a link from /xcore dashboard stays valid, in hours. 0 = until the token is revoked.
   session-ttl-hours: 24
   # Whether the /api/metrics endpoint is publicly accessible (no auth required)
   metrics-public: true
   # Allowed browser origin for the API. Keep "*" only if the dashboard is not
   # reachable from the internet; otherwise set your panel URL (e.g. https://panel.example.com)
+  # Several sites calling the API? List their origins separated by commas, e.g.
+  # "https://www.example.com,http://localhost:8080": each request then gets its own origin back
+  # when it is on the list (exact match: scheme, host and port, no trailing slash), and no CORS
+  # header at all otherwise, so the browser keeps the answer from any other site.
   cors-origin: "*"
   # Address /xcore dashboard links to. Leave empty to build it from the server address and the
   # port above; set it when a reverse proxy or a domain sits in front (e.g. https://panel.example.com)

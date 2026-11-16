@@ -3,13 +3,13 @@
 # Placeholders : {clé} est remplacé par la valeur correspondante.
 #
 # Mise en page : quelques libellés sont complétés par des espaces pour aligner les colonnes.
-# Ajustez ce remplissage si vous rallongez un libellé.
+# Ajuste ce remplissage si tu rallonges un libellé.
 #
 # Attention aux arguments de hover et de click : leur texte est entouré de guillemets simples, donc
-# une apostrophe à l'intérieur couperait la ligne. Écrivez « Cliquez pour ouvrir », jamais
-# « Cliquez pour l'ouvrir ».
+# une apostrophe à l'intérieur couperait la ligne. Écris « Clique pour ouvrir », jamais
+# « Clique pour l'ouvrir » (ou une apostrophe typographique : « l’hôtel »).
 
-no-permission: "<red>Vous n'avez pas la permission d'utiliser cette commande."
+no-permission: "<red>Tu n'as pas la permission d'utiliser cette commande."
 
 # Éléments partagés
 bar: "<white><strikethrough>                                                            </strikethrough>"
@@ -42,18 +42,18 @@ info-addons-none: "<gray>Aucun addon installé"
 info-sync: " <yellow>▸ <white>Sync : {status} <white>· <gray>{backend}"
 sync-backend-redis: "Redis"
 sync-backend-database: "interrogation BDD"
-info-dashboard: " <yellow>▸ <white>Dashboard : <click:open_url:'{url}'><hover:show_text:'<gray>Cliquez pour ouvrir'><aqua><underlined>{url}</underlined></aqua></hover></click>"
-info-dashboard-off: " <yellow>▸ <white>Dashboard <red>inactif <white>· <gray>activez-le dans config.yml"
+info-dashboard: " <yellow>▸ <white>Dashboard : <click:open_url:'{url}'><hover:show_text:'<gray>Clique pour ouvrir'><aqua><underlined>{url}</underlined></aqua></hover></click>"
+info-dashboard-off: " <yellow>▸ <white>Dashboard <red>inactif <white>· <gray>active-le dans config.yml"
 
 info-commands: " <gray>Commandes"
-cmd-stats: " <yellow>› <click:run_command:'/xcore stats'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore stats</hover></click> <gray>— Compteurs de cache et API"
-cmd-addons: " <yellow>› <click:run_command:'/xcore addons'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore addons</hover></click> <gray>— Versions et états des addons"
-cmd-player: " <yellow>› <click:suggest_command:'/xcore player '><hover:show_text:'<gray>Cliquez pour pré-remplir'><white>/xcore player <pseudo></hover></click> <gray>— Consulter un joueur"
-cmd-dashboard: " <yellow>› <click:run_command:'/xcore dashboard'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore dashboard</hover></click> <gray>— Accès au dashboard web"
-cmd-reload: " <yellow>› <click:suggest_command:'/xcore reload'><hover:show_text:'<gray>Cliquez pour pré-remplir'><white>/xcore reload [addon]</hover></click> <gray>— Recharger le cœur et les addons"
-cmd-profile: " <yellow>› <click:run_command:'/xcore profile'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore profile</hover></click> <gray>— Temps passé par addon"
-cmd-diag: " <yellow>› <click:run_command:'/xcore diag'><hover:show_text:'<gray>Cliquez pour exécuter'><white>/xcore diag</hover></click> <gray>— Rapport de diagnostic"
-cmd-clear-cache: " <yellow>› <click:suggest_command:'/xcore clear-cache'><hover:show_text:'<gray>Cliquez pour pré-remplir'><white>/xcore clear-cache</hover></click> <gray>— Vider tous les caches"
+cmd-stats: " <yellow>› <click:run_command:'/xcore stats'><hover:show_text:'<gray>Clique pour exécuter'><white>/xcore stats</hover></click> <gray>— Compteurs de cache et API"
+cmd-addons: " <yellow>› <click:run_command:'/xcore addons'><hover:show_text:'<gray>Clique pour exécuter'><white>/xcore addons</hover></click> <gray>— Versions et états des addons"
+cmd-player: " <yellow>› <click:suggest_command:'/xcore player '><hover:show_text:'<gray>Clique pour pré-remplir'><white>/xcore player <pseudo></hover></click> <gray>— Consulter un joueur"
+cmd-dashboard: " <yellow>› <click:run_command:'/xcore dashboard'><hover:show_text:'<gray>Clique pour exécuter'><white>/xcore dashboard</hover></click> <gray>— Accès au dashboard web"
+cmd-reload: " <yellow>› <click:suggest_command:'/xcore reload'><hover:show_text:'<gray>Clique pour pré-remplir'><white>/xcore reload [addon]</hover></click> <gray>— Recharger le cœur et les addons"
+cmd-profile: " <yellow>› <click:run_command:'/xcore profile'><hover:show_text:'<gray>Clique pour exécuter'><white>/xcore profile</hover></click> <gray>— Temps passé par addon"
+cmd-diag: " <yellow>› <click:run_command:'/xcore diag'><hover:show_text:'<gray>Clique pour exécuter'><white>/xcore diag</hover></click> <gray>— Rapport de diagnostic"
+cmd-clear-cache: " <yellow>› <click:suggest_command:'/xcore clear-cache'><hover:show_text:'<gray>Clique pour pré-remplir'><white>/xcore clear-cache</hover></click> <gray>— Vider tous les caches"
 
 # ---------------------------------------------------------------------------
 # /xcore stats
@@ -74,11 +74,11 @@ stats-circuit-breaker: " <yellow>▸ <white>Coupe-circuit : <gray>{state}"
 # ---------------------------------------------------------------------------
 
 profile-header: " <aqua>Profilage"
-profile-disabled: " <yellow>▸ <white>Mesure inactive. <gray>Activez-la avec <white>/xcore profile on<gray>, ou <white>profiling: true<gray> dans config.yml."
-profile-empty: " <yellow>▸ <white>Aucune mesure pour le moment. <gray>Laissez tourner quelques minutes."
+profile-disabled: " <yellow>▸ <white>Mesure inactive. <gray>Active-la avec <white>/xcore profile on<gray>, ou <white>profiling: true<gray> dans config.yml."
+profile-empty: " <yellow>▸ <white>Aucune mesure pour le moment. <gray>Laisse tourner quelques minutes."
 profile-window: " <yellow>▸ <white>Fenêtre : <gray>{seconds}s <white>· <gray>{keys} gestionnaires mesurés"
 profile-entry: " <yellow>▸ <white>{key} <dark_gray>│ <gray>{calls} appels <white>· <gray>{total} ms <white>· <gray>{avg} µs/appel <white>· <gray>max {max} µs"
-profile-hint: " <gray>Trié par temps total. La moyenne est le coût d'un seul événement : au-delà de 1000 µs, cherchez pourquoi."
+profile-hint: " <gray>Trié par temps total. La moyenne est le coût d'un seul événement : au-delà de 1000 µs, cherche pourquoi."
 profile-turned-on: " <yellow>▸ <white>Profilage <green>activé<white>. <gray>Compteurs remis à zéro."
 profile-turned-off: " <yellow>▸ <white>Profilage <red>désactivé<white>."
 profile-reset: " <yellow>▸ <white>Compteurs de profilage remis à zéro."
@@ -99,7 +99,7 @@ diag-failed: " <red>Impossible d'écrire le rapport : <gray>{error}"
 # ---------------------------------------------------------------------------
 
 addons-header: " <aqua>Addons <yellow>({count})"
-addons-empty: " <yellow>▸ <white>Aucun addon installé. Déposez leurs JAR dans <gray>plugins/XCore/addons<white>."
+addons-empty: " <yellow>▸ <white>Aucun addon installé. Dépose leurs JAR dans <gray>plugins/XCore/addons<white>."
 addons-entry: " <yellow>▸ <green>{name} <yellow>v{version} <white>— {state}"
 addon-state-enabled: "<green>actif"
 addon-state-loading: "<yellow>chargement"
@@ -113,18 +113,18 @@ addon-not-found: "<red>Aucun addon nommé <white>{name}<red> n'est chargé."
 
 dashboard-header: " <aqua>Dashboard web"
 dashboard-status: " <yellow>▸ <white>État : {status}"
-dashboard-disabled: " <yellow>▸ <white>Mettez <gray>web-dashboard.enabled: true<white> dans config.yml, puis redémarrez."
-dashboard-failed: " <yellow>▸ <white>Il est activé mais n'a pas démarré, consultez la console."
-dashboard-address: " <yellow>▸ <white>Adresse : <click:open_url:'{url}'><hover:show_text:'<gray>Cliquez pour ouvrir'><yellow><underlined>{url}</underlined></yellow></hover></click>"
+dashboard-disabled: " <yellow>▸ <white>Mets <gray>web-dashboard.enabled: true<white> dans config.yml, puis redémarre."
+dashboard-failed: " <yellow>▸ <white>Il est activé mais n'a pas démarré, consulte la console."
+dashboard-address: " <yellow>▸ <white>Adresse : <click:open_url:'{url}'><hover:show_text:'<gray>Clique pour ouvrir'><yellow><underlined>{url}</underlined></yellow></hover></click>"
 dashboard-modules: " <yellow>▸ <white>Modules : <hover:show_text:'{list}'><gray>{count} enregistré(s)</hover>"
 dashboard-modules-none: "<gray>Aucun module enregistré"
-dashboard-login: " <yellow>▸ <white>Connexion : <click:open_url:'{url}'><hover:show_text:'<green>Cliquez pour ouvrir le dashboard, déjà connecté'><green>[ouvrir le dashboard]</green></hover></click>"
-dashboard-login-ttl: "   <yellow>· <white>Le lien vous connecte pendant <gray>{hours}h<white>. Gardez-le pour vous."
-dashboard-login-forever: "   <yellow>· <white>Le lien reste valide jusqu'à révocation. Gardez-le pour vous."
-dashboard-login-revoke: "   <yellow>· <white>Envoyé au mauvais endroit ? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Cliquez pour exécuter'><gray>/xcore dashboard revoke</gray></hover></click>"
-dashboard-login-console: " <yellow>▸ <white>Lancez <gray>/xcore dashboard<white> en jeu pour obtenir un lien de connexion. La console n'a pas de navigateur pour l'ouvrir."
+dashboard-login: " <yellow>▸ <white>Connexion : <click:open_url:'{url}'><hover:show_text:'<green>Clique pour ouvrir le dashboard, déjà connecté'><green>[ouvrir le dashboard]</green></hover></click>"
+dashboard-login-ttl: "   <yellow>· <white>Le lien te connecte pendant <gray>{hours}h<white>. Garde-le pour toi."
+dashboard-login-forever: "   <yellow>· <white>Le lien reste valide jusqu'à révocation. Garde-le pour toi."
+dashboard-login-revoke: "   <yellow>· <white>Envoyé au mauvais endroit ? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Clique pour exécuter'><gray>/xcore dashboard revoke</gray></hover></click>"
+dashboard-login-console: " <yellow>▸ <white>Lance <gray>/xcore dashboard<white> en jeu pour obtenir un lien de connexion. La console n'a pas de navigateur pour l'ouvrir."
 dashboard-revoked: "<green>{count} session(s) du dashboard fermée(s). Les anciens liens ne fonctionnent plus."
-dashboard-revoked-none: "<red>Vous n'aviez aucune session ouverte sur le dashboard."
+dashboard-revoked-none: "<red>Tu n'avais aucune session ouverte sur le dashboard."
 
 # ---------------------------------------------------------------------------
 # /xcore reload
@@ -133,7 +133,7 @@ dashboard-revoked-none: "<red>Vous n'aviez aucune session ouverte sur le dashboa
 reload-core: "<green>Rechargement effectué."
 reload-addons: "<green>{count} addon(s) rechargé(s) : <white>{list}"
 reload-addons-none: "<red>Aucun addon actif à recharger."
-reload-addons-failed: "<red>Échec du rechargement : {list}. Consultez la console."
+reload-addons-failed: "<red>Échec du rechargement : {list}. Consulte la console."
 reload-restart-required: "<gray>Nécessite un redémarrage : base de données, Redis, tailles de cache, port du dashboard."
 reload-addon-success: "<green>Addon {name} rechargé."
 
@@ -150,11 +150,11 @@ clear-cache-success: "<green>Tous les caches ont été vidés."
 player-loading: "<gray>Recherche de {name}…"
 player-not-found: "<red>Aucun joueur nommé {name} n'est connu de ce serveur."
 player-header: " <aqua>{name} <white>· {status}"
-player-server-uuid: " <yellow>▸ <white>UUID serveur: <gray>{value}"
-player-mojang-uuid: " <yellow>▸ <white>UUID Mojang: <gray>{value}"
-player-texture: " <yellow>▸ <white>Texture: <gray>{value}"
-player-last-login: " <yellow>▸ <white>Dern. connexion: <gray>{value}"
-player-last-logout: " <yellow>▸ <white>Dern. déconnexion: <gray>{value}"
+player-server-uuid: " <yellow>▸ <white>UUID serveur : <gray>{value}"
+player-mojang-uuid: " <yellow>▸ <white>UUID Mojang : <gray>{value}"
+player-texture: " <yellow>▸ <white>Texture : <gray>{value}"
+player-last-login: " <yellow>▸ <white>Dern. connexion : <gray>{value}"
+player-last-logout: " <yellow>▸ <white>Dern. déconnexion : <gray>{value}"
 player-data-header: " <gray>Données personnalisées <yellow>({count})"
 player-data-entry: " <yellow>› <white>{key} : <gray>{value}"
 
@@ -167,19 +167,19 @@ player-data-entry: " <yellow>› <white>{key} : <gray>{value}"
 
 player-only: "<red>Cette commande est réservée aux joueurs."
 eco-invalid-currency: "<red>Monnaie {currency} inconnue. Disponibles : {currencies}"
-eco-insufficient-funds: "<red>Fonds insuffisants. Vous avez {balance}."
-error: "<red>Une erreur est survenue. Réessayez."
+eco-insufficient-funds: "<red>Fonds insuffisants. Tu as {balance}."
+error: "<red>Une erreur est survenue. Réessaie."
 eco-balance-capped: "<yellow>Le solde a été plafonné à {max} pour {currency}."
 
 eco-balance-title: "<aqua>Soldes"
-eco-balance-self-single: "<white>Votre solde : <yellow>{balance} <gray>({currency})"
+eco-balance-self-single: "<white>Ton solde : <yellow>{balance} <gray>({currency})"
 eco-balance-other-single: "<white>Solde de {name} : <yellow>{balance} <gray>({currency})"
 eco-balance-entry: "  <yellow>{balance} <gray>({currency})"
 eco-balance-end: ""
 
-eco-pay-sent: "<green>Vous avez envoyé <yellow>{amount} <gray>({currency}) <green>à {target}."
-eco-pay-received: "<green>Vous avez reçu <yellow>{amount} <gray>({currency}) <green>de {sender}."
-eco-pay-self: "<red>Vous ne pouvez pas vous payer vous-même."
+eco-pay-sent: "<green>Tu as envoyé <yellow>{amount} <gray>({currency}) <green>à {target}."
+eco-pay-received: "<green>Tu as reçu <yellow>{amount} <gray>({currency}) <green>de {sender}."
+eco-pay-self: "<red>Tu ne peux pas te payer toi-même."
 
 eco-set-success: "<green>Solde <gray>({currency}) <green>de {name} défini à <yellow>{amount}<green>."
 eco-add-success: "<green>Ajout de <yellow>{amount} <gray>({currency}) <green>à {name}. Nouveau : <yellow>{balance}<green>."
@@ -187,11 +187,11 @@ eco-remove-success: "<green>Retrait de <yellow>{amount} <gray>({currency}) <gree
 eco-reset-success: "<green>Solde <gray>({currency}) <green>de {name} réinitialisé à <yellow>{amount}<green>."
 
 eco-resetall-warning: "<red>Ceci réinitialisera TOUS les joueurs (connectés et hors ligne) pour : {currency}. C'est irréversible."
-eco-resetall-confirm-usage: "<red>Tapez <gray>/eco resetall {currency} confirm <red>pour confirmer."
-eco-resetall-started: "<gray>Réinitialisation de tous les soldes pour {currency}..."
+eco-resetall-confirm-usage: "<red>Tape <gray>/eco resetall {currency} confirm <red>pour confirmer."
+eco-resetall-started: "<gray>Réinitialisation de tous les soldes pour {currency}…"
 eco-resetall-success: "<green>{count} <green>solde(s) réinitialisé(s) pour {currency}."
 
-eco-exchange-success: "<green>Vous avez échangé <yellow>{from_amount} <gray>({from_currency}) <green>contre <yellow>{to_amount} <gray>({to_currency})<green>."
+eco-exchange-success: "<green>Tu as échangé <yellow>{from_amount} <gray>({from_currency}) <green>contre <yellow>{to_amount} <gray>({to_currency})<green>."
 eco-exchange-no-rate: "<red>Aucun taux de change disponible pour cette paire de monnaies."
 eco-exchange-disabled: "<red>L'échange de monnaies est actuellement désactivé."
 
@@ -208,13 +208,13 @@ eco-top-end: ""
 eco-reload-success: "<green>Configuration de l'économie rechargée."
 eco-reload-warning-no-vault: "<yellow>Aucune monnaie n'est marquée <white>vault: true<yellow> — les autres plugins ne verront aucun solde."
 
-eco-payout-received: "<green>Vous avez reçu <yellow>{amount} <gray>({currency}) <green>au titre du versement automatique."
-eco-interest-received: "<green>Vous avez gagné <yellow>{amount} <gray>({currency}) <green>d'intérêts."
+eco-payout-received: "<green>Tu as reçu <yellow>{amount} <gray>({currency}) <green>au titre du versement automatique."
+eco-interest-received: "<green>Tu as gagné <yellow>{amount} <gray>({currency}) <green>d'intérêts."
 
 eco-help-message: |
   <aqua>Aide - Économie
   <gray>
-  <yellow>/eco <white>- Voir tous vos soldes
+  <yellow>/eco <white>- Voir tous tes soldes
   <yellow>/eco balance [joueur] [monnaie] <white>- Voir un solde
   <yellow>/eco pay <joueur> <montant> [monnaie] <white>- Envoyer de l'argent
   <yellow>/eco set <joueur> <montant> [monnaie] <white>- Définir un solde (admin)
@@ -239,7 +239,7 @@ update-available: "<red>[{addon}] Une mise à jour est disponible : <aqua>{versi
 # the time — a reward with a full inventory, a payment made while offline.
 # ---------------------------------------------------------------------------
 
-delivery-received: " <yellow>▸ <white>Vous avez reçu <gray>{count} <white>objet(s) en attente."
+delivery-received: " <yellow>▸ <white>Tu as reçu <gray>{count} <white>envoi(s) en attente."
 
 # ---------------------------------------------------------------------------
 # /plugins, answered by XCore so its addons appear next to the server plugins.

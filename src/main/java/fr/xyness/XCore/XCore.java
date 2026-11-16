@@ -550,7 +550,8 @@ public class XCore extends JavaPlugin {
             // There is no token to configure: /xcore dashboard issues one, scoped to the player who
             // asked and revocable. A key sitting in a config file cannot be either.
             webPanel = new WebPanel(this, getDataFolder(), webPort, metricsPublic,
-                config.getString("web-dashboard.cors-origin", "*"));
+                config.getString("web-dashboard.cors-origin", "*"),
+                config.getString("web-dashboard.bind-address", "0.0.0.0"));
             try {
                 webPanel.start();
             } catch (Exception e) {

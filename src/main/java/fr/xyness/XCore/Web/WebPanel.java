@@ -68,8 +68,26 @@ public class WebPanel {
     /** The server start time in millis, for uptime calculation. */
     private final long startTimeMillis;
 
-    /** Allowed CORS origin, {@code "*"} to allow any. */
+    /**
+     * Address the server listens on, or {@code null} for every interface.
+     *
+     * <p>Every interface was the only behaviour until this setting existed, so it stays the
+     * default; a dashboard published by a reverse proxy on the same machine is better bound to
+     * {@code 127.0.0.1}, where nothing but the proxy can reach it.</p>
+     */
+    private final String bindAddress;
+
+    /** Allowed CORS origin, {@code "*"} to allow any. Used when a single value is configured. */
     private final String corsOrigin;
+
+    /**
+     * The allowed origins when {@code cors-origin} lists several, or {@code null} otherwise.
+     *
+     * <p>{@code Access-Control-Allow-Origin} carries one origin, never a list — a browser refuses
+     * the response outright — so a list is answered request by request: the caller's own
+     * {@code Origin} is sent back when it is on the list, and nothing at all when it is not.</p>
+     */
+    private final java.util.Set<String> corsOrigins;
 
     /** Maximum authentication attempts per IP within {@link #AUTH_WINDOW_MS}. */
     private static final int AUTH_LIMIT = 10;
@@ -159,20 +177,53 @@ public class WebPanel {
     // **************************************************************************
 
     /**
-     * Creates a new WebPanel instance.
+     * Creates a new WebPanel instance listening on every interface.
      *
      * @param main          The plugin instance.
      * @param dataFolder    The plugin data folder (used to resolve the {@code web/} directory).
      * @param port          The port to listen on.
      * @param metricsPublic Whether the metrics endpoint is publicly accessible.
-     * @param corsOrigin    The allowed CORS origin, or {@code "*"}.
-     * @param main          The plugin, used to resolve the configured language.
+     * @param corsOrigin    The allowed CORS origin, a comma-separated list of origins, or {@code "*"}.
      */
     public WebPanel(XCore main, File dataFolder, int port, boolean metricsPublic, String corsOrigin) {
+        this(main, dataFolder, port, metricsPublic, corsOrigin, null);
+    }
+
+    /**
+     * Creates a new WebPanel instance.
+     *
+     * @param main          The plugin instance, also used to resolve the configured language.
+     * @param dataFolder    The plugin data folder (used to resolve the {@code web/} directory).
+     * @param port          The port to listen on.
+     * @param metricsPublic Whether the metrics endpoint is publicly accessible.
+     * @param corsOrigin    The allowed CORS origin, a comma-separated list of origins, or {@code "*"}.
+     * @param bindAddress   The address to listen on; blank, {@code "0.0.0.0"}, {@code "::"} or
+     *                      {@code "*"} for every interface.
+     */
+    public WebPanel(XCore main, File dataFolder, int port, boolean metricsPublic, String corsOrigin,
+                    String bindAddress) {
         this.main = main;
         this.port = port;
         this.metricsPublic = metricsPublic;
-        this.corsOrigin = (corsOrigin == null || corsOrigin.isBlank()) ? "*" : corsOrigin;
+        this.bindAddress = listensEverywhere(bindAddress) ? null : bindAddress.trim();
+
+        // One value — "*" or a single origin — is sent as it is, exactly as before lists existed.
+        // A "*" anywhere in a list still means "anyone": that is what whoever wrote it allowed.
+        List<String> origins = new ArrayList<>();
+        if (corsOrigin != null) {
+            for (String part : corsOrigin.split(",")) {
+                String origin = part.trim();
+                if (!origin.isEmpty()) origins.add(origin);
+            }
+        }
+        if (origins.size() > 1 && !origins.contains("*")) {
+            this.corsOrigin = null;
+            this.corsOrigins = java.util.Set.copyOf(origins);
+        } else {
+            this.corsOrigin = origins.isEmpty() || origins.contains("*") ? "*" : origins.get(0);
+            this.corsOrigins = null;
+        }
+
         this.logger = new Logger("WebPanel");
         this.webRoot = new File(dataFolder, "web").toPath();
         this.sessionFile = new File(dataFolder, "web-sessions.json");
@@ -398,7 +449,27 @@ public class WebPanel {
      * @throws IOException If the server cannot bind to the configured port.
      */
     public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(port), 0);
+        // Every interface keeps the exact socket this always opened: the wildcard address, which
+        // on a dual-stack machine accepts IPv6 as well as IPv4 — "0.0.0.0" taken literally would
+        // quietly drop IPv6. A specific address that does not resolve fails the start rather than
+        // falling back to every interface: whoever set it asked for less exposure, not more.
+        InetSocketAddress address;
+        if (bindAddress == null) {
+            address = new InetSocketAddress(port);
+        } else {
+            try {
+                address = new InetSocketAddress(java.net.InetAddress.getByName(bindAddress), port);
+            } catch (java.net.UnknownHostException e) {
+                throw new IOException("web-dashboard.bind-address \"" + bindAddress + "\" does not resolve", e);
+            }
+        }
+        try {
+            server = HttpServer.create(address, 0);
+        } catch (IOException e) {
+            // "Address already in use" alone does not say which address: name it.
+            throw new IOException("cannot listen on " + (bindAddress == null ? "port " + port
+                    : bindAddress + ":" + port) + " (" + e.getMessage() + ")", e);
+        }
         httpExecutor = Executors.newFixedThreadPool(4, r -> {
             Thread t = new Thread(r, "XCore-WebPanel-HTTP");
             t.setDaemon(true);
@@ -450,7 +521,26 @@ public class WebPanel {
         }, "XCore-lang-warmup");
         warm.setDaemon(true);
         warm.start();
-        logger.sendInfo("Web dashboard started on port <aqua>" + port + "</aqua>.");
+        if (bindAddress == null) {
+            logger.sendInfo("Web dashboard started on port <aqua>" + port + "</aqua>.");
+        } else {
+            logger.sendInfo("Web dashboard started on <aqua>" + bindAddress + ":" + port + "</aqua> only.");
+        }
+    }
+
+    /**
+     * Whether a configured bind address means "every interface".
+     *
+     * <p>Shared with the command that builds login links, so both read the setting the same way.</p>
+     *
+     * @param address The {@code web-dashboard.bind-address} value.
+     * @return {@code true} for a blank value, {@code 0.0.0.0}, {@code ::} or {@code *}.
+     */
+    public static boolean listensEverywhere(String address) {
+        if (address == null) return true;
+        String value = address.trim();
+        return value.isEmpty() || value.equals("0.0.0.0") || value.equals("::")
+                || value.equals("[::]") || value.equals("*");
     }
 
     /**
@@ -1209,7 +1299,7 @@ public class WebPanel {
     }
 
     /**
-     * Adds CORS headers to the response.
+     * Adds CORS headers to the response, and the {@link #addSecurityHeaders security headers}.
      * <p>
      * Public so that {@link WebModule} implementations can apply the same headers.
      * </p>
@@ -1217,10 +1307,47 @@ public class WebPanel {
      * @param exchange The HTTP exchange.
      */
     public void addCorsHeaders(HttpExchange exchange) {
-        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", corsOrigin);
-        if (!"*".equals(corsOrigin)) exchange.getResponseHeaders().set("Vary", "Origin");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+        var headers = exchange.getResponseHeaders();
+        if (corsOrigins == null) {
+            headers.set("Access-Control-Allow-Origin", corsOrigin);
+            if (!"*".equals(corsOrigin)) headers.set("Vary", "Origin");
+        } else {
+            // Several origins allowed: the caller's own is named back when it is on the list,
+            // compared exactly. Any other gets no header at all, and its browser withholds the
+            // answer from the page that asked. The answer depends on Origin either way, so a cache
+            // must not hand one origin's response to another.
+            String origin = exchange.getRequestHeaders().getFirst("Origin");
+            if (origin != null && corsOrigins.contains(origin.trim())) {
+                headers.set("Access-Control-Allow-Origin", origin.trim());
+            }
+            headers.set("Vary", "Origin");
+        }
+        headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+        // Here because every handler — the core's and every module's — starts with this call, so
+        // it is the one place sure to reach every response, modules built before it existed included.
+        addSecurityHeaders(exchange);
+    }
+
+    /**
+     * Forbids framing and content sniffing on a response.
+     *
+     * <p>The dashboard bans, mutes and rewrites configuration files with one click each. Shown
+     * inside an invisible frame on someone else's page, those clicks can be stolen from a logged-in
+     * administrator (clickjacking): {@code X-Frame-Options} and {@code frame-ancestors} keep every
+     * browser from framing it. {@code nosniff} keeps a browser from second-guessing a declared type
+     * — a JSON answer quoting player-written text is never run as a script or rendered as a page.</p>
+     *
+     * <p>Applied by {@link #addCorsHeaders} and {@link #sendJson}; public for a module that writes
+     * its responses by hand.</p>
+     *
+     * @param exchange The HTTP exchange.
+     */
+    public void addSecurityHeaders(HttpExchange exchange) {
+        var headers = exchange.getResponseHeaders();
+        headers.set("X-Frame-Options", "DENY");
+        headers.set("Content-Security-Policy", "frame-ancestors 'none'");
+        headers.set("X-Content-Type-Options", "nosniff");
     }
 
     /**
@@ -1257,6 +1384,8 @@ public class WebPanel {
     public void sendJson(HttpExchange exchange, int code, String json) throws IOException {
         byte[] data = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", JSON_CONTENT_TYPE);
+        // Again here for a module handler that answers without calling addCorsHeaders first.
+        addSecurityHeaders(exchange);
 
         // Compressed past a kilobyte, and only when the caller said it could read it. The payloads
         // that matter here — a sanction list, a player page, a catalogue — are highly repetitive

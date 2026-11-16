@@ -172,6 +172,47 @@ public class SchedulerAdapter {
     }
 
 	/**
+	 * Runs a task on the player's owning thread, with a callback for when it can no longer run.
+	 *
+	 * <p>Folia drops an entity task silently when the entity is removed first (a player who logs
+	 * out in between): whatever the task was meant to hand over is then lost. {@code retired} runs
+	 * instead in that case — and also when the task could not be scheduled at all — so the caller
+	 * can put things back. Exactly one of the two runs.</p>
+	 *
+	 * @param player  The player whose region thread should execute the task.
+	 * @param task    The task to run.
+	 * @param retired Run instead of {@code task} when the player is gone (may be {@code null}).
+	 * @return {@code false} when the task was not scheduled ({@code retired} has then already run).
+	 */
+	public boolean runEntityTask(Player player, Runnable task, Runnable retired) {
+        if (isFolia) {
+            try {
+                Object scheduler = playerGetSchedulerMethod.invoke(player);
+                Object handle = entitySchedulerRunMethod.invoke(scheduler, main, wrapConsumer(task), retired);
+                if (handle == null) {
+                    // Already retired: Folia neither runs the task nor calls the callback.
+                    if (retired != null) retired.run();
+                    return false;
+                }
+                return true;
+            } catch (Exception e) {
+                main.logger().sendError("Failed to schedule Folia entity task : " + e.getMessage());
+                if (retired != null) retired.run();
+                return false;
+            }
+        }
+        if (!player.isOnline()) {
+            if (retired != null) retired.run();
+            return false;
+        }
+        Bukkit.getScheduler().runTask(main, () -> {
+            if (player.isOnline()) task.run();
+            else if (retired != null) retired.run();
+        });
+        return true;
+    }
+
+	/**
 	 * Runs a task on the entity's owning thread after a delay.
 	 *
 	 * @param player     The player whose region thread should execute the task.

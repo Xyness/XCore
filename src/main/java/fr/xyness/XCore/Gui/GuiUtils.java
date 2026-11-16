@@ -140,7 +140,7 @@ public class GuiUtils {
     // -------------------------------------------------------------------------
 
     /**
-     * Plays the clicked item's sound, runs its configured actions and checks its permission.
+     * Plays the clicked item's sound, checks its permission and runs its configured actions.
      *
      * <p>This is what makes the {@code sound}, {@code actions} and {@code permission} keys of a GUI
      * definition work. Every addon carried an identical copy of it in its own listener.</p>
@@ -161,14 +161,17 @@ public class GuiUtils {
             playSound(player, def.getSound());
         }
 
+        // The permission is checked before the actions: a button's commands used to run first and
+        // only the addon's own handling of the click was refused.
+        if (item != null && item.getPermission() != null && !item.getPermission().isBlank()
+                && !player.hasPermission(item.getPermission())) {
+            return false;
+        }
+
         if (item != null) {
             for (GuiAction action : item.getActions(ClickKind.fromBukkit(clickType))) {
                 action.execute(player);
             }
-        }
-
-        if (item != null && item.getPermission() != null && !item.getPermission().isBlank()) {
-            return player.hasPermission(item.getPermission());
         }
         return true;
     }

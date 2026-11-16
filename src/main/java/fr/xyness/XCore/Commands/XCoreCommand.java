@@ -16,6 +16,7 @@ import fr.xyness.XCore.Cache.PlayerCache;
 import fr.xyness.XCore.Models.PlayerData;
 import fr.xyness.XCore.Utils.LangManager;
 import fr.xyness.XCore.Web.WebModule;
+import fr.xyness.XCore.Web.WebPanel;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
@@ -592,8 +593,8 @@ public class XCoreCommand {
      * The address the dashboard is reachable at.
      *
      * <p>{@code web-dashboard.public-url} wins when set, because only the administrator knows the
-     * hostname behind a reverse proxy. Otherwise the bind address is used, and {@code localhost}
-     * when the server binds every interface.</p>
+     * hostname behind a reverse proxy. Otherwise the dashboard's own bind address is used, then the
+     * server's, and {@code localhost} when both bind every interface.</p>
      */
     private String dashboardUrl() {
         String configured = core.getConfig().getString("web-dashboard.public-url", "");
@@ -605,8 +606,13 @@ public class XCoreCommand {
             if (!url.startsWith("http://") && !url.startsWith("https://")) url = "http://" + url;
             return url;
         }
-        String host = Bukkit.getIp();
+        // A dashboard bound to one address answers there and nowhere else, whatever address the
+        // game server itself was given.
+        String host = core.getConfig().getString("web-dashboard.bind-address", "");
+        if (WebPanel.listensEverywhere(host)) host = Bukkit.getIp();
         if (host == null || host.isBlank() || "0.0.0.0".equals(host)) host = "localhost";
+        host = host.trim();
+        if (host.contains(":") && !host.startsWith("[")) host = "[" + host + "]";
         return "http://" + host + ":" + core.getConfig().getInt("web-dashboard.port", 8085);
     }
 
@@ -638,10 +644,15 @@ public class XCoreCommand {
 
         // A player gets a link that logs them in; nothing has to be configured, and the token is
         // never displayed — it travels inside the URL and the page removes it on arrival.
+        //
+        // In the fragment (#token=), not the query string: a browser never sends the fragment, so
+        // the token stays out of every access log on the way — the reverse proxy's, the CDN's — and
+        // out of the Referer of anything the page loads. In the query it was written down by each.
+        // The page has always read both, so a ?token= link from an older version still works.
         if (sender instanceof Player player) {
             String session = core.getWebPanel().createSession(player.getUniqueId(), player.getName());
             long ttl = core.getConfig().getLong("web-dashboard.session-ttl-hours", 24);
-            send(sender, "dashboard-login", "url", tagSafe(url + "/?token=" + session));
+            send(sender, "dashboard-login", "url", tagSafe(url + "/#token=" + session));
             send(sender, ttl > 0 ? "dashboard-login-ttl" : "dashboard-login-forever",
                 "hours", String.valueOf(ttl));
             send(sender, "dashboard-login-revoke");

@@ -205,7 +205,10 @@ public class DiscordNotifier {
             main.logger().sendDebug("Discord webhook answered " + code + ".");
             requeue(post);
         } catch (Exception e) {
-            main.logger().sendDebug("Discord webhook failed : " + e.getMessage());
+            // A malformed address comes back quoted in the exception, and a webhook address is a
+            // credential: whoever reads it can post in the channel. Logs get shared; it is cut out.
+            String reason = String.valueOf(e.getMessage()).replace(post.url(), "[webhook]");
+            main.logger().sendDebug("Discord webhook failed : " + reason);
             requeue(post);
         } finally {
             if (connection != null) connection.disconnect();
