@@ -18,6 +18,7 @@ import { allModules, markOf, moduleHref, playerHref } from "../lib/modules.js";
 import { onMetrics, wantEvery, tpsState, memoryState, STATE_TONE } from "../lib/metrics.js";
 import { glassBlock } from "../ui/block.js";
 import { face, playerLink, emptyState } from "../ui/table.js";
+import { canSeePlayers } from "../lib/access.js";
 
 const BEATS = 4;
 const PINNED_QUERY = "(prefers-reduced-motion: no-preference) and (scripting: enabled) and (min-height: 540px)";
@@ -211,6 +212,9 @@ export function homePage() {
   const systemList = h("div", { class: "kv" }, h("span", { class: "skel" }));
   const recentList = h("div", { class: "recent" }, h("span", { class: "skel" }));
   const moduleGrid = h("div", { class: "module-cards" });
+  // The players seen last are a view of the players list: a reader it is closed to does not get
+  // them here either.
+  const players = canSeePlayers();
 
   const overview = h(
     "section",
@@ -224,7 +228,9 @@ export function homePage() {
         "div",
         { class: "stack" },
         h("section", { class: "card" }, h("div", { class: "card-head" }, h("h3", { class: "card-title" }, icon("puzzle"), t("plugins-title"))), moduleGrid),
-        h("section", { class: "card" }, h("div", { class: "card-head" }, h("h3", { class: "card-title" }, icon("users"), t("recent-players")), h("a", { class: "btn btn-xs btn-quiet", href: "#/players" }, t("players"), icon("arrow-right"))), recentList)
+        players
+          ? h("section", { class: "card" }, h("div", { class: "card-head" }, h("h3", { class: "card-title" }, icon("users"), t("recent-players")), h("a", { class: "btn btn-xs btn-quiet", href: "#/players" }, t("players"), icon("arrow-right"))), recentList)
+          : null
       ),
       h("section", { class: "card" }, h("div", { class: "card-head" }, h("h3", { class: "card-title" }, icon("server"), t("system"))), systemList)
     )
@@ -305,7 +311,9 @@ export function homePage() {
         ? h(
             "div",
             { class: "faces-row" },
-            shown.map((name) => h("a", { href: playerHref(name), title: name, "aria-label": name }, face(name, 32))),
+            shown.map((name) =>
+              players ? h("a", { href: playerHref(name), title: name, "aria-label": name }, face(name, 32)) : h("span", { title: name, role: "img", "aria-label": name }, face(name, 32))
+            ),
             online.length > shown.length ? h("span", { class: "more num", text: `+${num(online.length - shown.length)}` }) : null
           )
         : null
@@ -430,6 +438,7 @@ export function homePage() {
       motion.start();
       cleanups.push(onMetrics(fill));
       cleanups.push(wantEvery(5000));
+      if (!players) return;
       loadRecent();
       const timer = setInterval(() => {
         if (!document.hidden) loadRecent();

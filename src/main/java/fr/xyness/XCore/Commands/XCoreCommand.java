@@ -83,33 +83,57 @@ public class XCoreCommand {
         };
     }
 
+    /** The permission of every {@code /xcore} subcommand but {@code dashboard}. */
+    private static final String ADMIN_PERMISSION = "xcore.admin";
+
+    /** Whether the sender may use the administration subcommands. */
+    private static boolean isAdmin(CommandSourceStack source) {
+        return source.getSender().hasPermission(ADMIN_PERMISSION);
+    }
+
     /**
      * Registers the command with Paper's Brigadier lifecycle API.
+     *
+     * <p>{@code /xcore dashboard} is open to whoever holds {@code xcore.dashboard} as well: a
+     * moderator gets their dashboard link without the rest of the command, which reloads, empties
+     * caches and reads the installation.</p>
      */
     public void register() {
         core.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             final Commands commands = event.registrar();
             commands.register(
                 Commands.literal("xcore")
-                    .requires(src -> src.getSender().hasPermission("xcore.admin"))
-                    .executes(ctx -> { sendOverview(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
+                    .requires(src -> isAdmin(src) || src.getSender().hasPermission(WebPanel.LOGIN_PERMISSION))
+                    .executes(ctx -> {
+                        // Someone who may only open the dashboard has nothing else here: /xcore
+                        // alone gives them their link.
+                        CommandSender sender = ctx.getSource().getSender();
+                        if (sender.hasPermission(ADMIN_PERMISSION)) sendOverview(sender);
+                        else handleDashboard(sender);
+                        return Command.SINGLE_SUCCESS;
+                    })
                     .then(Commands.literal("stats")
+                        .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleStats(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; }))
                     .then(Commands.literal("addons")
+                        .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleAddons(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; }))
                     .then(Commands.literal("dashboard")
                         .executes(ctx -> { handleDashboard(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
                         .then(Commands.literal("revoke")
                             .executes(ctx -> { handleDashboardRevoke(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })))
                     .then(Commands.literal("reload")
+                        .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleReload(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
                         .then(Commands.argument("addon", StringArgumentType.word())
                             .suggests(addonSuggestions())
                             .executes(ctx -> { handleReloadAddon(ctx.getSource().getSender(), StringArgumentType.getString(ctx, "addon")); return Command.SINGLE_SUCCESS; })
                         ))
                     .then(Commands.literal("clear-cache")
+                        .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleClearCache(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; }))
                     .then(Commands.literal("profile")
+                        .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleProfile(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
                         .then(Commands.literal("on")
                             .executes(ctx -> { handleProfileToggle(ctx.getSource().getSender(), true); return Command.SINGLE_SUCCESS; }))
@@ -118,8 +142,10 @@ public class XCoreCommand {
                         .then(Commands.literal("reset")
                             .executes(ctx -> { handleProfileReset(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })))
                     .then(Commands.literal("diag")
+                        .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleDiag(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; }))
                     .then(Commands.literal("player")
+                        .requires(XCoreCommand::isAdmin)
                         .then(Commands.argument("name", StringArgumentType.word())
                             .suggests(playerSuggestions)
                             .executes(ctx -> { handlePlayer(ctx.getSource().getSender(), StringArgumentType.getString(ctx, "name")); return Command.SINGLE_SUCCESS; })
@@ -666,7 +692,13 @@ public class XCoreCommand {
         // the token stays out of every access log on the way — the reverse proxy's, the CDN's — and
         // out of the Referer of anything the page loads. In the query it was written down by each.
         // The page has always read both, so a ?token= link from an older version still works.
-        if (sender instanceof Player player) {
+        //
+        // The dashboard follows the reader's own permissions, and opening it at all takes
+        // xcore.dashboard: an administrator who only has xcore.admin sees the address, and is told
+        // what a link needs rather than handed one that would be refused.
+        if (sender instanceof Player player && !player.hasPermission(WebPanel.LOGIN_PERMISSION)) {
+            send(sender, "dashboard-login-denied", "permission", WebPanel.LOGIN_PERMISSION);
+        } else if (sender instanceof Player player) {
             String session = core.getWebPanel().createSession(player.getUniqueId(), player.getName());
             long ttl = core.getConfig().getLong("web-dashboard.session-ttl-hours", 24);
             send(sender, "dashboard-login", "url", tagSafe(url + "/#token=" + session));

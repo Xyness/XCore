@@ -252,3 +252,13 @@ field-coins: "Pièces"
 field-currency: "Monnaie"
 field-level: "Niveau"
 field-item_details: "Objet"
+
+# Qui ouvre quoi : chacun se connecte avec ses propres permissions du jeu
+no-access: "Pas d'accès"
+no-access-hint: "Votre compte ne peut pas ouvrir cette page."
+no-access-needs: "Elle demande la permission {permission}."
+no-access-later: "Vos permissions sur le dashboard suivent celles du jeu : une permission qui vous est accordée s'applique dans la minute pendant que vous êtes sur le serveur."
+no-permission-action: "Vous n'avez pas la permission nécessaire : {permission}."
+permission-or: " ou "
+config-read-only: "Lecture seule : l'enregistrement demande la permission {permission}."
+signed-in-as: "Connecté en tant que {player}"

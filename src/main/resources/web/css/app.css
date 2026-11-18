@@ -448,6 +448,15 @@
   justify-content: flex-start;
 }
 
+/* Who is signed in: the face and the name, signing out beside them. */
+.sidebar-who {
+  flex: 1;
+  padding-left: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
 /* --- Theme toggle: which icon shows is decided by data-theme alone. ---- */
 
 .when-light {
@@ -1304,6 +1313,23 @@ a.card:focus-visible {
 
 .state p {
   max-width: 28rem;
+}
+
+/* A permission node, named so the reader can ask for it. */
+.state code,
+.config-locked code {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.375rem;
+  background: var(--glass-wash);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.state-note {
+  font-size: 0.875rem;
+  color: var(--text-3);
 }
 
 /* ============================================

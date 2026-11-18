@@ -122,6 +122,7 @@ dashboard-login-ttl: "   <yellow>· <white>The link logs you in for <gray>{hours
 dashboard-login-forever: "   <yellow>· <white>The link stays valid until you revoke it. Keep it to yourself."
 dashboard-login-revoke: "   <yellow>· <white>Sent it to the wrong place? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Click to run'><gray>/xcore dashboard revoke</gray></hover></click>"
 dashboard-login-console: " <yellow>▸ <white>Run <gray>/xcore dashboard<white> in game to get a login link. The console has no browser to open it with."
+dashboard-login-denied: " <yellow>▸ <white>Logging in needs the permission <gray>{permission}<white>. An administrator can grant it."
 dashboard-revoked: "<green>Closed {count} dashboard session(s). The old links no longer work."
 dashboard-revoked-none: "<red>You had no open dashboard session."
 

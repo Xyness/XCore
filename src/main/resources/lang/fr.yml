@@ -123,6 +123,7 @@ dashboard-login-ttl: "   <yellow>· <white>Le lien te connecte pendant <gray>{ho
 dashboard-login-forever: "   <yellow>· <white>Le lien reste valide jusqu'à révocation. Garde-le pour toi."
 dashboard-login-revoke: "   <yellow>· <white>Envoyé au mauvais endroit ? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Clique pour exécuter'><gray>/xcore dashboard revoke</gray></hover></click>"
 dashboard-login-console: " <yellow>▸ <white>Lance <gray>/xcore dashboard<white> en jeu pour obtenir un lien de connexion. La console n'a pas de navigateur pour l'ouvrir."
+dashboard-login-denied: " <yellow>▸ <white>La connexion demande la permission <gray>{permission}<white>. Un administrateur peut te l'accorder."
 dashboard-revoked: "<green>{count} session(s) du dashboard fermée(s). Les anciens liens ne fonctionnent plus."
 dashboard-revoked-none: "<red>Tu n'avais aucune session ouverte sur le dashboard."
 

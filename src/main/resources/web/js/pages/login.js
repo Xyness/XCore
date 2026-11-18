@@ -62,9 +62,10 @@ export function renderLogin(root, { message = "", onSuccess }) {
     swap(submit, h("span", { class: "spin", "aria-hidden": "true" }), h("span", { text: t("connect") }));
     token.set(value);
     try {
-      await get("/api/auth");
+      // The answer also says what this session may open: the dashboard starts from it.
+      const me = await get("/api/auth");
       cleanup();
-      onSuccess();
+      onSuccess(me);
     } catch (failure) {
       token.clear();
       submit.disabled = false;

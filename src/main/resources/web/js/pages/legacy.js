@@ -4,7 +4,9 @@
 // existed still gets what the dashboard always gave it: the configuration editor for a "config"
 // page, a player filter on "transactions", and otherwise its answer shown as a table or a list.
 // Two older modules had pages of their own in the dashboard, XShops and XAutoMessage; they keep
-// them, against the same routes as before.
+// them, against the same routes as before. Their pages declare no permission for what they
+// change, so the panel asks for the module's manage permission: without it, the buttons that
+// would only be refused are not drawn.
 
 import { h, icon, swap } from "../lib/dom.js";
 import { get, post, withQuery, moduleBase } from "../lib/api.js";
@@ -13,8 +15,9 @@ import { listing, rowsOf } from "../ui/listing.js";
 import { dataTable, emptyState, errorState, cell, skeletonRows } from "../ui/table.js";
 import { openDialog, toast } from "../ui/overlay.js";
 import { pageHead } from "./players.js";
-import { moduleEyebrow, send } from "./module.js";
+import { moduleEyebrow, send, readOnlyOf } from "./module.js";
 import { pageTitle } from "../lib/modules.js";
+import { holds, managePermission } from "../lib/access.js";
 
 function shell(mod, page, actions, ...body) {
   return h("div", { class: "page" }, pageHead({ eyebrow: moduleEyebrow(mod), title: pageTitle(mod, page), actions }), ...body);
@@ -73,6 +76,7 @@ function genericPage(mod, page) {
 
 function shopsPage(mod, page) {
   const path = page.path;
+  const manage = holds(managePermission(mod.name));
   const simple = (endpoint, keys, empty, error, actions = null) => {
     const list = listing({
       empty: t(empty),
@@ -92,7 +96,7 @@ function shopsPage(mod, page) {
   }
 
   if (path === "stock") {
-    const list = simple("/api/xshops/stock", ["stock", "data"], "no-stock-data", "failed-to-load-stock", [
+    const list = simple("/api/xshops/stock", ["stock", "data"], "no-stock-data", "failed-to-load-stock", !manage ? null : [
       {
         label: t("edit-stock"),
         run: async (row) => {
@@ -136,7 +140,7 @@ function shopsPage(mod, page) {
       icon("refresh-cw"),
       t("restock-all")
     );
-    return { el: shell(mod, page, [restock], list.el), mounted: () => list.reload(), destroy: list.destroy };
+    return { el: shell(mod, page, manage ? [restock] : null, list.el), mounted: () => list.reload(), destroy: list.destroy };
   }
 
   if (path === "prices") {
@@ -163,7 +167,7 @@ function shopsPage(mod, page) {
       icon("rotate-ccw"),
       t("reset-all-prices")
     );
-    return { el: shell(mod, page, [reset], list.el), mounted: () => list.reload(), destroy: list.destroy };
+    return { el: shell(mod, page, manage ? [reset] : null, list.el), mounted: () => list.reload(), destroy: list.destroy };
   }
 
   if (path === "transactions") {
@@ -223,6 +227,7 @@ function shopsPage(mod, page) {
 // ---------------------------------------------------------------------------
 
 function autoMessagePage(mod, page) {
+  const manage = holds(managePermission(mod.name));
   if (page.path === "status") {
     const box = h("section", { class: "card" }, h("span", { class: "skel" }));
     const load = () =>
@@ -279,7 +284,7 @@ function autoMessagePage(mod, page) {
                   sections[type].map((message) => {
                     const enabled = message.enabled !== false && message.enabled !== "false" && message.enabled !== 0;
                     const id = `msg-${String(message.id ?? Math.random()).replace(/[^a-z0-9_-]/gi, "")}`;
-                    const toggle = h("input", { class: "switch", type: "checkbox", role: "switch", id, checked: enabled });
+                    const toggle = h("input", { class: "switch", type: "checkbox", role: "switch", id, checked: enabled, disabled: !manage });
                     toggle.addEventListener("change", () => {
                       post("/api/automessage/toggle", { id: message.id, enabled: toggle.checked })
                         .then(() => toast(t(toggle.checked ? "status-enabled" : "status-disabled"), "success"))
@@ -329,7 +334,7 @@ function autoMessagePage(mod, page) {
       icon("refresh-cw"),
       t("reload-messages")
     );
-    return { el: shell(mod, page, [reload], box), mounted: load };
+    return { el: shell(mod, page, manage ? [reload] : null, box), mounted: load };
   }
 
   return genericPage(mod, page);
@@ -343,7 +348,7 @@ export function legacyPage(mod, page) {
       el: shell(mod, page, null, holder),
       async mounted() {
         const { configEditor } = await import("./config.js");
-        editor = configEditor(mod.name);
+        editor = configEditor(mod.name, readOnlyOf(page));
         swap(holder, editor.el);
       },
       destroy: () => editor && editor.destroy(),

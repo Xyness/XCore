@@ -176,13 +176,126 @@ public class WebPanel {
      * One dashboard session.
      *
      * @param owner    Name of the player it was issued to, for {@code /xcore dashboard}.
-     * @param ownerId  UUID of that player, so their sessions can be revoked together.
+     * @param ownerId  UUID of that player, so their sessions can be revoked together; empty for a
+     *                 session tied to no player.
      * @param expiresAt Epoch millis after which the session is refused, or 0 for no expiry.
      * @param locale   The client language of the player it was issued to, e.g. {@code fr_fr}, or
      *                 empty. Captured when the link is created, because the dashboard outlives the
      *                 session that opened it and the player may well be offline while reading it.
+     * @param access   What its owner may open and do, as last read from the game.
      */
-    private record Session(String owner, String ownerId, long expiresAt, String locale) {}
+    private record Session(String owner, String ownerId, long expiresAt, String locale, Access access) {
+
+        /** The same session, with its owner's permissions read again. */
+        Session with(Access next) {
+            return new Session(owner, ownerId, expiresAt, locale, next);
+        }
+    }
+
+    // **************************************************************************
+    // *                            Permissions                                 *
+    // **************************************************************************
+
+    /** Opens the dashboard at all: {@code /xcore dashboard} asks for it, and a session lasts as long as its owner holds it. */
+    public static final String LOGIN_PERMISSION = "xcore.dashboard";
+
+    /** The players list and every player's profile. */
+    public static final String PLAYERS_PERMISSION = "xcore.dashboard.players";
+
+    /** The configuration editor — the most sensitive page there is: it can change every setting of every module it shows. */
+    public static final String CONFIG_PERMISSION = "xcore.dashboard.config";
+
+    /**
+     * The permission that opens a module's pages: {@code xcore.dashboard.<name>}, the name in lower
+     * case and reduced to letters, digits, dashes and underscores.
+     *
+     * @param moduleName The module's name, as {@link WebModule#getName()} returns it.
+     * @return The permission node.
+     */
+    public static String modulePermission(String moduleName) {
+        return "xcore.dashboard." + moduleKey(moduleName);
+    }
+
+    /**
+     * What a module's actions need when its pages name no permission for them:
+     * {@code xcore.dashboard.<name>.manage}. Third-party modules written before permissions existed
+     * are all in that case.
+     *
+     * @param moduleName The module's name.
+     * @return The permission node.
+     */
+    public static String managePermission(String moduleName) {
+        return modulePermission(moduleName) + ".manage";
+    }
+
+    /** A module name as it appears in a permission node. */
+    private static String moduleKey(String name) {
+        return name == null ? "" : name.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9_-]", "");
+    }
+
+    /**
+     * What a session may open and do: its owner's dashboard permissions, as they stood when last
+     * read from the game.
+     *
+     * <p>They are read while the owner is connected — when the link is made, when they join, and
+     * every minute while they play — because that is the only time a server can ask for them. In
+     * between the dashboard goes by the last reading, which is what lets a moderator use it from a
+     * phone, away from the game.</p>
+     *
+     * @param nodes Each permission that was read, and whether the owner held it.
+     * @param op    Whether the owner was an operator. It answers for a permission that did not exist
+     *              when they were read — a module installed since — the way the server answers for
+     *              a permission nobody set: yes for an operator, no for anyone else.
+     */
+    private record Access(java.util.Map<String, Boolean> nodes, boolean op) {
+
+        /** A session tied to no player: there is nothing to read, and nothing is refused. */
+        static final Access FULL = new Access(java.util.Map.of(), true);
+
+        /** @return Whether the owner holds the node, given in lower case. */
+        boolean has(String node) {
+            Boolean held = nodes.get(node);
+            return held != null ? held : op;
+        }
+    }
+
+    /**
+     * What the modules' pages declared: the permission each endpoint they post to needs, and what
+     * saving each module's configuration needs.
+     *
+     * <p>Rebuilt whenever a module comes or goes, and each time the module list is served, so it
+     * follows a module whose pages change while it runs.</p>
+     *
+     * @param endpoints Endpoint path, without its query string, to what it needs: a list of
+     *                  requirements, each met by any one of its nodes, all of them to be met.
+     * @param saves     Module key to what saving its configuration needs, when a page declared it.
+     * @param nodes     Every permission a session's reading covers.
+     */
+    private record Rules(java.util.Map<String, List<List<String>>> endpoints,
+                         java.util.Map<String, List<List<String>>> saves,
+                         java.util.Set<String> nodes) {
+
+        static final Rules CORE = new Rules(java.util.Map.of(), java.util.Map.of(),
+                java.util.Set.of(LOGIN_PERMISSION, PLAYERS_PERMISSION, CONFIG_PERMISSION));
+    }
+
+    /** The current rules, replaced whole: an HTTP thread never sees one half rebuilt. */
+    private volatile Rules rules = Rules.CORE;
+
+    /**
+     * The module that answers a request, and the route of its that does.
+     *
+     * @param module  The module.
+     * @param context The path of the route that answers it, or {@code null} when it was not created
+     *                through the panel and only the module's base path is known.
+     */
+    private record Target(WebModule module, String context) {}
+
+    /** Reads the permissions of every connected session owner again, every minute. */
+    private Object accessTask;
+
+    /** Reads a session owner's permissions again the moment they join. */
+    private WebSessionListener joinListener;
 
     // **************************************************************************
     // *                           Constructor                                  *
@@ -254,22 +367,31 @@ public class WebPanel {
      * <p>The returned string is the only copy in existence — this class stores its hash. Hand it
      * to the player as a one-click link and forget it.</p>
      *
+     * <p>The player's dashboard permissions are read here, on their own thread — they are
+     * connected, since they just asked for the link — and the session goes by them from then on,
+     * read again while they are in game.</p>
+     *
      * @param playerId   UUID of the player the session belongs to.
      * @param playerName Their name, shown when listing sessions.
      * @return The plain token to put in the link.
      */
     public String createSession(java.util.UUID playerId, String playerName) {
+        org.bukkit.entity.Player player = Bukkit.getPlayer(playerId);
+
         // Whoever asked for the link is the one who will read the dashboard: their game language is
         // a far better guess than the server's own setting.
         String locale = "";
         try {
-            org.bukkit.entity.Player player = Bukkit.getPlayer(playerId);
             if (player != null && player.locale() != null) {
                 locale = player.locale().toString().toLowerCase(java.util.Locale.ROOT);
             }
         } catch (Throwable ignored) {
             // A platform without per-player locales falls back to the configured language.
         }
+
+        // A player who is not connected has no permissions to read: the session starts from
+        // whether they are an operator, and is read properly the next time they join.
+        Access access = player != null ? accessOf(player) : new Access(java.util.Map.of(), isOperator(playerId));
 
         byte[] raw = new byte[32];
         random.nextBytes(raw);
@@ -278,10 +400,93 @@ public class WebPanel {
         long ttlHours = main.getConfig().getLong("web-dashboard.session-ttl-hours", 24);
         long expiresAt = ttlHours > 0 ? System.currentTimeMillis() + ttlHours * 3_600_000L : 0L;
 
-        sessions.put(hash(plain), new Session(playerName, playerId.toString(), expiresAt, locale));
+        sessions.put(hash(plain), new Session(playerName, playerId.toString(), expiresAt, locale, access));
         pruneSessions();
         saveSessions();
         return plain;
+    }
+
+    /**
+     * Reads a connected player's dashboard permissions: every node of the current {@link Rules},
+     * and whether they are an operator. Runs on that player's thread.
+     *
+     * @param player The player.
+     * @return What their sessions may do.
+     */
+    private Access accessOf(org.bukkit.entity.Player player) {
+        java.util.Map<String, Boolean> nodes = new java.util.HashMap<>();
+        for (String node : rules.nodes()) nodes.put(node, player.hasPermission(node));
+        return new Access(java.util.Map.copyOf(nodes), player.isOp());
+    }
+
+    /** Whether a player is an operator — the one thing the server knows of a player who is not connected. */
+    private static boolean isOperator(java.util.UUID playerId) {
+        try {
+            return Bukkit.getOfflinePlayer(playerId).isOp();
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /**
+     * Reads the permissions of every session owner who is connected, each on their own thread.
+     * Runs on the global thread, every minute and after a module comes or goes.
+     */
+    private void refreshOwners() {
+        java.util.Set<java.util.UUID> owners = new java.util.HashSet<>();
+        for (Session session : sessions.values()) {
+            if (session.ownerId().isBlank()) continue;
+            try {
+                owners.add(java.util.UUID.fromString(session.ownerId()));
+            } catch (IllegalArgumentException ignored) {
+                // Not a player: nothing to read.
+            }
+        }
+        for (java.util.UUID id : owners) {
+            org.bukkit.entity.Player player = Bukkit.getPlayer(id);
+            if (player != null) main.schedulerAdapter().runEntityTask(player, () -> reread(player));
+        }
+    }
+
+    /**
+     * Reads a connected player's dashboard permissions again and applies them to every session they
+     * own; the next request each of those sessions makes goes by them. A player who no longer holds
+     * {@value #LOGIN_PERMISSION} has their sessions closed.
+     *
+     * <p>Runs on the player's thread: from the join event, or scheduled there by
+     * {@link #refreshOwners()}.</p>
+     *
+     * @param player The player.
+     */
+    void reread(org.bukkit.entity.Player player) {
+        if (player == null || !player.isOnline()) return;
+        String id = player.getUniqueId().toString();
+        boolean owns = false;
+        for (Session session : sessions.values()) {
+            if (id.equals(session.ownerId())) {
+                owns = true;
+                break;
+            }
+        }
+        if (!owns) return;
+
+        Access access = accessOf(player);
+        boolean changed = false;
+        if (!access.has(LOGIN_PERMISSION)) {
+            changed = sessions.values().removeIf(session -> id.equals(session.ownerId()));
+            if (changed) {
+                logger.sendInfo("Dashboard sessions of <aqua>" + player.getName() + "</aqua> closed: they no longer hold "
+                        + LOGIN_PERMISSION + ".");
+            }
+        } else {
+            for (var entry : sessions.entrySet()) {
+                Session session = entry.getValue();
+                if (!id.equals(session.ownerId()) || session.access().equals(access)) continue;
+                if (sessions.replace(entry.getKey(), session, session.with(access))) changed = true;
+            }
+        }
+        // Written off the player's thread: on Paper that thread is the server's own.
+        if (changed) main.schedulerAdapter().runAsyncTask(this::saveSessions);
     }
 
     /**
@@ -327,24 +532,75 @@ public class WebPanel {
 
     private void loadSessions() {
         if (!sessionFile.isFile()) return;
+        int closed = 0;
         try {
             JsonObject root = JsonParser.parseString(Files.readString(sessionFile.toPath(), StandardCharsets.UTF_8))
                     .getAsJsonObject();
             for (String key : root.keySet()) {
                 JsonObject entry = root.getAsJsonObject(key);
+                String ownerId = entry.has("ownerId") ? entry.get("ownerId").getAsString() : "";
+                Access access = savedAccess(entry, ownerId);
+                if (access == null) {
+                    closed++;
+                    continue;
+                }
                 sessions.put(key, new Session(
                         entry.has("owner") ? entry.get("owner").getAsString() : "?",
-                        entry.has("ownerId") ? entry.get("ownerId").getAsString() : "",
+                        ownerId,
                         entry.has("expiresAt") ? entry.get("expiresAt").getAsLong() : 0L,
-                        entry.has("locale") ? entry.get("locale").getAsString() : ""));
+                        entry.has("locale") ? entry.get("locale").getAsString() : "",
+                        access));
             }
             pruneSessions();
         } catch (Exception e) {
             logger.sendWarning("Could not read web-sessions.json: " + e.getMessage());
         }
+        if (closed > 0) {
+            logger.sendInfo(closed + " dashboard session(s) opened before the dashboard followed permissions were closed:"
+                    + " their owners are not operators. They get a new link with /xcore dashboard, once they hold "
+                    + LOGIN_PERMISSION + ".");
+            saveSessions();
+        }
     }
 
-    private void saveSessions() {
+    /**
+     * The permissions saved with a session, or the best that can be done without them.
+     *
+     * <p>A session opened before the dashboard followed permissions carries none. Its owner was an
+     * administrator then, which says nothing of what they may do now. An operator keeps theirs — an
+     * operator holds every dashboard permission unless one was taken away, and the next reading will
+     * tell. Anyone else is asked for a new link, which reads their permissions as it is made.</p>
+     *
+     * @param entry   The saved session.
+     * @param ownerId Its owner's UUID, empty for a session tied to no player.
+     * @return What the session may do, or {@code null} when it has to close.
+     */
+    private Access savedAccess(JsonObject entry, String ownerId) {
+        if (ownerId.isBlank()) return Access.FULL;
+        java.util.UUID id;
+        try {
+            id = java.util.UUID.fromString(ownerId);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        if (entry.has("access") && entry.get("access").isJsonObject()) {
+            JsonObject saved = entry.getAsJsonObject("access");
+            java.util.Map<String, Boolean> nodes = new java.util.HashMap<>();
+            if (saved.has("nodes") && saved.get("nodes").isJsonObject()) {
+                for (var node : saved.getAsJsonObject("nodes").entrySet()) {
+                    if (node.getValue().isJsonPrimitive()) {
+                        nodes.put(node.getKey().toLowerCase(java.util.Locale.ROOT), node.getValue().getAsBoolean());
+                    }
+                }
+            }
+            boolean op = saved.has("op") && saved.get("op").isJsonPrimitive() && saved.get("op").getAsBoolean();
+            return new Access(java.util.Map.copyOf(nodes), op);
+        }
+        return isOperator(id) ? new Access(java.util.Map.of(), true) : null;
+    }
+
+    /** Synchronised: the command thread, the HTTP threads and the refresh all write it. */
+    private synchronized void saveSessions() {
         try {
             JsonObject root = new JsonObject();
             sessions.forEach((key, session) -> {
@@ -353,6 +609,16 @@ public class WebPanel {
                 entry.addProperty("ownerId", session.ownerId());
                 entry.addProperty("expiresAt", session.expiresAt());
                 entry.addProperty("locale", session.locale() == null ? "" : session.locale());
+                // Kept with the session, so a restart does not leave a reader who is not in game
+                // with nothing until they next join.
+                if (!session.ownerId().isBlank()) {
+                    JsonObject access = new JsonObject();
+                    access.addProperty("op", session.access().op());
+                    JsonObject nodes = new JsonObject();
+                    session.access().nodes().forEach((node, held) -> nodes.addProperty(node, held));
+                    access.add("nodes", nodes);
+                    entry.add("access", access);
+                }
                 root.add(key, entry);
             });
             Files.writeString(sessionFile.toPath(), root.toString(), StandardCharsets.UTF_8);
@@ -529,6 +795,13 @@ public class WebPanel {
         // it touches nothing but two maps.
         pruneTask = main.schedulerAdapter().runAsyncTaskTimer(this::pruneRateLimits, 6000L, 6000L);
 
+        // Each session goes by its owner's permissions, which the server can only read while they
+        // are connected: on joining, and every minute after that. A change applies at the next
+        // request; losing xcore.dashboard closes the session.
+        accessTask = main.schedulerAdapter().runGlobalTaskTimer(this::refreshOwners, 1200L, 1200L);
+        joinListener = new WebSessionListener(this);
+        Bukkit.getPluginManager().registerEvents(joinListener, main);
+
         // Warmed in the background: the first reader would otherwise wait on a half-megabyte fetch
         // from the asset mirror, and see English item names until it lands.
         logger.sendInfo("Dashboard assets follow Minecraft <aqua>" + assetVersion() + "</aqua>.");
@@ -584,6 +857,14 @@ public class WebPanel {
         if (pruneTask != null) {
             main.schedulerAdapter().cancelTask(pruneTask);
             pruneTask = null;
+        }
+        if (accessTask != null) {
+            main.schedulerAdapter().cancelTask(accessTask);
+            accessTask = null;
+        }
+        if (joinListener != null) {
+            org.bukkit.event.HandlerList.unregisterAll(joinListener);
+            joinListener = null;
         }
         if (server != null) {
             server.stop(2);
@@ -656,6 +937,10 @@ public class WebPanel {
         routes.createContext(basePath + "/config/raw", ex -> handleAddonConfig(ex, module.getName()));
         // The module may carry its own dashboard strings; fold them in now that it is known.
         reloadStrings();
+        // Its permissions join what a session's reading covers: read again now for whoever is in
+        // game, rather than at the next round.
+        rebuildRules();
+        main.schedulerAdapter().runGlobalTask(this::refreshOwners);
         logger.sendInfo("Registered web module: <aqua>" + module.getName() + "</aqua>.");
     }
 
@@ -752,7 +1037,236 @@ public class WebPanel {
             }
         }
         reloadStrings();
+        rebuildRules();
         logger.sendDebug("Unregistered web module: " + module.getName() + ".");
+    }
+
+    // **************************************************************************
+    // *                        Who may call what                               *
+    // **************************************************************************
+
+    /** The registered modules, copied: their pages are read without holding the list. */
+    private List<WebModule> modulesSnapshot() {
+        synchronized (modules) {
+            return new ArrayList<>(modules);
+        }
+    }
+
+    /** A module's pages, or none when asking for them fails: one broken module does not take the panel down. */
+    private List<WebPage> pagesOf(WebModule module) {
+        try {
+            List<WebPage> pages = module.getPages();
+            return pages == null ? List.of() : pages;
+        } catch (Throwable e) {
+            logger.sendDebug("Web module '" + module.getName() + "' failed to list its pages: " + e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * Whether a page is the configuration editor: one described as such, or a page that describes
+     * nothing at the path the dashboard has always given the editor to.
+     */
+    private static boolean isConfigPage(WebPage page) {
+        if (page.spec() != null) return page.spec().type() == WebPageSpec.Type.CONFIG;
+        return "config".equals(page.path());
+    }
+
+    /** An endpoint as a request path: without its query string, or {@code null} when it is not a path. */
+    private static String endpointPath(String endpoint) {
+        if (endpoint == null) return null;
+        String path = endpoint.trim();
+        int cut = path.indexOf('?');
+        if (cut >= 0) path = path.substring(0, cut);
+        cut = path.indexOf('#');
+        if (cut >= 0) path = path.substring(0, cut);
+        return path.startsWith("/") ? path : null;
+    }
+
+    /** Adds a requirement to a list unless an equal one is already there. */
+    private static void addRequirement(List<List<String>> into, List<String> anyOf) {
+        if (anyOf.isEmpty() || into.contains(anyOf)) return;
+        into.add(List.copyOf(anyOf));
+    }
+
+    /** Reads every module's pages again for the permissions they declare. */
+    private void rebuildRules() {
+        java.util.Map<String, List<List<String>>> endpoints = new java.util.HashMap<>();
+        java.util.Map<String, List<List<String>>> saves = new java.util.HashMap<>();
+        // In a stable order: /api/auth lists them as they come.
+        java.util.Set<String> nodes = new java.util.LinkedHashSet<>(
+                List.of(LOGIN_PERMISSION, PLAYERS_PERMISSION, CONFIG_PERMISSION));
+        for (WebModule module : modulesSnapshot()) {
+            nodes.add(modulePermission(module.getName()));
+            nodes.add(managePermission(module.getName()));
+            for (WebPage page : pagesOf(module)) {
+                WebPageSpec spec = page.spec();
+                if (spec == null) continue;
+                spec.declaredPermissions((endpoint, anyOf) -> {
+                    String path = endpointPath(endpoint);
+                    if (path == null) return;
+                    addRequirement(endpoints.computeIfAbsent(path, key -> new ArrayList<>()), anyOf);
+                    nodes.addAll(anyOf);
+                });
+                List<String> save = spec.savePermissions();
+                if (!save.isEmpty()) {
+                    addRequirement(saves.computeIfAbsent(moduleKey(module.getName()), key -> new ArrayList<>()), save);
+                    nodes.addAll(save);
+                }
+            }
+        }
+        java.util.Map<String, List<List<String>>> frozenEndpoints = new java.util.HashMap<>();
+        endpoints.forEach((path, needed) -> frozenEndpoints.put(path, List.copyOf(needed)));
+        java.util.Map<String, List<List<String>>> frozenSaves = new java.util.HashMap<>();
+        saves.forEach((key, needed) -> frozenSaves.put(key, List.copyOf(needed)));
+        rules = new Rules(java.util.Map.copyOf(frozenEndpoints), java.util.Map.copyOf(frozenSaves),
+                java.util.Collections.unmodifiableSet(nodes));
+    }
+
+    /**
+     * The module that answers a path.
+     *
+     * <p>The route is found the way the HTTP server finds it — the longest path a module created
+     * that the request starts with — so the module that answers is the one whose permission is
+     * asked for, wherever its routes live. A route a module created on the server directly is
+     * known only by the module's base path, {@code /api/<name>}.</p>
+     *
+     * @param path The request path.
+     * @return The module and its route, or {@code null} when no module answers there.
+     */
+    private Target targetOf(String path) {
+        WebModule found = null;
+        String context = null;
+        for (var entry : moduleContexts.entrySet()) {
+            for (String registered : entry.getValue()) {
+                if (path.startsWith(registered) && (context == null || registered.length() > context.length())) {
+                    context = registered;
+                    found = entry.getKey();
+                }
+            }
+        }
+        if (found != null) return new Target(found, context);
+        for (WebModule module : modulesSnapshot()) {
+            String base = "/api/" + module.getName().toLowerCase();
+            if (path.equals(base) || path.startsWith(base + "/")) return new Target(module, null);
+        }
+        return null;
+    }
+
+    /**
+     * What a request to a module's route needs.
+     *
+     * <ul>
+     *   <li>Always the module's own permission, {@code xcore.dashboard.<module>}.</li>
+     *   <li>At an endpoint a page declared a permission for, that permission — whatever the
+     *       method, so a handler that would also act on a GET is no open door.</li>
+     *   <li>For any other change — a method other than GET or HEAD, or a request carrying a body —
+     *       {@code xcore.dashboard.<module>.manage}; and when the route that answers it also serves
+     *       declared endpoints, what they need as well: another spelling of a path reaches the same
+     *       handler, and must not ask for less than the spelling the page uses.</li>
+     * </ul>
+     *
+     * @param target The module and route that answer.
+     * @param path   The request path.
+     * @param change Whether the request may change something.
+     * @return The requirements, each met by any one of its nodes.
+     */
+    private List<List<String>> requirementsOf(Target target, String path, boolean change) {
+        Rules current = rules;
+        List<List<String>> needed = new ArrayList<>();
+        needed.add(List.of(modulePermission(target.module().getName())));
+        List<List<String>> declared = current.endpoints().get(path);
+        if (declared == null && target.context() != null) declared = current.endpoints().get(target.context());
+        if (declared != null) {
+            needed.addAll(declared);
+            return needed;
+        }
+        if (change) {
+            needed.add(List.of(managePermission(target.module().getName())));
+            if (target.context() != null) {
+                String context = target.context();
+                current.endpoints().forEach((endpoint, requirements) -> {
+                    if (endpoint.startsWith(context)) requirements.forEach(anyOf -> addRequirement(needed, anyOf));
+                });
+            }
+        }
+        return needed;
+    }
+
+    /** What saving a module's configuration needs: what one of its pages declared, or its manage permission. */
+    private List<List<String>> saveRequirements(String moduleName) {
+        List<List<String>> declared = rules.saves().get(moduleKey(moduleName));
+        return declared != null ? declared : List.of(List.of(managePermission(moduleName)));
+    }
+
+    /** @return The first requirement the session does not meet, or {@code null} when it meets them all. */
+    private static List<String> unmet(Access access, List<List<String>> requirements) {
+        for (List<String> anyOf : requirements) {
+            if (anyOf.isEmpty()) continue;
+            boolean met = false;
+            for (String node : anyOf) {
+                if (access.has(node)) {
+                    met = true;
+                    break;
+                }
+            }
+            if (!met) return anyOf;
+        }
+        return null;
+    }
+
+    /**
+     * Whether a request may change something: any method but GET and HEAD, and a GET that carries
+     * a body as well — a handler reading its orders from the body does not look at the method.
+     */
+    private static boolean isChange(HttpExchange exchange) {
+        String method = exchange.getRequestMethod();
+        if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) return true;
+        var headers = exchange.getRequestHeaders();
+        if (headers.containsKey("Transfer-Encoding")) return true;
+        String length = headers.getFirst("Content-Length");
+        if (length == null) return false;
+        try {
+            return Long.parseLong(length.trim()) > 0;
+        } catch (NumberFormatException e) {
+            return true;
+        }
+    }
+
+    /** Whether a session may post to an endpoint, by the rules the request itself will meet. */
+    private boolean mayPost(Access access, String endpoint) {
+        String path = endpointPath(endpoint);
+        if (path == null) return true;
+        Target target = targetOf(path);
+        return target == null || unmet(access, requirementsOf(target, path, true)) == null;
+    }
+
+    /**
+     * A page's description as one reader may use it: the row actions, the form and the page-wide
+     * button they could not use are left out, so the page offers what it can do for them and
+     * nothing that would only be refused.
+     */
+    private JsonObject visibleSpec(WebPageSpec spec, Access access) {
+        JsonObject json = spec.toJson();
+        if (json.has("actions") && json.get("actions").isJsonArray()) {
+            JsonArray kept = new JsonArray();
+            for (var action : json.getAsJsonArray("actions")) {
+                if (action.isJsonObject() && mayPost(access, stringOf(action.getAsJsonObject(), "endpoint"))) kept.add(action);
+            }
+            if (kept.size() == 0) json.remove("actions");
+            else json.add("actions", kept);
+        }
+        for (String part : new String[]{"form", "bulk"}) {
+            if (json.has(part) && json.get(part).isJsonObject()
+                    && !mayPost(access, stringOf(json.getAsJsonObject(part), "endpoint"))) {
+                json.remove(part);
+            }
+        }
+        return json;
+    }
+
+    private static String stringOf(JsonObject object, String key) {
+        return object.has(key) && object.get(key).isJsonPrimitive() ? object.get(key).getAsString() : null;
     }
 
     /**
@@ -834,7 +1348,13 @@ public class WebPanel {
     // **************************************************************************
 
     /**
-     * Handles {@code GET /api/modules} — returns all registered modules and their pages as JSON.
+     * Handles {@code GET /api/modules} — the modules and pages the session may open, as JSON.
+     *
+     * <p>Each reader gets their own list. A module whose permission they lack is not in it at all;
+     * the configuration editor is left out without {@value #CONFIG_PERMISSION}, and marked
+     * {@code readOnly} when saving needs a permission they lack; a button whose endpoint would
+     * refuse them is taken off its page. {@code /api/auth} names what was left out, so a link to it
+     * can say "no access" rather than "not found".</p>
      *
      * @param exchange The HTTP exchange.
      * @throws IOException If an I/O error occurs.
@@ -843,32 +1363,93 @@ public class WebPanel {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
         if (!rateLimit(exchange)) return;
-        if (!authenticate(exchange)) return;
+        Session session = authenticated(exchange);
+        if (session == null) return;
 
+        // Read again here, so a module whose pages changed since it registered is judged by the
+        // pages it now has.
+        rebuildRules();
+        Access access = session.access();
         JsonArray arr = new JsonArray();
 
-        synchronized (modules) {
-            for (WebModule module : modules) {
-                JsonObject obj = new JsonObject();
-                obj.addProperty("name", module.getName());
-                obj.addProperty("icon", module.getIcon());
-                JsonArray pages = new JsonArray();
-                for (WebPage page : module.getPages()) {
-                    JsonObject pageObj = new JsonObject();
-                    pageObj.addProperty("name", page.name());
-                    pageObj.addProperty("path", page.path());
-                    pageObj.addProperty("icon", page.icon());
-                    // The descriptor is what lets the browser build the page without knowing
-                    // anything about this addon. Absent means "render it generically".
-                    if (page.spec() != null) pageObj.add("spec", page.spec().toJson());
-                    pages.add(pageObj);
+        for (WebModule module : modulesSnapshot()) {
+            if (!access.has(modulePermission(module.getName()))) continue;
+            JsonObject obj = new JsonObject();
+            obj.addProperty("name", module.getName());
+            obj.addProperty("icon", module.getIcon());
+            JsonArray pages = new JsonArray();
+            for (WebPage page : pagesOf(module)) {
+                boolean config = isConfigPage(page);
+                if (config && !access.has(CONFIG_PERMISSION)) continue;
+                JsonObject pageObj = new JsonObject();
+                pageObj.addProperty("name", page.name());
+                pageObj.addProperty("path", page.path());
+                pageObj.addProperty("icon", page.icon());
+                // The descriptor is what lets the browser build the page without knowing
+                // anything about this addon. Absent means "render it generically".
+                if (page.spec() != null) pageObj.add("spec", visibleSpec(page.spec(), access));
+                if (config) {
+                    List<String> missing = unmet(access, saveRequirements(module.getName()));
+                    if (missing != null) {
+                        pageObj.addProperty("readOnly", true);
+                        pageObj.add("needs", strings(missing));
+                    }
                 }
-                obj.add("pages", pages);
-                arr.add(obj);
+                pages.add(pageObj);
             }
+            obj.add("pages", pages);
+            arr.add(obj);
         }
 
         sendJson(exchange, 200, arr.toString());
+    }
+
+    /** A list of strings as a JSON array. */
+    private static JsonArray strings(java.util.Collection<String> values) {
+        JsonArray arr = new JsonArray();
+        for (String value : values) arr.add(value);
+        return arr;
+    }
+
+    /**
+     * Who a session is, as the dashboard needs to know it: whose it is, which of the dashboard's
+     * permissions it holds, and what is out of its reach — the modules it may not open, and the
+     * pages of the others it may not — so a link there explains itself.
+     */
+    private JsonObject describe(Session session) {
+        Access access = session.access();
+        JsonObject me = new JsonObject();
+        me.addProperty("status", "ok");
+        if (session.ownerId().isBlank()) me.add("player", com.google.gson.JsonNull.INSTANCE);
+        else me.addProperty("player", session.owner());
+
+        List<String> held = new ArrayList<>();
+        for (String node : rules.nodes()) if (access.has(node)) held.add(node);
+        me.add("permissions", strings(held));
+
+        JsonObject core = new JsonObject();
+        core.addProperty("players", access.has(PLAYERS_PERMISSION));
+        core.addProperty("config", access.has(CONFIG_PERMISSION));
+        me.add("access", core);
+
+        JsonArray lockedModules = new JsonArray();
+        JsonObject lockedPages = new JsonObject();
+        for (WebModule module : modulesSnapshot()) {
+            if (!access.has(modulePermission(module.getName()))) {
+                lockedModules.add(module.getName());
+                continue;
+            }
+            JsonArray pages = new JsonArray();
+            for (WebPage page : pagesOf(module)) {
+                if (isConfigPage(page) && !access.has(CONFIG_PERMISSION)) pages.add(page.path());
+            }
+            if (pages.size() > 0) lockedPages.add(module.getName(), pages);
+        }
+        JsonObject locked = new JsonObject();
+        locked.add("modules", lockedModules);
+        locked.add("pages", lockedPages);
+        me.add("locked", locked);
+        return me;
     }
 
     /**
@@ -1172,14 +1753,18 @@ public class WebPanel {
     }
 
     /**
-     * Handles {@code GET /api/auth} — validates the token. Always requires authentication.
+     * Handles {@code GET /api/auth} — validates the token, and says what the session may do.
+     *
+     * <p>{@code {"status":"ok", "player", "permissions", "access":{"players","config"},
+     * "locked":{"modules":[…], "pages":{"<module>":[…]}}}}. Always requires authentication.</p>
      */
     private void handleAuth(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
         if (!rateLimit(exchange)) return;
-        if (!authenticate(exchange)) return;
-        sendJson(exchange, 200, "{\"status\":\"ok\"}");
+        Session session = authenticated(exchange);
+        if (session == null) return;
+        sendJson(exchange, 200, describe(session).toString());
     }
 
     /**
@@ -1215,7 +1800,7 @@ public class WebPanel {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
         if (!rateLimit(exchange)) return;
-        if (!authenticate(exchange)) return;
+        if (!authorize(exchange, List.of(List.of(PLAYERS_PERMISSION)))) return;
 
         String query = exchange.getRequestURI().getQuery();
         int offset = 0, limit = 100, page = 0;
@@ -1353,10 +1938,7 @@ public class WebPanel {
      * endpoint that has something to say to anonymous callers too.</p>
      */
     private boolean isAuthenticated(HttpExchange exchange) {
-        String auth = exchange.getRequestHeaders().getFirst("Authorization");
-        if (auth == null || !auth.startsWith("Bearer ")) return false;
-        String presented = auth.substring(7);
-        return !presented.isEmpty() && matchesSession(presented);
+        return liveSession(exchange) != null;
     }
 
     // **************************************************************************
@@ -1482,40 +2064,82 @@ public class WebPanel {
     // **************************************************************************
 
     /**
-     * Checks the {@code Authorization} header for a valid Bearer token.
-     * Sends a 401 response and returns {@code false} if authentication fails.
+     * Checks the {@code Authorization} header for a valid Bearer token, and that the session may
+     * call the route. Sends a 401 response and returns {@code false} if authentication fails, a 403
+     * if the session's owner lacks a permission the route needs.
      * <p>
      * This method is public so that registered {@link WebModule} implementations
-     * can reuse the same authentication logic on their own route handlers.
+     * can reuse the same authentication logic on their own route handlers — and so that every
+     * route of every module is held to the reader's permissions, modules written before they
+     * existed included: a route of a module needs {@code xcore.dashboard.<module>}, and a change
+     * needs what the page declared for it, or {@code xcore.dashboard.<module>.manage}.
      * </p>
      *
      * @param exchange The HTTP exchange.
-     * @return {@code true} if authenticated, {@code false} otherwise.
+     * @return {@code true} if authenticated and allowed, {@code false} otherwise.
      * @throws IOException If an I/O error occurs while sending the error response.
      */
     public boolean authenticate(HttpExchange exchange) throws IOException {
+        Session session = authenticated(exchange);
+        if (session == null) return false;
+        String path = exchange.getRequestURI().getPath();
+        Target target = path == null ? null : targetOf(path);
+        // A route no module answers for needs no more than a session.
+        if (target == null) return true;
+        return permitted(exchange, session, requirementsOf(target, path, isChange(exchange)));
+    }
+
+    /**
+     * For the core's own routes: a session, holding what the route needs.
+     *
+     * @param exchange     The HTTP exchange.
+     * @param requirements What it needs, each met by any one of its nodes.
+     * @return {@code true} when the request may go on; a 401, 403 or 429 has been sent otherwise.
+     */
+    private boolean authorize(HttpExchange exchange, List<List<String>> requirements) throws IOException {
+        Session session = authenticated(exchange);
+        return session != null && permitted(exchange, session, requirements);
+    }
+
+    /**
+     * The session the request carries, or {@code null} once a 401 or a 429 has been sent.
+     */
+    private Session authenticated(HttpExchange exchange) throws IOException {
         String ip = clientIp(exchange);
 
         // A live session is let in whatever its address has been doing. The count below is kept per
         // address, and behind a reverse proxy every reader has the proxy's: ten bad requests a
         // minute from anybody used to shut every administrator out of the dashboard.
-        String auth = exchange.getRequestHeaders().getFirst("Authorization");
-        if (auth != null && auth.startsWith("Bearer ")) {
-            String presented = auth.substring(7);
-            if (!presented.isEmpty() && matchesSession(presented)) {
-                authAttempts.remove(ip);
-                return true;
-            }
+        Session session = liveSession(exchange);
+        if (session != null) {
+            authAttempts.remove(ip);
+            return session;
         }
 
         // A wrong token costs an attempt: ten failures inside a minute and the source is told to
         // slow down instead of being answered.
         if (!allow(authAttempts, ip, AUTH_LIMIT)) {
             sendJson(exchange, 429, "{\"error\":\"Too many authentication attempts\"}");
-            return false;
+            return null;
         }
         record(authAttempts, ip);
         sendJson(exchange, 401, "{\"error\":\"Unauthorized\"}");
+        return null;
+    }
+
+    /**
+     * Lets the request through when the session meets every requirement; answers 403 otherwise,
+     * naming the permission that is missing — the dashboard shows it to the reader, who can then
+     * ask for it by name.
+     */
+    private boolean permitted(HttpExchange exchange, Session session, List<List<String>> requirements) throws IOException {
+        List<String> missing = unmet(session.access(), requirements);
+        if (missing == null) return true;
+        JsonObject body = new JsonObject();
+        body.addProperty("error", "Missing permission: " + String.join(" or ", missing));
+        body.addProperty("permission", missing.get(0));
+        body.add("anyOf", strings(missing));
+        sendJson(exchange, 403, body.toString());
         return false;
     }
 
@@ -1529,7 +2153,7 @@ public class WebPanel {
      * @return The player's name, or {@code null} when the request carries no live session.
      */
     public String sessionOwner(HttpExchange exchange) {
-        Session session = sessionOf(exchange);
+        Session session = liveSession(exchange);
         return session == null ? null : session.owner();
     }
 
@@ -1539,24 +2163,26 @@ public class WebPanel {
      * <p>Used to answer in the reader's own language rather than the server's.</p>
      */
     private Session sessionOf(HttpExchange exchange) {
-        String auth = exchange.getRequestHeaders().getFirst("Authorization");
-        if (auth == null || !auth.startsWith("Bearer ")) return null;
-        Session session = sessions.get(hash(auth.substring(7)));
-        if (session == null) return null;
-        if (session.expiresAt() > 0 && session.expiresAt() < System.currentTimeMillis()) return null;
-        return session;
+        return liveSession(exchange);
     }
 
-    /** Looks the token up among the live sessions, refusing the expired ones. */
-    private boolean matchesSession(String presented) {
+    /**
+     * The live session a request carries: known, not expired, and owned by someone who still holds
+     * {@value #LOGIN_PERMISSION}. An expired one is dropped on the way.
+     */
+    private Session liveSession(HttpExchange exchange) {
+        String auth = exchange.getRequestHeaders().getFirst("Authorization");
+        if (auth == null || !auth.startsWith("Bearer ")) return null;
+        String presented = auth.substring(7);
+        if (presented.isEmpty()) return null;
         Session session = sessions.get(hash(presented));
-        if (session == null) return false;
+        if (session == null) return null;
         if (session.expiresAt() > 0 && session.expiresAt() < System.currentTimeMillis()) {
             pruneSessions();
             saveSessions();
-            return false;
+            return null;
         }
-        return true;
+        return session.access().has(LOGIN_PERMISSION) ? session : null;
     }
 
     /**
@@ -1763,13 +2389,21 @@ public class WebPanel {
      * text before touching the disk, so a typo cannot leave an addon with a file it will refuse
      * to load, and reloads the addon once the file is written.</p>
      *
+     * <p>Reading the file needs the module's permission and {@value #CONFIG_PERMISSION}; saving it
+     * needs, besides, what the module's configuration page declared — usually its reload
+     * command's permission — or {@code xcore.dashboard.<module>.manage}.</p>
+     *
      * @param addonName The module name, which is also the addon's data folder name.
      */
     private void handleAddonConfig(HttpExchange exchange, String addonName) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
         if (!rateLimit(exchange)) return;
-        if (!authenticate(exchange)) return;
+        List<List<String>> needed = new ArrayList<>();
+        needed.add(List.of(modulePermission(addonName)));
+        needed.add(List.of(CONFIG_PERMISSION));
+        if (isChange(exchange)) needed.addAll(saveRequirements(addonName));
+        if (!authorize(exchange, needed)) return;
 
         File file = new File(moduleFolder(addonName), "config.yml");
         if (!file.isFile()) {

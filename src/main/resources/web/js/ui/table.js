@@ -26,6 +26,7 @@ import {
 } from "../lib/i18n.js";
 import { playerHref } from "../lib/modules.js";
 import { latest } from "../lib/metrics.js";
+import { canSeePlayers } from "../lib/access.js";
 
 /** Whether a player is connected right now, from the last figures the panel sent. */
 function isOnline(name) {
@@ -63,11 +64,12 @@ export function face(name, size = 24) {
   return box;
 }
 
+/** A player as a face and a name, leading to their profile — for a reader the profiles are open to. */
 export function playerLink(name) {
   const online = isOnline(name);
   return h(
-    "a",
-    { class: "who", href: playerHref(name), data: { online: online || null } },
+    canSeePlayers() ? "a" : "span",
+    { class: "who", href: canSeePlayers() ? playerHref(name) : null, data: { online: online || null } },
     face(name),
     h("span", { class: "who-name", text: name }),
     online ? h("span", { class: "sr-only", text: ` (${t("online")})` }) : null

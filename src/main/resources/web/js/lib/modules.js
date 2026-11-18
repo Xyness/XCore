@@ -15,6 +15,15 @@ export function setModules(list) {
 
 export const allModules = () => modules;
 
+/**
+ * Forgets the list, on signing out: each session gets the modules its owner's permissions open,
+ * and the next one to sign in in this tab must not start from the last one's.
+ */
+export function forgetModules() {
+  modules = [];
+  loading = null;
+}
+
 /** Loads the module list once; later calls share the same answer. */
 export function loadModules() {
   if (!loading) {

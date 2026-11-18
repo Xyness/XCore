@@ -7,12 +7,16 @@
 // It is a plain textarea, so everything a browser does with text — undo, search, spellcheck off,
 // a phone's keyboard — keeps working; under it, a copy of the text is drawn in colour. YAML has no
 // tabs, so Tab indents by two spaces; Escape, then Tab, leaves the editor as usual.
+//
+// A reader who may open the file but not save it — saving reloads the plugin, and asks for the
+// permission its reload command asks for in game — gets it read-only, with that permission named.
 
 import { h, icon, swap } from "../lib/dom.js";
 import { get, post, moduleBase } from "../lib/api.js";
 import { t } from "../lib/i18n.js";
 import { toast, openDialog } from "../ui/overlay.js";
 import { errorState } from "../ui/table.js";
+import { withNode } from "./module.js";
 
 const INDENT = "  ";
 
@@ -72,8 +76,13 @@ function paint(view, text) {
   view.replaceChildren(fragment);
 }
 
-export function configEditor(name) {
+/**
+ * @param {string} name The module whose config.yml it edits.
+ * @param {{needs: string[]}|null} [readOnly] Set when the reader may not save: what saving needs.
+ */
+export function configEditor(name, readOnly = null) {
   const base = `${moduleBase(name)}/config/raw`;
+  const locked = Boolean(readOnly);
   let saved = "";
   let errorLine = 0;
 
@@ -83,6 +92,7 @@ export function configEditor(name) {
     autocapitalize: "off",
     autocomplete: "off",
     wrap: "off",
+    readOnly: locked,
     "aria-label": t("config-editor-label", { addon: name }),
     "aria-describedby": "config-hint",
   });
@@ -92,18 +102,24 @@ export function configEditor(name) {
   gutter.append(gutterInner);
   const status = h("p", { class: "config-status", role: "status" });
   const save = h("button", { class: "btn glass-brass", type: "button", disabled: true }, icon("save"), h("span", { text: t("save-reload") }));
-  const revert = h("button", { class: "btn btn-secondary glass glass-set", type: "button" }, icon("rotate-ccw"), h("span", { text: t("revert-reload-from-disk") }));
+  // Read-only, there is nothing to revert: the same button reads the file again.
+  const revert = locked
+    ? h("button", { class: "btn btn-secondary glass glass-set", type: "button" }, icon("refresh-cw"), h("span", { text: t("refresh") }))
+    : h("button", { class: "btn btn-secondary glass glass-set", type: "button" }, icon("rotate-ccw"), h("span", { text: t("revert-reload-from-disk") }));
 
-  const editor = h("div", { class: "code" }, gutter, h("div", { class: "code-area" }, view, input));
+  const editor = h("div", { class: "code", data: { readonly: locked || null } }, gutter, h("div", { class: "code-area" }, view, input));
+  const hint = locked
+    ? h("div", { class: "config-hint config-locked", id: "config-hint" }, icon("lock"), withNode("config-read-only", readOnly.needs))
+    : h("p", { class: "config-hint", id: "config-hint", text: t("config-editor-hint", { addon: name }) });
   const parts = [
-    h("p", { class: "config-hint", id: "config-hint", text: t("config-editor-hint", { addon: name }) }),
+    hint,
     editor,
     h(
       "div",
       { class: "config-bar" },
-      h("p", { class: "config-keys label", text: t("config-editor-keys") }),
+      locked ? null : h("p", { class: "config-keys label", text: t("config-editor-keys") }),
       status,
-      h("div", { class: "config-actions" }, revert, save)
+      h("div", { class: "config-actions" }, revert, locked ? null : save)
     ),
   ];
   const card = h("section", { class: "card config-card" }, parts);
@@ -159,9 +175,11 @@ export function configEditor(name) {
     follow();
   }
 
-  // Tab and Shift+Tab indent and outdent the selected lines; Escape lets the next Tab leave.
+  // Tab and Shift+Tab indent and outdent the selected lines; Escape lets the next Tab leave. A file
+  // that may only be read keeps the keys a page has: Tab moves on.
   let released = false;
   input.addEventListener("keydown", (event) => {
+    if (locked) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       if (!save.disabled) save.click();

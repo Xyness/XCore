@@ -251,3 +251,13 @@ field-coins: "Coins"
 field-currency: "Currency"
 field-level: "Level"
 field-item_details: "Item"
+
+# Who may open what: everyone signs in with their own in-game permissions
+no-access: "No access"
+no-access-hint: "Your account cannot open this page."
+no-access-needs: "It needs the permission {permission}."
+no-access-later: "Dashboard permissions follow your in-game ones: one granted to you applies within a minute while you are on the server."
+no-permission-action: "You do not have the permission this needs: {permission}."
+permission-or: " or "
+config-read-only: "Read only: saving needs the permission {permission}."
+signed-in-as: "Signed in as {player}"

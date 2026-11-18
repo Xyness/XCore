@@ -7,7 +7,7 @@
 // addon appears in this file.
 
 import { h, icon, swap, balanceTiles } from "../lib/dom.js";
-import { get, post, withQuery } from "../lib/api.js";
+import { get, post, withQuery, nodeList } from "../lib/api.js";
 import { t, num, fixed, bytes, fieldLabel } from "../lib/i18n.js";
 import { markOf, kindLabel, pageIcon, pageName, pageHref, pageTitle } from "../lib/modules.js";
 import { listing, rowsOf, pick } from "../ui/listing.js";
@@ -179,6 +179,15 @@ export function specPage(mod, page) {
   return tablePage(mod, page);
 }
 
+/**
+ * Whether the reader may only read a configuration page: the panel marks it so when saving needs a
+ * permission they lack, and names that permission.
+ */
+function readOnlyOf(page) {
+  if (!page || page.readOnly !== true) return null;
+  return { needs: Array.isArray(page.needs) ? page.needs.filter((node) => typeof node === "string") : [] };
+}
+
 function configPage(mod, page) {
   const holder = h("div", { class: "config-holder" }, h("section", { class: "card" }, h("div", { class: "skel-rows" }, h("span", { class: "skel" }), h("span", { class: "skel" }), h("span", { class: "skel" }))));
   let editor = null;
@@ -189,7 +198,7 @@ function configPage(mod, page) {
       // The editor is the heaviest page and the least visited: it is loaded when opened.
       const { configEditor } = await import("./config.js");
       if (!holder.isConnected) return;
-      editor = configEditor(mod.name);
+      editor = configEditor(mod.name, readOnlyOf(page));
       swap(holder, editor.el);
     },
     destroy() {
@@ -459,6 +468,53 @@ function tablePage(mod, page) {
   };
 }
 
+/**
+ * A sentence with a permission node in it, the node set as code — as the login screen sets the
+ * command. The translation places it with {permission}.
+ */
+function withNode(key, nodes) {
+  const text = t(key);
+  const at = text.indexOf("{permission}");
+  const code = h("code", { text: nodeList(nodes) });
+  if (at < 0) return h("p", null, text, " ", code);
+  return h("p", null, text.slice(0, at), code, text.slice(at + "{permission}".length));
+}
+
+/**
+ * A page this session may not open — a module, the players or the configuration editor. Said
+ * calmly, with the permission that would open it, so the reader can ask for it by name.
+ *
+ * @param {object} options
+ * @param {object|null} [options.mod]  The module, when the page is one of a module's.
+ * @param {string[]} [options.needs]   The permission that opens it, or its alternatives.
+ */
+export function noAccessPage({ mod = null, needs = [] } = {}) {
+  let eyebrow = h("p", { class: "eyebrow label", text: t("xcore") });
+  if (mod) {
+    const { mark, icon: iconName } = markOf(mod);
+    eyebrow = h("p", { class: "eyebrow label", vars: { mark } }, icon(iconName), h("span", { text: mod.name }));
+  }
+  const el = h(
+    "div",
+    { class: "page" },
+    pageHead({ eyebrow, title: t("no-access") }),
+    h(
+      "section",
+      { class: "card" },
+      h(
+        "div",
+        { class: "state state-locked" },
+        h("span", { class: "state-icon" }, icon("lock")),
+        h("p", { text: t("no-access-hint") }),
+        needs.length ? withNode("no-access-needs", needs) : null,
+        h("p", { class: "state-note", text: t("no-access-later") })
+      ),
+      h("div", { class: "state-actions" }, h("a", { class: "btn btn-secondary glass glass-set", href: "#/" }, icon("arrow-left"), t("overview")))
+    )
+  );
+  return { el, title: t("no-access"), href: "", module: mod ? mod.name : null, mark: mod ? markOf(mod).mark : "" };
+}
+
 /** A page or a module that is not there (any more): an addon was removed, a link is old. */
 export function missingPage(mod = null) {
   const el = h(
@@ -475,4 +531,4 @@ export function missingPage(mod = null) {
   return { el, title: t("page-not-found"), href: "" };
 }
 
-export { moduleEyebrow, bodyFor, send };
+export { moduleEyebrow, bodyFor, send, readOnlyOf, withNode };

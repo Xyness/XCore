@@ -3,6 +3,7 @@
 // One navigation serves both. From 1024px it is a panel of glass on the left; below that it slides
 // in from the left when the menu button is pressed, and the bar at the top carries the page's name.
 // A plugin's group folds away under its name, and which ones are open is remembered across reloads.
+// It lists what the reader's permissions open, and its foot says whose they are.
 
 import { h, icon, brandMark, swap, setVar } from "../lib/dom.js";
 import { attachLens } from "../lib/glass.js";
@@ -10,6 +11,8 @@ import { t } from "../lib/i18n.js";
 import { token } from "../lib/api.js";
 import { allModules, markOf, pageIcon, pageName, moduleHref, pageHref } from "../lib/modules.js";
 import { onMetrics, tpsState } from "../lib/metrics.js";
+import { canSeePlayers, signedInAs } from "../lib/access.js";
+import { face } from "./table.js";
 
 const GROUPS_KEY = "xcore_open_groups";
 const THEME_KEY = "xcore-theme";
@@ -77,6 +80,21 @@ export function mountShell(root, onLogout) {
     icon("x")
   );
 
+  const logout = () => {
+    token.clear();
+    onLogout();
+  };
+  // Who is signed in, now that each member of staff sees the dashboard their own permissions
+  // open; signing out shrinks to its icon beside the name. A session tied to nobody keeps the
+  // labelled button.
+  const who = signedInAs();
+  const foot = who
+    ? [
+        h("p", { class: "who sidebar-who", title: t("signed-in-as", { player: who }) }, face(who), h("span", { class: "who-name", text: who })),
+        h("button", { class: "btn btn-sm btn-icon btn-quiet", type: "button", "aria-label": t("logout"), title: t("logout"), onclick: logout }, icon("log-out")),
+      ]
+    : [h("button", { class: "btn btn-sm btn-quiet", type: "button", onclick: logout }, icon("log-out"), t("logout"))];
+
   const sidebar = h(
     "aside",
     { class: "sidebar glass", id: "sidebar", "aria-label": t("xcore") },
@@ -88,24 +106,7 @@ export function mountShell(root, onLogout) {
       close
     ),
     nav,
-    h(
-      "div",
-      { class: "sidebar-foot" },
-      h(
-        "button",
-        {
-          class: "btn btn-sm btn-quiet",
-          type: "button",
-          onclick: () => {
-            token.clear();
-            onLogout();
-          },
-        },
-        icon("log-out"),
-        t("logout")
-      ),
-      themeButton("btn-sm")
-    )
+    h("div", { class: "sidebar-foot" }, foot, themeButton("btn-sm"))
   );
 
   const menuButton = h(
@@ -255,7 +256,7 @@ export function mountShell(root, onLogout) {
       nav,
       h("p", { class: "nav-title label", text: t("core") }),
       link("#/", t("overview"), icon("layout-grid")),
-      link("#/players", t("players"), icon("users")),
+      canSeePlayers() ? link("#/players", t("players"), icon("users")) : null,
       groups.length ? h("p", { class: "nav-title label", text: t("plugins-title") }) : null,
       groups
     );
