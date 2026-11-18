@@ -1,0 +1,706 @@
+/* ============================================================
+   XCore dashboard — theme
+
+   The identity of celestis.dev, "Nuit & laiton": a desaturated night
+   blue with a pale brass accent, and a warm paper that the same brass
+   sits on, darkened for contrast. A customer who comes from the site
+   should recognise it at once, so the palette, the glass and the
+   motion curves below are the site's own (site/src/app/globals.css),
+   with the few tokens a dashboard needs on top.
+
+   Every colour is declared here, on both themes, and consumed through
+   a token. Nothing downstream hardcodes one.
+
+   index.html writes data-theme on <html> before the first paint: the
+   stored choice, or the system's.
+   ============================================================ */
+
+/* IBM Plex, bundled: the dashboard never asks the internet for anything.
+   Latin covers English and French; latin-ext is only fetched by a page
+   that needs one of its characters — a player called Łukasz, say.
+   The panel lets browsers keep a font for a year without asking again
+   (WebPanel#handleStatic): a font that changes gets a new file name. */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../fonts/plex-sans-latin-400.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../fonts/plex-sans-latin-ext-400.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(../fonts/plex-sans-latin-500.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(../fonts/plex-sans-latin-ext-500.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(../fonts/plex-sans-latin-600.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(../fonts/plex-sans-latin-ext-600.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* One weight of mono: labels, identifiers and the configuration editor. */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(../fonts/plex-mono-latin-500.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(../fonts/plex-mono-latin-ext-500.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* The home scene's position, from 0 (its opening) to the last figure.
+   Registered, because only a registered property can be animated — which
+   is how the scroll itself drives it where the browser allows (home.css). */
+@property --t {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+:root {
+  /* One decelerating curve for everything that enters or settles, and the
+     site's standard curve for everything that merely changes state. */
+  --smooth: cubic-bezier(0.16, 1, 0.3, 1);
+  --standard: cubic-bezier(0.2, 0, 0, 1);
+  --fast: 150ms;
+  --base: 200ms;
+  --slow: 300ms;
+
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius-card: 1.25rem;
+  --radius-inner: 0.75rem;
+  --radius-pill: 9999px;
+  --gutter: 1rem;
+  --sidebar: 16.5rem;
+  --bar: 3.5rem;
+
+  color-scheme: dark;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --gutter: 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --gutter: 2rem;
+  }
+}
+
+:root,
+[data-theme="dark"] {
+  --bg: #0d1017;
+  --bg-subtle: #11151e;
+  --surface: #151a24;
+  --surface-2: #1b2130;
+  --line: #242b38;
+  --line-2: #333b4a;
+
+  --text: #e8e6e1;
+  --text-2: #98a0ac;
+  --text-3: #78808c;
+
+  --accent: #c8a45c;
+  --accent-hi: #ddbb79;
+  --accent-dim: #8c7238;
+  --accent-soft: rgba(200, 164, 92, 0.13);
+  --on-accent: #14110a;
+
+  --info: #7fa0cc;
+  --success: #5fae86;
+  --warning: #e5883f;
+  --danger: #e0685c;
+  --on-danger: #160806;
+
+  --overlay: rgba(6, 8, 12, 0.66);
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -18px rgba(0, 0, 0, 0.8);
+
+  /* Glass: the night thinned to a tint, the light it catches, the blur
+     behind it and the shadow under it. See "Glass" further down. */
+  --glass-tint: rgba(13, 16, 23, 0.66);
+  --glass-tint-deep: rgba(13, 16, 23, 0.86);
+  --glass-sheen-hi: rgba(255, 255, 255, 0.11);
+  --glass-sheen-lo: rgba(255, 255, 255, 0.035);
+  --glass-rim-hi: rgba(255, 255, 255, 0.55);
+  --glass-rim-mid: rgba(255, 255, 255, 0.24);
+  --glass-rim-lo: rgba(255, 255, 255, 0.07);
+  --glass-wash: rgba(255, 255, 255, 0.07);
+  --glass-blur: blur(9px);
+  --glass-tone: saturate(1.8) brightness(1.15);
+  --glass-shadow: inset 0 7px 9px -7px rgba(255, 255, 255, 0.26),
+    inset 0 -7px 9px -7px rgba(255, 255, 255, 0.1), 0 2px 6px rgba(0, 0, 0, 0.25),
+    0 16px 36px -18px rgba(0, 0, 0, 0.85);
+  --glass-shadow-set: inset 0 7px 9px -7px rgba(255, 255, 255, 0.16),
+    inset 0 -7px 9px -7px rgba(255, 255, 255, 0.06), 0 8px 18px -12px rgba(0, 0, 0, 0.7);
+  --brass-sheen: rgba(255, 255, 255, 0.5);
+  --brass-shade: rgba(60, 40, 0, 0.35);
+  --edge-fade: rgba(13, 16, 23, 0.7);
+
+  /* The plugins' own colours, as on the site: one per category. */
+  --p-protection: #9186d6;
+  --p-framework: #4fb3a0;
+  --p-moderation: #d9695f;
+  --p-economy: #cc85be;
+  --p-security: #6d9dd8;
+  --p-performance: #6fb36f;
+
+  /* What lies behind the floating glass: two soft lights and a faint grid,
+     so a rim has something to bend. */
+  --ambient-brass: rgba(200, 164, 92, 0.12);
+  --ambient-mark: 16%;
+  --ambient-grid: rgba(232, 230, 225, 0.028);
+  --star: #78808c;
+  --star-alpha: 0.9;
+
+  /* The server, as a block of glass. The pane is a tint of the night, its
+     rim and pixels catch the light, and the core inside glows brass. */
+  --cube-pane-a: rgba(120, 150, 200, 0.16);
+  --cube-pane-b: rgba(40, 52, 76, 0.1);
+  --cube-pane-edge: rgba(232, 230, 225, 0.5);
+  --cube-pane-glint: rgba(255, 255, 255, 0.62);
+  --cube-pane-frame: rgba(232, 230, 225, 0.18);
+  --cube-shade: rgba(4, 6, 10, 0.55);
+  --cube-core-a: #ddbb79;
+  --cube-core-b: #8c7238;
+  --cube-core-glow: rgba(200, 164, 92, 0.55);
+  --cube-floor: rgba(0, 0, 0, 0.6);
+  --cube-tint: 26%;
+  --glow-alpha: 26%;
+
+  /* Status of a figure, and the accents a module may ask for by name. */
+  --tone-red: var(--danger);
+  --tone-orange: var(--warning);
+  --tone-yellow: var(--accent-hi);
+  --tone-green: var(--success);
+  --tone-blue: var(--info);
+  --tone-purple: var(--p-protection);
+  --tone-cyan: var(--p-framework);
+
+  /* A heat map runs from a cold, barely-there cell to a hot one. */
+  --heat-cold: #1d3b3a;
+  --heat-warm: #c8a45c;
+  --heat-hot: #e0685c;
+  --heat-empty: rgba(232, 230, 225, 0.035);
+
+  /* The game's own tooltip, as players know it, in both themes. */
+  --mc-tip-bg: rgba(16, 0, 16, 0.94);
+  --mc-tip-rim-a: #5000ff;
+  --mc-tip-rim-b: #28007f;
+  --mc-white: #ffffff;
+  --mc-gray: #a8a8a8;
+  --mc-aqua: #55ffff;
+  --mc-yellow: #ffff55;
+  --mc-purple: #ff55ff;
+  --mc-lore: #aa00aa;
+
+  /* A face that could not be fetched falls back to a monogram on a tint
+     chosen by the name, so a column of them still tells players apart. */
+  --tint-0: #2d3a52;
+  --tint-1: #3a3350;
+  --tint-2: #2a4442;
+  --tint-3: #4a3a2c;
+  --tint-4: #47313a;
+  --tint-5: #33402d;
+
+  --skeleton: rgba(232, 230, 225, 0.06);
+  --scrim: rgba(6, 8, 12, 0.5);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #faf8f3;
+  --bg-subtle: #f1eee6;
+  --surface: #ffffff;
+  --surface-2: #f1eee6;
+  --line: #e3ddd1;
+  --line-2: #cdc5b5;
+
+  --text: #1a1c20;
+  --text-2: #5d5a53;
+  --text-3: #726e64;
+
+  --accent: #8a6a22;
+  --accent-hi: #6e5318;
+  --accent-dim: #c9b888;
+  --accent-soft: rgba(138, 106, 34, 0.1);
+  --on-accent: #fcfaf5;
+
+  --info: #37588c;
+  --success: #2c6e4e;
+  --warning: #a55a15;
+  --danger: #af3b2c;
+  --on-danger: #fffaf8;
+
+  --overlay: rgba(26, 28, 32, 0.4);
+  --shadow-pop: 0 1px 2px rgba(26, 28, 32, 0.06), 0 16px 40px -18px rgba(26, 28, 32, 0.28);
+
+  --glass-tint: rgba(250, 248, 243, 0.62);
+  --glass-tint-deep: rgba(250, 248, 243, 0.88);
+  --glass-sheen-hi: rgba(255, 255, 255, 0.8);
+  --glass-sheen-lo: rgba(255, 255, 255, 0.25);
+  --glass-rim-hi: rgba(255, 255, 255, 1);
+  --glass-rim-mid: rgba(255, 255, 255, 0.85);
+  --glass-rim-lo: rgba(84, 70, 42, 0.16);
+  --glass-wash: rgba(26, 28, 32, 0.05);
+  --glass-blur: blur(9px);
+  --glass-tone: saturate(1.7) brightness(1.03);
+  --glass-shadow: inset 0 7px 9px -7px rgba(255, 255, 255, 1),
+    inset 0 -7px 9px -7px rgba(84, 70, 42, 0.1), 0 1px 3px rgba(84, 70, 42, 0.12),
+    0 16px 32px -18px rgba(84, 70, 42, 0.42);
+  --glass-shadow-set: inset 0 7px 9px -7px rgba(255, 255, 255, 1),
+    inset 0 -7px 9px -7px rgba(84, 70, 42, 0.08), 0 8px 18px -12px rgba(84, 70, 42, 0.35);
+  --brass-sheen: rgba(255, 255, 255, 0.32);
+  --brass-shade: rgba(40, 28, 0, 0.4);
+  --edge-fade: rgba(250, 248, 243, 0.75);
+
+  --p-protection: #574bb0;
+  --p-framework: #1f7a6a;
+  --p-moderation: #b03d33;
+  --p-economy: #96438a;
+  --p-security: #2b6493;
+  --p-performance: #2f7a45;
+
+  --ambient-brass: rgba(138, 106, 34, 0.1);
+  --ambient-mark: 11%;
+  --ambient-grid: rgba(26, 28, 32, 0.035);
+  --star: #726e64;
+  --star-alpha: 0.4;
+
+  /* On paper the block is milk glass: a white pane with a warm rim. */
+  --cube-pane-a: rgba(255, 255, 255, 0.62);
+  --cube-pane-b: rgba(239, 234, 223, 0.32);
+  --cube-pane-edge: rgba(138, 106, 34, 0.55);
+  --cube-pane-glint: rgba(255, 255, 255, 0.95);
+  --cube-pane-frame: rgba(138, 106, 34, 0.2);
+  --cube-shade: rgba(84, 70, 42, 0.22);
+  --cube-core-a: #c9a24f;
+  --cube-core-b: #8a6a22;
+  --cube-core-glow: rgba(138, 106, 34, 0.32);
+  --cube-floor: rgba(84, 70, 42, 0.3);
+  --cube-tint: 14%;
+  --glow-alpha: 15%;
+
+  --heat-cold: #d9e6e0;
+  --heat-warm: #c9a24f;
+  --heat-hot: #af3b2c;
+  --heat-empty: rgba(26, 28, 32, 0.04);
+
+  --tint-0: #d6deeb;
+  --tint-1: #e0dbea;
+  --tint-2: #d3e4e1;
+  --tint-3: #eadfd2;
+  --tint-4: #ead7dc;
+  --tint-5: #dbe4d3;
+
+  --skeleton: rgba(26, 28, 32, 0.06);
+  --scrim: rgba(26, 28, 32, 0.28);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+dl,
+dd,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+img,
+svg {
+  display: block;
+  flex: none;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* One focus treatment everywhere, as on the site. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Small caps label for eyebrows, table headings and meta rows. */
+.label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125em;
+}
+
+.icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border: 3px solid var(--bg);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ============================================================
+   Glass
+
+   The material of what floats over the page — the sidebar, the bar on
+   a phone, the toolbar a table scrolls under, toasts and dialogs — and,
+   as a finish, of the controls set into it. Exactly the site's.
+
+   A piece of it is built the way a thick pane looks. The backdrop shows
+   through, blurred. A plate of the page's own colour sits in the middle,
+   soft at the edges, so whatever passes underneath stays behind the
+   words on top. Around the plate the glass is clear, and that band is
+   where it comes alive: a sheen, a rim that catches the light at the top
+   left and again, fainter, at the bottom right, and the backdrop bent
+   the way a rounded edge bends it.
+
+   The bending needs a browser that can do it: js/lib/glass.js builds
+   the lens and sets --glass-lens; without it the backdrop is simply
+   blurred, and the rest is the same.
+   ============================================================ */
+
+.glass {
+  position: relative;
+  /* Never seen: the rim is drawn over it. It is here for forced colours,
+     where a gradient is dropped and a border is all that outlines it. */
+  border: 1px solid transparent;
+  background: linear-gradient(var(--glass-sheen-hi), var(--glass-sheen-lo));
+  -webkit-backdrop-filter: var(--glass-lens, var(--glass-blur)) var(--glass-tone);
+  backdrop-filter: var(--glass-lens, var(--glass-blur)) var(--glass-tone);
+  box-shadow:
+    var(--glass-shadow),
+    inset 0 0 0 100vmax transparent;
+}
+
+/* The rim: a one-pixel ring cut out of a gradient laid corner to corner. */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    to bottom right,
+    var(--glass-rim-hi),
+    var(--glass-rim-lo) 40%,
+    var(--glass-rim-lo) 62%,
+    var(--glass-rim-mid)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* The plate: a core of the tint and a shadow of the same colour around it,
+   which is what makes its edge soft. The backdrop filter makes the element
+   a stacking context, so a negative z-index goes no further back. */
+.glass::after {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--glass-tint);
+  box-shadow: 0 0 8px 6px var(--glass-tint);
+  pointer-events: none;
+}
+
+/* A wash of light over a piece you can press. A shadow, so it can fade. */
+:is(a, button, label).glass {
+  transition:
+    box-shadow var(--slow),
+    scale var(--base),
+    color var(--base);
+}
+
+:is(a, button, label).glass:hover {
+  box-shadow:
+    var(--glass-shadow),
+    inset 0 0 0 100vmax var(--glass-wash);
+}
+
+/* Set into the page instead of floating over it: nothing passes behind, so
+   there is no backdrop to filter and no plate to hold it back. */
+.glass-set {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    var(--glass-shadow-set),
+    inset 0 0 0 100vmax transparent;
+}
+
+.glass-set::after {
+  display: none;
+}
+
+:is(a, button, label).glass-set:hover {
+  box-shadow:
+    var(--glass-shadow-set),
+    inset 0 0 0 100vmax var(--glass-wash);
+}
+
+/* A panel of it, with a page of words to keep readable. */
+.glass-deep::after {
+  background: var(--glass-tint-deep);
+  box-shadow: 0 0 8px 6px var(--glass-tint-deep);
+}
+
+/* Glass with the brass poured in: the one thing a screen asks you to do. */
+.glass-brass {
+  position: relative;
+  border: 1px solid transparent;
+  color: var(--on-accent);
+  background: linear-gradient(
+    color-mix(in srgb, var(--accent) 86%, white),
+    var(--accent) 55%,
+    color-mix(in srgb, var(--accent) 94%, black)
+  );
+  box-shadow:
+    inset 0 1px 0.5px var(--brass-sheen),
+    inset 0 -1px 1px var(--brass-shade),
+    0 8px 20px -12px var(--accent);
+}
+
+.glass-brass::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: linear-gradient(var(--brass-sheen), transparent 60%);
+  opacity: 0;
+  transition: opacity var(--slow);
+  pointer-events: none;
+}
+
+.glass-brass:hover {
+  box-shadow:
+    inset 0 1px 0.5px var(--brass-sheen),
+    inset 0 -1px 1px var(--brass-shade),
+    0 12px 30px -10px var(--accent);
+}
+
+.glass-brass:hover::after {
+  opacity: 0.45;
+}
+
+/* The same pour, of the danger colour: what a destructive confirmation asks. */
+.glass-brass.is-danger {
+  color: var(--on-danger);
+  background: linear-gradient(
+    color-mix(in srgb, var(--danger) 86%, white),
+    var(--danger) 55%,
+    color-mix(in srgb, var(--danger) 92%, black)
+  );
+  box-shadow:
+    inset 0 1px 0.5px var(--brass-sheen),
+    inset 0 -1px 1px var(--brass-shade),
+    0 8px 20px -12px var(--danger);
+}
+
+.glass-brass.is-danger:hover {
+  box-shadow:
+    inset 0 1px 0.5px var(--brass-sheen),
+    inset 0 -1px 1px var(--brass-shade),
+    0 12px 30px -10px var(--danger);
+}
+
+/* A browser that cannot blur what is behind leaves the page sharp under
+   the words: there the plate covers the whole piece, at the panel's tint. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass::after {
+    inset: 0;
+    background: var(--glass-tint-deep);
+    box-shadow: none;
+  }
+}
+
+/* Some people ask for less of this, and some need more contrast than a
+   tint over a moving page can promise: for both the glass is a solid. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .glass {
+    border-color: var(--line-2);
+    background: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .glass::before,
+  .glass::after {
+    display: none;
+  }
+}

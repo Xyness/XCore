@@ -1,0 +1,1047 @@
+/* ============================================================
+   XCore dashboard — the home page
+
+   The site's home stage, turned towards the server. A block of glass
+   is pinned while the page scrolls, and the scroll position turns it a
+   quarter per live figure — players, TPS, memory, plugins — the words
+   beside it changing as it goes; then it gives way to the overview.
+
+   Everything that moves is computed here from one number, --t: 0 for
+   the opening, 1 to 4 for each figure. Where the browser supports
+   scroll-driven animations, the scroll itself animates --t and no
+   script runs per frame. Elsewhere pages/home.js eases --t towards the
+   scroll position, as the site does, and writes it. The curves are the
+   site's (lib/block-motion.ts and components/home/Stage.tsx), written
+   as calc() so both drivers produce the same frame.
+
+   Without that layout — reduced motion, a screen too short to pin
+   anything, a browser without CSS trigonometry — the same markup is a
+   plain page: the opening beside the block, then the four figures as
+   tiles, all shown at once.
+   ============================================================ */
+
+/* ============================================
+   The block
+   ============================================ */
+
+.cube-rig {
+  --s: 13rem;
+  position: relative;
+  width: var(--s);
+  height: var(--s);
+  flex: none;
+
+  /* The pose, from --t: from the mark's angle (a corner towards you, two
+     faces and the top showing) to presenting the first face over the
+     opening's step, then a quarter turn per figure, dipping slightly
+     mid-turn. --lean-x and --lean-y are a few degrees towards the pointer. */
+  --intro-x: clamp(0, var(--t), 1);
+  --intro: calc(var(--intro-x) * var(--intro-x) * (3 - 2 * var(--intro-x)));
+  --turns: max(calc(var(--t) - 1), 0);
+  --whole: round(down, var(--turns), 1);
+  --part: calc(var(--turns) - var(--whole));
+  --settled: calc(var(--part) * var(--part) * (3 - 2 * var(--part)));
+  --pitch: calc((-27 + 12 * var(--intro)) * 1deg - 4deg * sin(var(--part) * 180deg) + var(--lean-y, 0) * 1deg);
+  --yaw: calc((40 - 64 * var(--intro)) * 1deg - 90deg * (var(--whole) + var(--settled)) + var(--lean-x, 0) * 1deg);
+}
+
+.cube-scene {
+  position: absolute;
+  inset: 0;
+  perspective: calc(var(--s) * 5.2);
+  perspective-origin: 50% 36%;
+}
+
+.cube {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(var(--pitch)) rotateY(var(--yaw));
+  will-change: transform;
+}
+
+.cube-face {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+
+.cube-face[data-face="0"] {
+  transform: translateZ(calc(var(--s) / 2));
+}
+.cube-face[data-face="1"] {
+  transform: rotateY(90deg) translateZ(calc(var(--s) / 2));
+}
+.cube-face[data-face="2"] {
+  transform: rotateY(180deg) translateZ(calc(var(--s) / 2));
+}
+.cube-face[data-face="3"] {
+  transform: rotateY(270deg) translateZ(calc(var(--s) / 2));
+}
+.cube-face[data-face="top"] {
+  transform: rotateX(90deg) translateZ(calc(var(--s) / 2));
+}
+.cube-face[data-face="bottom"] {
+  transform: rotateX(-90deg) translateZ(calc(var(--s) / 2));
+}
+
+/* A pane of the game's glass: a tint, a frame one texture pixel wide (a
+   sixteenth of the face), a crisp edge, and the glints of the vanilla
+   texture. Seen from both sides, as glass is. */
+.cube-pane {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--cube-pane-edge);
+  background: linear-gradient(155deg, var(--cube-pane-a), var(--cube-pane-b));
+  box-shadow:
+    inset 0 0 0 calc(var(--s) / 16) var(--cube-pane-frame),
+    inset 0 0 calc(var(--s) / 5) color-mix(in srgb, var(--mark, var(--accent)) var(--cube-tint), transparent);
+}
+
+/* The glints ride on the face's front layer, so the far panes seen through
+   the glass do not add theirs to the near ones. */
+.cube-glyph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--cube-pane-glint);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M2 4h1v1H2zM3 3h1v1H3zM4 2h1v1H4zM2 7h1v1H2zM3 6h1v1H3zM4 5h1v1H4zM5 4h1v1H5zM6 3h1v1H6zM7 2h1v1H7zM11 13h1v1h-1zM12 12h1v1h-1zM13 11h1v1h-1z'/%3E%3C/svg%3E")
+    0 0 / 100% 100%;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath d='M2 4h1v1H2zM3 3h1v1H3zM4 2h1v1H4zM2 7h1v1H2zM3 6h1v1H3zM4 5h1v1H4zM5 4h1v1H5zM6 3h1v1H6zM7 2h1v1H7zM11 13h1v1h-1zM12 12h1v1h-1zM13 11h1v1h-1z'/%3E%3C/svg%3E")
+    0 0 / 100% 100%;
+  opacity: 0.42;
+}
+
+/* A side face darkens as it turns from the light, which sits a little to
+   the left of the camera: brightest just before it is square-on, falling
+   off quickly as it turns away. The site's shadeFor(), on the face's own
+   angle. */
+.cube-shade {
+  position: absolute;
+  inset: 0;
+  background: var(--cube-shade);
+  opacity: calc(0.8 * (1 - pow(max(cos(var(--yaw) + var(--k, 0) * 90deg + 14deg), 0), 1.15)));
+  pointer-events: none;
+}
+
+/* What a face shows: the figure's icon, lit in its colour, and its name.
+   Only from the front — through the glass it would read backwards. */
+.cube-glyph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--mark, var(--accent));
+  transform: translateZ(1px);
+  backface-visibility: hidden;
+}
+
+.cube-glyph > .icon {
+  width: 34%;
+  height: 34%;
+  stroke-width: 1.35;
+  filter: drop-shadow(0 0 0.75rem color-mix(in srgb, var(--mark, var(--accent)) 65%, transparent));
+}
+
+[data-theme="light"] .cube-glyph > .icon {
+  filter: none;
+}
+
+.cube-tag {
+  position: absolute;
+  inset: auto 0 14%;
+  font-family: var(--font-mono);
+  font-size: min(calc(var(--s) * 0.04), 0.75rem);
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.cube-brand {
+  color: var(--accent);
+}
+
+.cube-brand svg {
+  width: 30%;
+  height: 30%;
+  opacity: 0.8;
+}
+
+/* The light inside the block. */
+.cube-core {
+  position: absolute;
+  inset: 18%;
+  transform-style: preserve-3d;
+}
+
+.core-plane {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--cube-core-glow), transparent);
+}
+
+.core-plane[data-plane="y"] {
+  transform: rotateY(90deg);
+}
+
+.core-plane[data-plane="z"] {
+  transform: rotateX(90deg);
+}
+
+.core-plane[data-plane="x"]::after {
+  content: "";
+  position: absolute;
+  inset: 36%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--cube-core-a), color-mix(in srgb, var(--cube-core-b) 40%, transparent) 70%, transparent);
+  opacity: 0.55;
+}
+
+.cube-floor {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 170%;
+  height: 36%;
+  translate: -50% 18%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--cube-floor), transparent);
+  pointer-events: none;
+}
+
+@keyframes cube-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 2rem, 0) scale(0.9);
+  }
+}
+
+@keyframes cube-float {
+  from {
+    transform: translate3d(0, -1.6%, 0);
+  }
+  to {
+    transform: translate3d(0, 1.6%, 0);
+  }
+}
+
+@keyframes cube-floor {
+  from {
+    transform: scale(0.94);
+    opacity: 0.85;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cube-rig {
+    animation: cube-in 1.4s var(--smooth) backwards;
+  }
+
+  .cube-scene {
+    animation: cube-float 6s ease-in-out infinite alternate;
+  }
+
+  .cube-floor {
+    animation: cube-floor 6s ease-in-out infinite alternate;
+  }
+}
+
+/* ============================================
+   The scene — plain layout first
+   ============================================ */
+
+/* The home page runs under the bar and edge to edge of its column. */
+.main:has(.scene) {
+  padding-top: 0;
+}
+
+.scene {
+  --beats: 4;
+  position: relative;
+  margin-inline: calc(-1 * var(--gutter));
+  overflow-x: clip;
+}
+
+.scene-pin {
+  position: relative;
+  --glow-0: var(--accent);
+}
+
+.scene-sky {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(transparent 2rem, #000 7rem, #000 60%, transparent);
+  mask-image: linear-gradient(transparent 2rem, #000 7rem, #000 60%, transparent);
+}
+
+.scene-sky svg {
+  position: absolute;
+  left: 0;
+  top: -4%;
+  width: 100%;
+  height: 108%;
+  fill: var(--star);
+  opacity: var(--star-alpha);
+}
+
+.scene-inner {
+  position: relative;
+  display: grid;
+  gap: 2.5rem 2rem;
+  max-width: 76rem;
+  margin-inline: auto;
+  padding: calc(var(--bar) + 3rem) var(--gutter) 2rem;
+}
+
+.scene-copy {
+  display: contents;
+}
+
+.scene-hero {
+  order: 1;
+}
+
+.scene-object {
+  --block: min(46vw, 22svh, 13rem);
+  position: relative;
+  display: grid;
+  place-items: center;
+  order: 2;
+  min-height: calc(var(--block) * 1.85);
+}
+
+.scene-object .cube-rig {
+  --s: var(--block);
+}
+
+.scene-glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(42rem, 140vw);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--mark, var(--accent)) var(--glow-alpha), transparent),
+    transparent
+  );
+  pointer-events: none;
+  opacity: 0;
+}
+
+.scene-glow[data-glow="0"] {
+  opacity: 1;
+}
+
+.scene-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.625rem;
+  color: var(--accent);
+}
+
+.scene-title {
+  margin-top: 1.125rem;
+  font-size: min(2.75rem, 11vw);
+  font-weight: 600;
+  line-height: 1.02;
+  letter-spacing: -0.045em;
+  overflow-wrap: anywhere;
+}
+
+.scene-lede {
+  margin-top: 1rem;
+  max-width: 32rem;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.scene-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  height: 1.875rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.8125rem;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.chip strong {
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--tone, var(--text-3));
+}
+
+.scene-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.75rem;
+}
+
+.beats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  align-items: start;
+  gap: 1rem;
+  order: 3;
+}
+
+.beat {
+  position: relative;
+  padding: 1.375rem 1.5rem 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: linear-gradient(180deg, var(--surface), var(--bg-subtle));
+}
+
+.beat-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--mark, var(--accent));
+}
+
+.beat-eyebrow .icon {
+  width: 1rem;
+  height: 1rem;
+  stroke-width: 2;
+}
+
+.beat-count {
+  margin-left: 0.25rem;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+}
+
+.beat-figure {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 0.625rem;
+  margin-top: 0.875rem;
+  font-size: 2.75rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
+.beat-figure[data-tone] .beat-value {
+  color: var(--tone);
+}
+
+.beat-unit {
+  font-size: 0.42em;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--text-2);
+}
+
+.beat-text {
+  margin-top: 0.875rem;
+  max-width: 30rem;
+  color: var(--text-2);
+}
+
+.beat-extra {
+  margin-top: 1.125rem;
+}
+
+/* A meter, for a share of something: memory used, TPS out of twenty. */
+.meter {
+  position: relative;
+  height: 0.375rem;
+  max-width: 22rem;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--line);
+}
+
+.meter > i {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--tone, var(--accent));
+  transform-origin: left;
+  transform: scaleX(var(--share, 0));
+  transition: transform 0.6s var(--smooth);
+}
+
+.meter-legend {
+  display: flex;
+  justify-content: space-between;
+  max-width: 22rem;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.faces-row {
+  display: flex;
+  align-items: center;
+}
+
+.faces-row .face {
+  width: 2rem;
+  height: 2rem;
+  margin-right: -0.375rem;
+  border-radius: 0.5rem;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.faces-row .more {
+  margin-left: 0.875rem;
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.module-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.module-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.25rem;
+  padding: 0 0.875rem 0 0.4375rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.module-chip .mark-tile {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+}
+
+.rail,
+.scene-cue {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .scene-inner {
+    grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .scene-hero {
+    grid-area: 1 / 1;
+  }
+
+  .scene-object {
+    --block: min(30vw, 24svh, 15rem);
+    grid-area: 1 / 2;
+  }
+
+  .beats {
+    grid-area: 2 / 1 / auto / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scene-title {
+    font-size: clamp(2.75rem, 5.2vw, 4rem);
+  }
+}
+
+@media (min-width: 1280px) {
+  .beats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ============================================
+   The scene, pinned and turned by the scroll
+   ============================================ */
+
+@media (prefers-reduced-motion: no-preference) and (scripting: enabled) and (min-height: 540px) {
+  @supports (width: calc(round(down, 1.5px, 1px) + sin(30deg) * 1px + pow(2, 1) * 1px)) {
+    /* --step is how far you scroll for one figure. The section is one
+       screen for the opening plus one step per figure. */
+    .scene {
+      --step: 62svh;
+      height: calc(100svh + var(--beats) * var(--step));
+    }
+
+    .scene-pin {
+      position: sticky;
+      top: 0;
+      height: 100svh;
+      overflow: hidden;
+    }
+
+    /* Small screens: the block above, the words below. */
+    .scene-inner {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: 40% minmax(0, 1fr);
+      align-items: stretch;
+      gap: 0;
+      height: 100%;
+      padding: calc(var(--bar) + 0.75rem) var(--gutter) 0;
+    }
+
+    .scene-object {
+      --block: min(42vw, 21svh, 13rem);
+      grid-area: 1 / 1;
+      min-height: 0;
+    }
+
+    .scene-copy {
+      position: relative;
+      display: block;
+      grid-area: 2 / 1;
+      width: 100%;
+      max-width: 36rem;
+      margin-inline: auto;
+    }
+
+    .beats {
+      display: block;
+    }
+
+    /* The opening and every figure occupy the same spot: the scroll fades
+       one out and the next one in. */
+    .scene-hero,
+    .beat {
+      position: absolute;
+      inset: 0 0 auto;
+      will-change: transform, opacity;
+    }
+
+    .beat {
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: none;
+      pointer-events: none;
+    }
+
+    .beat[data-active] {
+      pointer-events: auto;
+    }
+
+    .scene-hero[data-away] {
+      pointer-events: none;
+    }
+
+    .scene-title {
+      font-size: min(2.5rem, 10vw);
+    }
+
+    .beat-figure {
+      font-size: min(4.25rem, 17vw);
+    }
+
+    /* The opening holds for the first quarter of its step, then leaves
+       upwards and is gone by the half-way point. */
+    .scene-hero {
+      opacity: clamp(0, calc((0.5 - var(--t)) / 0.25), 1);
+      transform: translate3d(0, calc(var(--t) * var(--hero-travel, 14svh) * -1), 0);
+    }
+
+    /* Each figure holds for most of its step and fades quickly at the
+       ends: wherever the scroll comes to rest the words are almost always
+       there in full, and half-way between two figures neither shows. */
+    .beat {
+      --off: calc(var(--t) - var(--i) - 1);
+      opacity: clamp(0, calc((0.5 - max(var(--off), -1 * var(--off))) / 0.1), 1);
+      transform: translate3d(0, calc(var(--off) * var(--beat-travel, 28px) * -1), 0);
+    }
+
+    /* Behind the block, the colour of what is on screen, cross-faded. */
+    .scene-glow {
+      --d: calc(var(--t) - var(--g, 0));
+      opacity: clamp(0, calc(1 - max(var(--d), -1 * var(--d)) / 0.7), 1);
+    }
+
+    .scene-sky svg[data-sky="far"] {
+      transform: translate3d(0, calc(var(--t) * -5px), 0);
+    }
+
+    .scene-sky svg[data-sky="near"] {
+      transform: translate3d(0, calc(var(--t) * -14px), 0);
+    }
+
+    /* The rail: one tab per figure in a capsule of glass, and a pill that
+       slides to the figure on screen — the site's, with tabs of one width
+       so the pill's place is a fraction of the rail. It crosses to the
+       next tab in the stretch of scroll where the words change over, so it
+       is never caught between two while a figure can be read. */
+    .rail {
+      position: absolute;
+      left: 50%;
+      bottom: max(0.875rem, env(safe-area-inset-bottom));
+      display: block;
+      padding: 3px;
+      border-radius: var(--radius-pill);
+      translate: -50% 0;
+      opacity: clamp(0, calc((var(--t) - 0.4) / 0.35), 1);
+      pointer-events: none;
+    }
+
+    .rail[data-on] {
+      pointer-events: auto;
+    }
+
+    .rail ol {
+      position: relative;
+      display: grid;
+      grid-auto-columns: 1fr;
+      grid-auto-flow: column;
+    }
+
+    .rail button {
+      display: grid;
+      place-items: center;
+      width: 2.75rem;
+      height: 2.625rem;
+      border-radius: var(--radius-pill);
+      color: var(--text-2);
+      transition: color var(--slow);
+    }
+
+    .rail button:hover {
+      color: var(--text);
+    }
+
+    .rail button[aria-current="true"] {
+      color: var(--mark, var(--text));
+    }
+
+    .rail .icon {
+      width: 1.125rem;
+      height: 1.125rem;
+    }
+
+    .rail-name {
+      display: none;
+      font-size: 0.8125rem;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .rail-pill {
+      --place: clamp(0, calc(var(--t) - 1), calc(var(--beats) - 1));
+      --from: min(round(down, var(--place), 1), calc(var(--beats) - 2));
+      --cross: clamp(0, calc((var(--place) - var(--from) - 0.4) / 0.2), 1);
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: calc(100% / var(--beats));
+      border-radius: var(--radius-pill);
+      background: var(--glass-wash);
+      box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+      transform: translate3d(calc((var(--from) + var(--cross) * var(--cross) * (3 - 2 * var(--cross))) * 100%), 0, 0);
+      pointer-events: none;
+    }
+
+    .scene-cue {
+      position: absolute;
+      left: 50%;
+      bottom: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.625rem;
+      translate: -50% 0;
+      opacity: clamp(0, calc(1 - var(--t) / 0.2), 1);
+      pointer-events: none;
+    }
+
+    .scene-cue i {
+      position: relative;
+      display: block;
+      width: 1px;
+      height: 2.25rem;
+      overflow: hidden;
+      background: var(--line-2);
+    }
+
+    .scene-cue i::after {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 45%;
+      background: var(--accent);
+      animation: scene-cue 1.9s cubic-bezier(0.6, 0, 0.4, 1) infinite;
+    }
+
+    @media (max-height: 720px) and (max-width: 1023.98px) {
+      .scene-inner {
+        grid-template-rows: 36% minmax(0, 1fr);
+      }
+    }
+
+    @media (max-height: 640px) {
+      .scene-cue {
+        display: none;
+      }
+    }
+
+    @media (min-width: 640px) {
+      .scene-object {
+        --block: min(34vw, 23svh, 16rem);
+      }
+    }
+
+    @media (min-width: 768px) {
+      .rail {
+        bottom: max(1.5rem, env(safe-area-inset-bottom));
+      }
+
+      .rail button {
+        width: auto;
+        height: 2.375rem;
+        padding-inline: 1rem;
+      }
+
+      .rail button[aria-current="true"] {
+        color: var(--text);
+      }
+
+      .rail .icon {
+        display: none;
+      }
+
+      .rail-name {
+        display: block;
+      }
+    }
+
+    /* Large screens: the words on the left, the block on the right. */
+    @media (min-width: 1024px) {
+      .scene {
+        --step: 58svh;
+        --hero-travel: 30svh;
+        --beat-travel: 56px;
+      }
+
+      .scene-inner {
+        grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        gap: 2rem;
+        padding: 3rem var(--gutter) 5.5rem;
+      }
+
+      .scene-object {
+        --block: clamp(12.5rem, min(20vw, 34svh), 19rem);
+        grid-area: 1 / 2;
+      }
+
+      .scene-copy {
+        grid-area: 1 / 1;
+        max-width: none;
+        margin: 0;
+      }
+
+      .scene-hero,
+      .beat {
+        inset: 50% 0 auto;
+        translate: 0 -50%;
+      }
+
+      .scene-title {
+        font-size: clamp(3rem, 4.6vw, 4.5rem);
+      }
+
+      .beat-figure {
+        font-size: clamp(4.5rem, 7.4vw, 7rem);
+      }
+
+      .beat-text {
+        font-size: 1.0625rem;
+      }
+    }
+  }
+
+  /* Where the scroll can animate --t itself, it does: no script per frame. */
+  @supports (animation-timeline: view()) and (width: calc(round(down, 1.5px, 1px) + sin(30deg) * 1px + pow(2, 1) * 1px)) {
+    .scene {
+      view-timeline: --scene block;
+    }
+
+    .scene-pin {
+      animation: scene-t linear both;
+      animation-timeline: --scene;
+      animation-range: contain 0% contain 100%;
+    }
+  }
+}
+
+@keyframes scene-t {
+  from {
+    --t: 0;
+  }
+  to {
+    --t: 4;
+  }
+}
+
+@keyframes scene-cue {
+  from {
+    transform: translate3d(0, -100%, 0);
+  }
+  to {
+    transform: translate3d(0, 230%, 0);
+  }
+}
+
+/* ============================================
+   The overview, after the scene
+   ============================================ */
+
+.overview {
+  position: relative;
+  padding-top: 2.5rem;
+  scroll-margin-top: 0.5rem;
+}
+
+.overview-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.overview-title {
+  font-size: clamp(1.5rem, 1.1rem + 1.4vw, 2rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.overview-grid {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 1.25rem;
+}
+
+@media (min-width: 1100px) {
+  .overview-grid {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+.module-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+  gap: 0.75rem;
+}
+
+.module-card {
+  display: grid;
+  gap: 0.875rem;
+  padding: 1.125rem;
+}
+
+.module-card-top {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.module-card .mark-tile {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.875rem;
+}
+
+.module-card .mark-tile .icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.module-card-name {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.module-card-meta {
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.module-card .icon-go {
+  margin-left: auto;
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-3);
+  transition: transform var(--slow) var(--smooth), color var(--base);
+}
+
+.module-card:hover .icon-go {
+  color: var(--mark, var(--accent));
+  transform: translate3d(3px, 0, 0);
+}
+
+.recent {
+  display: grid;
+}
+
+.recent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.recent-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.recent-row:first-child {
+  padding-top: 0;
+}
+
+.recent-row time,
+.recent-row .when {
+  flex: none;
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.recent-row .badge {
+  margin-left: auto;
+}

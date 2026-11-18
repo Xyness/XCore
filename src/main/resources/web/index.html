@@ -1,16 +1,110 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XCore Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%2312151c'/%3E%3Crect%20x='2.5'%20y='2.5'%20width='59'%20height='59'%20rx='12'%20fill='none'%20stroke='%235b8def'%20stroke-width='3'/%3E%3Cpath%20d='M20%2019%20L44%2045%20M44%2019%20L20%2045'%20stroke='%235b8def'%20stroke-width='7'%20stroke-linecap='round'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0d1017" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#faf8f3" media="(prefers-color-scheme: light)">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>XCore</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d1017'/%3E%3Cg fill='none' stroke='%23c8a45c' stroke-width='1.9' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M16 6.2 25 11.2v9.6L16 25.8 7 20.8v-9.6z'/%3E%3Cpath d='M7 11.2 16 16.2 25 11.2'/%3E%3Cpath d='M16 16.2V25.8'/%3E%3C/g%3E%3C/svg%3E">
+
+  <!--
+    Before anything is drawn: the theme, so the light one never flashes dark; the token of a
+    /xcore dashboard link, taken out of the address bar at once so it does not sit in a history
+    entry or a screenshot; and the first requests, started now rather than once the scripts have
+    loaded — on a server reached across the internet that saves a round trip or two.
+  -->
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var stored = null;
+      try { stored = localStorage.getItem("xcore-theme"); } catch (e) {}
+      var light = window.matchMedia("(prefers-color-scheme: light)");
+      var apply = function () {
+        root.setAttribute("data-theme", stored === "light" || stored === "dark" ? stored : light.matches ? "light" : "dark");
+      };
+      apply();
+      if (light.addEventListener) light.addEventListener("change", function () {
+        try { stored = localStorage.getItem("xcore-theme"); } catch (e) {}
+        if (!stored) apply();
+      });
+
+      // Links carry the token in the fragment, which no server and no access log ever sees;
+      // ?token= is still read, from links made by older versions.
+      var token = "";
+      var match = /[?&#]token=([^&#]+)/.exec(location.search + location.hash);
+      if (match) {
+        try { token = decodeURIComponent(match[1]); } catch (e) { token = match[1]; }
+        try { localStorage.setItem("xcore_token", token); } catch (e) {}
+        // A route after the token (?token=…#/players) is kept; a token in the fragment is the fragment.
+        history.replaceState(null, "", location.pathname + (location.hash.indexOf("#/") === 0 ? location.hash : ""));
+      }
+      if (!token) try { token = localStorage.getItem("xcore_token") || ""; } catch (e) {}
+
+      var early = {};
+      var take = function (path, auth) {
+        var request = fetch(path, auth ? { headers: { Authorization: "Bearer " + token } } : undefined);
+        request.catch(function () {});
+        early[path] = request;
+      };
+      take("/api/lang", false);
+      if (token) {
+        take("/api/auth", true);
+        take("/api/modules", true);
+        take("/api/metrics", true);
+      }
+      window.__xcore = { early: early, token: token };
+    })();
+  </script>
+
+  <link rel="preload" href="fonts/plex-sans-latin-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/plex-sans-latin-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/plex-sans-latin-600.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/plex-mono-latin-500.woff2" as="font" type="font/woff2" crossorigin>
+
+  <link rel="stylesheet" href="css/theme.css">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/pages.css">
+  <link rel="stylesheet" href="css/home.css">
+
+  <!-- Every module the first page needs, fetched side by side instead of one import at a time.
+       Charts, the configuration editor and the pages of older modules load when opened. -->
+  <link rel="modulepreload" href="js/main.js">
+  <link rel="modulepreload" href="js/lib/dom.js">
+  <link rel="modulepreload" href="js/lib/icons.js">
+  <link rel="modulepreload" href="js/lib/api.js">
+  <link rel="modulepreload" href="js/lib/i18n.js">
+  <link rel="modulepreload" href="js/lib/modules.js">
+  <link rel="modulepreload" href="js/lib/metrics.js">
+  <link rel="modulepreload" href="js/lib/glass.js">
+  <link rel="modulepreload" href="js/ui/shell.js">
+  <link rel="modulepreload" href="js/ui/overlay.js">
+  <link rel="modulepreload" href="js/ui/table.js">
+  <link rel="modulepreload" href="js/ui/listing.js">
+  <link rel="modulepreload" href="js/ui/block.js">
+  <link rel="modulepreload" href="js/pages/login.js">
+  <link rel="modulepreload" href="js/pages/home.js">
+  <link rel="modulepreload" href="js/pages/players.js">
+  <link rel="modulepreload" href="js/pages/module.js">
+  <script type="module" src="js/main.js"></script>
 </head>
 <body>
-    <div id="app"></div>
-    <div id="toast-container"></div>
-    <div id="modal-overlay" class="modal-overlay hidden"></div>
-    <script src="app.js"></script>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="ambient" aria-hidden="true">
+    <i class="ambient-brass"></i>
+    <i class="ambient-mark"></i>
+    <i class="ambient-mark"></i>
+    <i class="ambient-grid"></i>
+  </div>
+  <div id="app">
+    <div class="splash" role="status" aria-label="XCore">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+        <path d="M12 2.4 20.3 7v10L12 21.6 3.7 17V7z"/><path d="M3.7 7 12 11.7 20.3 7"/><path d="M12 11.7v9.9"/>
+      </svg>
+    </div>
+  </div>
 </body>
 </html>

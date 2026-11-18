@@ -1,0 +1,1623 @@
+/* ============================================================
+   XCore dashboard — shell and components
+
+   The frame every page sits in, and the pieces pages are made of.
+   Motion follows the site: transforms and opacity, on --smooth for what
+   enters and --standard for what changes state, never slower than 300ms.
+   ============================================================ */
+
+/* ============================================
+   Ambient
+
+   What lies behind the floating glass. A flat background gives a pane
+   nothing to bend, and glass over nothing reads as a grey box. Two soft
+   lights and a faint grid sit under everything instead: the brass of the
+   brand, and the colour of the plugin whose page is open, which the shell
+   cross-fades between two layers (data-on) as you move around.
+   ============================================ */
+
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient > i {
+  position: absolute;
+  display: block;
+}
+
+.ambient-brass {
+  left: -18vw;
+  top: -30vh;
+  width: 75vw;
+  height: 85vh;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--ambient-brass), transparent);
+}
+
+.ambient-mark {
+  right: -22vw;
+  top: -35vh;
+  width: 80vw;
+  height: 90vh;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--mark, var(--accent)) var(--ambient-mark), transparent),
+    transparent
+  );
+  opacity: 0;
+  transition: opacity 0.9s ease;
+}
+
+.ambient-mark[data-on] {
+  opacity: 1;
+}
+
+.ambient-grid {
+  inset: 0;
+  background-image:
+    linear-gradient(var(--ambient-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ambient-grid) 1px, transparent 1px);
+  background-size: 4rem 4rem;
+  -webkit-mask-image: radial-gradient(120% 80% at 0% 0%, #000 20%, transparent 70%);
+  mask-image: radial-gradient(120% 80% at 0% 0%, #000 20%, transparent 70%);
+}
+
+/* ============================================
+   Splash — what index.html shows before the first page is drawn.
+   ============================================ */
+
+.splash {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.splash svg {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .splash svg {
+    animation: splash-breathe 1.6s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes splash-breathe {
+  from {
+    opacity: 0.35;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.skip {
+  position: fixed;
+  left: 1rem;
+  top: 1rem;
+  z-index: 100;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line-2);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transform: translate3d(0, -200%, 0);
+}
+
+.skip:focus-visible {
+  transform: none;
+}
+
+/* ============================================
+   Shell
+
+   From 1024px a sidebar of glass floats on the left of the page, set off
+   from the edges like the site's navigation. Below that, a capsule floats
+   at the top with the page's name and a button, and the same sidebar
+   slides in from the left as a sheet: one navigation, two places.
+   ============================================ */
+
+.shell {
+  min-height: 100svh;
+}
+
+.main {
+  position: relative;
+  min-height: 100svh;
+  padding: calc(var(--bar) + 1.5rem) var(--gutter) 4rem;
+  outline: none;
+  view-transition-name: page;
+}
+
+.page {
+  width: 100%;
+  max-width: 82rem;
+  margin-inline: auto;
+}
+
+@media (min-width: 1024px) {
+  .main {
+    margin-left: calc(var(--sidebar) + 0.75rem);
+    padding-top: 2.25rem;
+    padding-bottom: 5rem;
+  }
+}
+
+/* --- Sidebar ------------------------------------------------ */
+
+.sidebar {
+  position: fixed;
+  z-index: 40;
+  top: 0.75rem;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar);
+  border-radius: 1.5rem;
+}
+
+/* The plate of a tall panel sits further in at the top and bottom, where
+   the brand and the footer would otherwise lie on the rim's light. */
+.sidebar.glass::after {
+  inset: 14px;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.875rem 0.875rem 0.5rem 1rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  height: 2.5rem;
+  padding-right: 0.25rem;
+  border-radius: var(--radius-pill);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.brand svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--accent);
+}
+
+.server-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  min-width: 0;
+  max-width: 8.5rem;
+  height: 1.75rem;
+  padding: 0 0.6875rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-2);
+}
+
+.server-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The pulse of the server: green while it keeps up, amber when it lags,
+   red when it is struggling; the shell sets data-state from the TPS. */
+.live-dot {
+  position: relative;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.live-dot[data-state="ok"] {
+  background: var(--success);
+}
+
+.live-dot[data-state="slow"] {
+  background: var(--warning);
+}
+
+.live-dot[data-state="bad"] {
+  background: var(--danger);
+}
+
+.live-dot[data-state]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .live-dot[data-state]::after {
+    animation: live-pulse 2.4s var(--smooth) infinite;
+  }
+}
+
+@keyframes live-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+.nav {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 0.25rem 0.625rem 0.75rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.nav-title {
+  padding: 1rem 0.625rem 0.375rem;
+}
+
+.nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6875rem;
+  min-width: 0;
+  height: 2.375rem;
+  padding: 0 0.625rem;
+  border-radius: 0.875rem;
+  color: color-mix(in srgb, var(--text) 78%, transparent);
+  font-size: 0.875rem;
+  transition:
+    color var(--base),
+    background-color var(--slow);
+}
+
+.nav-link > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-link .icon {
+  width: 1.0625rem;
+  height: 1.0625rem;
+  color: var(--text-2);
+}
+
+.nav-link:hover {
+  color: var(--text);
+  background: var(--glass-wash);
+}
+
+/* Where you are: a second, shallower piece of glass, as on the site. */
+.nav-link[aria-current="page"] {
+  color: var(--text);
+  font-weight: 500;
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.nav-link[aria-current="page"] .icon {
+  color: var(--accent);
+}
+
+/* A plugin's icon on a tile of its own colour. */
+.mark-tile {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  border-radius: 0.5rem;
+  color: var(--mark, var(--accent));
+  background: color-mix(in srgb, var(--mark, var(--accent)) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mark, var(--accent)) 26%, transparent);
+}
+
+.mark-tile .icon {
+  width: 0.9375rem;
+  height: 0.9375rem;
+  color: inherit;
+  stroke-width: 2;
+}
+
+.nav-link[aria-current="page"] .mark-tile .icon {
+  color: inherit;
+}
+
+.nav-group-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.nav-group-head .nav-link {
+  flex: 1;
+  padding-right: 2.5rem;
+}
+
+.nav-caret {
+  position: absolute;
+  right: 0.25rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.625rem;
+  color: var(--text-3);
+  transition: color var(--base);
+}
+
+.nav-caret:hover {
+  color: var(--text);
+  background: var(--glass-wash);
+}
+
+.nav-caret .icon {
+  width: 1rem;
+  height: 1rem;
+  transition: transform var(--slow) var(--smooth);
+}
+
+.nav-group[data-open] .nav-caret .icon {
+  transform: rotate(90deg);
+}
+
+.nav-pages {
+  position: relative;
+  display: none;
+  padding: 0.125rem 0 0.375rem 1.375rem;
+}
+
+.nav-pages::before {
+  content: "";
+  position: absolute;
+  left: 1.375rem;
+  top: 0.25rem;
+  bottom: 0.625rem;
+  width: 1px;
+  background: var(--line);
+}
+
+.nav-group[data-open] .nav-pages {
+  display: block;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .nav-group[data-open] .nav-pages {
+    animation: nav-open var(--slow) var(--smooth);
+  }
+}
+
+@keyframes nav-open {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -0.375rem, 0);
+  }
+}
+
+.nav-sub {
+  height: 2.125rem;
+  margin-left: 0.5rem;
+  padding-left: 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.875rem 0.875rem;
+  border-top: 1px solid var(--glass-rim-lo);
+}
+
+.sidebar-foot .btn:first-child {
+  flex: 1;
+  justify-content: flex-start;
+}
+
+/* --- Theme toggle: which icon shows is decided by data-theme alone. ---- */
+
+.when-light {
+  display: none;
+}
+
+[data-theme="light"] .when-dark {
+  display: none;
+}
+
+[data-theme="light"] .when-light {
+  display: block;
+}
+
+/* --- Bar and sheet, under 1024px --------------------------- */
+
+.topbar {
+  position: fixed;
+  z-index: 30;
+  top: 0.5rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 3rem;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+}
+
+.topbar-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0 0.5rem;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar .brand {
+  height: 2.5rem;
+  padding: 0 0.75rem 0 0.5rem;
+}
+
+.topbar .brand svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+/* The strip the bar floats in fades whatever reaches the top of the screen
+   into the background, so nothing is cut off by the edge. */
+.edge-fade {
+  position: fixed;
+  z-index: 29;
+  inset: 0 0 auto;
+  height: 4.5rem;
+  background: linear-gradient(var(--edge-fade), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s;
+}
+
+[data-scrolled] .edge-fade {
+  opacity: 1;
+}
+
+.scrim {
+  position: fixed;
+  z-index: 39;
+  inset: 0;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--slow) var(--smooth);
+}
+
+@media (max-width: 1023.98px) {
+  .sidebar {
+    top: 0.5rem;
+    bottom: 0.5rem;
+    left: 0.5rem;
+    width: min(20rem, calc(100vw - 3rem));
+    visibility: hidden;
+    transform: translate3d(calc(-100% - 1rem), 0, 0);
+    transition:
+      transform var(--slow) var(--smooth),
+      visibility 0s linear var(--slow);
+  }
+
+  .sidebar[data-open] {
+    visibility: visible;
+    transform: none;
+    transition: transform var(--slow) var(--smooth);
+  }
+
+  .scrim[data-open] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (min-width: 1024px) {
+  .topbar,
+  .scrim,
+  .edge-fade,
+  .shell .sheet-close {
+    display: none;
+  }
+}
+
+/* ============================================
+   Page
+
+   The head of every page: an eyebrow that says where you are, the title,
+   and at most two actions on the right — one of them the screen's one
+   clear thing to do.
+   ============================================ */
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.page-heading {
+  min-width: 0;
+  flex: 1 1 18rem;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.625rem;
+  color: var(--mark, var(--accent));
+}
+
+.eyebrow a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.eyebrow .icon {
+  width: 0.9375rem;
+  height: 0.9375rem;
+  stroke-width: 2;
+}
+
+.page-title {
+  font-size: clamp(1.75rem, 1.2rem + 2vw, 2.375rem);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  outline: none;
+}
+
+.page-sub {
+  margin-top: 0.625rem;
+  max-width: 44rem;
+  color: var(--text-2);
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+}
+
+.section {
+  margin-top: 1.25rem;
+}
+
+.section-title {
+  margin: 2.25rem 0 0.875rem;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.stack {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.grid-2 {
+  display: grid;
+  gap: 1.25rem;
+}
+
+@media (min-width: 900px) {
+  .grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+/* What a page shows while it waits, and how it enters once it has it. */
+@media (prefers-reduced-motion: no-preference) {
+  .enter {
+    animation: rise 0.5s var(--smooth) backwards;
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 0.75rem, 0);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Page changes: the View Transitions API cross-fades the page alone, with
+   a short lift; the sidebar stays put. Without the API, the router plays
+   the same entrance on the new page (.page-in). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-old(page) {
+  animation: vt-out 140ms var(--standard) both;
+}
+
+::view-transition-new(page) {
+  animation: vt-in 260ms var(--smooth) both;
+}
+
+@keyframes vt-out {
+  to {
+    opacity: 0;
+    transform: translate3d(0, -0.25rem, 0);
+  }
+}
+
+@keyframes vt-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 0.5rem, 0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .page-in {
+    animation: vt-in 260ms var(--smooth) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(page),
+  ::view-transition-new(page) {
+    animation: none;
+  }
+}
+
+/* ============================================
+   Buttons
+
+   The site's one button, in three weights. Primary is brass poured into
+   glass: the single thing a screen asks you to do. Secondary is clear
+   glass set into the page. Quiet is for the third option nobody should
+   mistake for either. data-tone colours a secondary button for what it
+   does — a ban, a refund — without making it louder than the primary.
+   ============================================ */
+
+.btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.75rem;
+  padding: 0 1.25rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    scale var(--base) var(--standard),
+    color var(--base),
+    background-color var(--base),
+    box-shadow var(--slow);
+}
+
+.btn:active:not(:disabled) {
+  scale: 0.97;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+}
+
+.btn .icon {
+  width: 1rem;
+  height: 1rem;
+  stroke-width: 2;
+}
+
+.btn-sm {
+  height: 2.25rem;
+  padding: 0 0.9375rem;
+  font-size: 0.875rem;
+}
+
+.btn-xs {
+  height: 2rem;
+  padding: 0 0.8125rem;
+  font-size: 0.8125rem;
+}
+
+.btn-icon {
+  width: 2.75rem;
+  padding: 0;
+}
+
+.btn-sm.btn-icon {
+  width: 2.25rem;
+}
+
+.btn-secondary {
+  color: var(--text);
+}
+
+.btn-quiet {
+  color: var(--text-2);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--glass-wash);
+}
+
+.btn[data-tone] {
+  color: var(--tone);
+}
+
+.btn-quiet[data-tone]:hover:not(:disabled) {
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+}
+
+.btn-secondary[data-tone]:hover:not(:disabled) {
+  box-shadow:
+    var(--glass-shadow-set),
+    inset 0 0 0 100vmax color-mix(in srgb, var(--tone) 12%, transparent);
+}
+
+[data-tone="danger"] {
+  --tone: var(--danger);
+}
+
+[data-tone="success"] {
+  --tone: var(--success);
+}
+
+[data-tone="warning"] {
+  --tone: var(--warning);
+}
+
+[data-tone="info"] {
+  --tone: var(--info);
+}
+
+[data-tone="accent"] {
+  --tone: var(--accent);
+}
+
+/* A spinner for a button that is waiting on the server. */
+.spin {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* ============================================
+   Inputs
+   ============================================ */
+
+.field {
+  display: grid;
+  gap: 0.4375rem;
+  min-width: 0;
+}
+
+.field-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.field-label .req {
+  margin-left: 0.25rem;
+  color: var(--accent);
+}
+
+.input,
+.select {
+  width: 100%;
+  min-width: 0;
+  height: 2.75rem;
+  padding: 0 0.9375rem;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-inner);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  font-size: 0.9375rem;
+  color: var(--text);
+  transition: border-color var(--base);
+}
+
+.input::placeholder {
+  color: var(--text-3);
+}
+
+.input:hover,
+.select:hover {
+  border-color: color-mix(in srgb, var(--text-3) 70%, var(--line-2));
+}
+
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input[aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--danger) 70%, var(--line-2));
+}
+
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2.5rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
+    linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+  background-position:
+    calc(100% - 1.25rem) 52%,
+    calc(100% - 0.9375rem) 52%;
+  background-size:
+    0.3125rem 0.3125rem,
+    0.3125rem 0.3125rem;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+.select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* The search field: a pill with its glass, an icon and a way to clear it. */
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.search .icon {
+  position: absolute;
+  left: 0.9375rem;
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.search .input {
+  padding-left: 2.625rem;
+  border-radius: var(--radius-pill);
+}
+
+.search .input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search-clear {
+  position: absolute;
+  right: 0.375rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  color: var(--text-3);
+}
+
+.search-clear:hover {
+  color: var(--text);
+  background: var(--glass-wash);
+}
+
+.search-clear .icon {
+  position: static;
+}
+
+/* ============================================
+   Toolbar — the search and filters of a table. It sticks under the top
+   of the screen once the table scrolls, and rows pass under its glass.
+   ============================================ */
+
+.toolbar {
+  position: sticky;
+  z-index: 20;
+  top: calc(var(--bar) + 0.875rem);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  padding: 0.375rem;
+  border-radius: 1.375rem;
+}
+
+.toolbar .input,
+.toolbar .select {
+  height: 2.5rem;
+  border-color: transparent;
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.toolbar .input:focus,
+.toolbar .select:focus {
+  box-shadow:
+    inset 0 0 0 1px var(--accent-dim),
+    0 0 0 3px var(--accent-soft);
+}
+
+.toolbar .select {
+  width: auto;
+  flex: 0 1 auto;
+  border-radius: var(--radius-pill);
+}
+
+.toolbar-count {
+  margin-left: auto;
+  padding: 0 0.75rem;
+  white-space: nowrap;
+}
+
+@media (min-width: 1024px) {
+  .toolbar {
+    top: 0.75rem;
+  }
+}
+
+@media (max-width: 639.98px) {
+  .toolbar .select {
+    flex: 1 1 8rem;
+  }
+
+  .toolbar-count {
+    display: none;
+  }
+}
+
+/* ============================================
+   Cards, tiles and lists
+   ============================================ */
+
+.card {
+  position: relative;
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: linear-gradient(180deg, var(--surface), var(--bg-subtle));
+}
+
+.card-flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card-flush > .card-head {
+  margin: 0;
+  padding: 1.125rem 1.25rem 0.875rem;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.card-title .icon {
+  width: 1.0625rem;
+  height: 1.0625rem;
+  color: var(--text-2);
+}
+
+/* A card that is one link, with its border lifting to the plugin's colour. */
+a.card,
+.card-link {
+  transition:
+    transform 0.5s var(--smooth),
+    border-color var(--slow),
+    box-shadow 0.5s var(--smooth);
+}
+
+a.card:hover,
+a.card:focus-visible {
+  transform: translate3d(0, -3px, 0);
+  border-color: color-mix(in srgb, var(--mark, var(--accent)) 50%, var(--line-2));
+  box-shadow: 0 26px 50px -30px color-mix(in srgb, var(--mark, var(--accent)) 60%, transparent);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 10.5rem), 1fr));
+  gap: 0.75rem;
+}
+
+@media (min-width: 1280px) {
+  .tiles[data-balanced] {
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 479.98px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.625rem;
+  }
+}
+
+.tile {
+  position: relative;
+  min-width: 0;
+  padding: 1rem 1.125rem 1.0625rem;
+  border: 1px solid var(--line);
+  border-radius: 1.125rem;
+  background: linear-gradient(180deg, var(--surface), var(--bg-subtle));
+}
+
+.tile-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.tile-label span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--tone, var(--line-2));
+}
+
+.tile-value {
+  margin-top: 0.5rem;
+  overflow: hidden;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A value past a threshold the module declared takes the colour itself. */
+.tile[data-alert] .tile-value {
+  color: var(--tone);
+}
+
+.tile-note {
+  margin-top: 0.25rem;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kv {
+  display: grid;
+}
+
+.kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  padding: 0.6875rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.kv-row:first-child {
+  padding-top: 0;
+}
+
+.kv-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.kv-key {
+  flex: none;
+  max-width: 55%;
+  color: var(--text-2);
+}
+
+.kv-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Badges: a state, tinted by its tone. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  height: 1.5rem;
+  padding: 0 0.5625rem;
+  border-radius: var(--radius-pill);
+  color: var(--tone, var(--text-2));
+  background: color-mix(in srgb, var(--tone, var(--text-3)) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone, var(--text-3)) 22%, transparent);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.badge .icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  stroke-width: 2.25;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+/* ============================================
+   States: loading, empty, failed
+   ============================================ */
+
+.skel {
+  display: block;
+  height: 0.875rem;
+  border-radius: 0.4375rem;
+  background: var(--skeleton);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skel {
+    animation: skel 1.4s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes skel {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.skel-rows {
+  display: grid;
+  gap: 1.125rem;
+  padding: 1.25rem;
+}
+
+.skel-row {
+  display: grid;
+  grid-template-columns: 1.75rem 1fr 1fr 0.6fr;
+  align-items: center;
+  gap: 1rem;
+}
+
+.skel-row .skel:first-child {
+  height: 1.75rem;
+  border-radius: 0.5rem;
+}
+
+.state {
+  display: grid;
+  justify-items: center;
+  gap: 0.75rem;
+  padding: 2.75rem 1.25rem;
+  text-align: center;
+  color: var(--text-2);
+}
+
+.state-icon {
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  color: var(--tone, var(--text-3));
+  background: color-mix(in srgb, var(--tone, var(--text-3)) 12%, transparent);
+}
+
+.state-icon .icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.state p {
+  max-width: 28rem;
+}
+
+/* ============================================
+   Players, as they appear everywhere: a face and a name.
+   ============================================ */
+
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.who-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.who:hover > .who-name {
+  color: var(--accent);
+}
+
+.face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  overflow: hidden;
+  border-radius: 0.375rem;
+  background: var(--tint, var(--tint-0));
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-2);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.face img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  opacity: 0;
+  transition: opacity var(--base);
+}
+
+.face img[data-ready] {
+  opacity: 1;
+}
+
+/* Connected right now: a dot on the corner of the face, as the game's tab list would. */
+.who[data-online] {
+  position: relative;
+}
+
+.who[data-online]::before {
+  content: "";
+  position: absolute;
+  left: 1.1875rem;
+  top: 1.0625rem;
+  z-index: 1;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* ============================================
+   Toasts
+   ============================================ */
+
+.toasts {
+  position: fixed;
+  z-index: 80;
+  left: 50%;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  width: min(26rem, calc(100vw - 1.5rem));
+  transform: translate3d(-50%, 0, 0);
+  pointer-events: none;
+}
+
+/* Bottom centre on every screen: a page keeps its one action at the top
+   right, and the editor its buttons at the bottom right — a toast covers neither. */
+@media (min-width: 1024px) {
+  .toasts {
+    left: calc(50% + (var(--sidebar) + 0.75rem) / 2);
+    bottom: 1.5rem;
+  }
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 100%;
+  min-height: 3rem;
+  padding: 0.6875rem 1.125rem 0.6875rem 0.875rem;
+  border-radius: 1.5rem;
+  font-size: 0.875rem;
+  pointer-events: auto;
+}
+
+.toast .icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--tone, var(--accent));
+  stroke-width: 2;
+}
+
+.toast p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    animation: toast-in var(--slow) var(--smooth) both;
+  }
+
+  .toast[data-leaving] {
+    animation: toast-out var(--base) var(--standard) both;
+  }
+}
+
+.toast[data-leaving] {
+  opacity: 0;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 0.75rem, 0) scale(0.98);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 0.375rem, 0);
+  }
+}
+
+/* ============================================
+   Dialogs — a native <dialog>, so focus is held inside and Escape closes
+   it without any help. A pane of deep glass over a dimmed page.
+   ============================================ */
+
+.dialog {
+  width: min(29rem, calc(100vw - 1.5rem));
+  max-height: calc(100svh - 2rem);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 1.625rem;
+  color: var(--text);
+  overflow: visible;
+}
+
+.dialog::backdrop {
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.dialog-body {
+  max-height: calc(100svh - 2rem);
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.dialog-title {
+  font-size: 1.1875rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.dialog-text {
+  margin-top: 0.5rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.dialog-fields {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap-reverse;
+  justify-content: flex-end;
+  gap: 0.625rem;
+  margin-top: 1.5rem;
+}
+
+@media (max-width: 479.98px) {
+  .dialog-actions .btn {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dialog[open] {
+    animation: dialog-in var(--slow) var(--smooth);
+  }
+
+  .dialog[open]::backdrop {
+    animation: fade var(--slow) var(--smooth);
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 0.75rem, 0) scale(0.97);
+  }
+}
+
+/* ============================================
+   Login
+   ============================================ */
+
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100svh;
+  padding: 1.5rem var(--gutter);
+}
+
+.login-card {
+  width: min(25rem, 100%);
+  padding: 2rem 1.75rem 1.75rem;
+  border-radius: 1.875rem;
+}
+
+.login-mark {
+  display: grid;
+  place-items: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  margin-bottom: 1.5rem;
+  border-radius: 1.125rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.login-mark svg {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.login-title {
+  font-size: 1.625rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
+
+.login-hint {
+  margin-top: 0.625rem;
+  color: var(--text-2);
+  font-size: 0.9375rem;
+}
+
+.login-hint code {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.375rem;
+  background: var(--glass-wash);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.login form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.login form .btn {
+  width: 100%;
+}
+
+.form-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--danger);
+  font-size: 0.875rem;
+}
+
+.form-error .icon {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.1875rem;
+}
+
+.login-foot {
+  margin-top: 1.5rem;
+  display: flex;
+  justify-content: center;
+}

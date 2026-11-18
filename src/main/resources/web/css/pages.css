@@ -1,0 +1,1292 @@
+/* ============================================================
+   XCore dashboard — pages
+
+   Tables, the player profile, a module's home, the configuration
+   editor, charts and heat maps, and the game's items.
+   ============================================================ */
+
+.lens-holder {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* The accents a module may name in its Java, as tones. */
+[data-tone="red"] {
+  --tone: var(--tone-red);
+}
+[data-tone="orange"] {
+  --tone: var(--tone-orange);
+}
+[data-tone="yellow"] {
+  --tone: var(--tone-yellow);
+}
+[data-tone="green"] {
+  --tone: var(--tone-green);
+}
+[data-tone="blue"] {
+  --tone: var(--tone-blue);
+}
+[data-tone="purple"] {
+  --tone: var(--tone-purple);
+}
+[data-tone="cyan"] {
+  --tone: var(--tone-cyan);
+}
+[data-tone="neutral"] {
+  --tone: var(--text-3);
+}
+
+.login-corner {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 2;
+}
+
+/* ============================================
+   Tables
+
+   Hairlines between rows, headings in the label face, figures aligned
+   right in tabular digits. A table wider than its card scrolls sideways
+   inside it; once the card is too narrow for columns at all, each row
+   becomes a card of its own (below).
+   ============================================ */
+
+.table-wrap {
+  container: table / inline-size;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.data {
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.data th {
+  padding: 0.75rem 1rem 0.625rem;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.data td {
+  padding: 0.6875rem 1rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.data tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.data tbody tr {
+  transition: background-color var(--fast);
+}
+
+.data tbody tr:hover {
+  background: color-mix(in srgb, var(--bg-subtle) 70%, transparent);
+}
+
+.data .is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.data th:first-child,
+.data td:first-child {
+  padding-left: 1.25rem;
+}
+
+.data th:last-child,
+.data td:last-child {
+  padding-right: 1.25rem;
+}
+
+.data time {
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+.data .is-actions {
+  width: 1%;
+  text-align: right;
+}
+
+/* The first column stays in view while a wide table scrolls under it. */
+.data th:first-child,
+.data td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.data tbody tr:hover td:first-child {
+  background: color-mix(in srgb, var(--bg-subtle) 70%, var(--surface));
+}
+
+.table-wrap[data-more~="start"] .data td:first-child,
+.table-wrap[data-more~="start"] .data th:first-child {
+  box-shadow: 1px 0 0 var(--line), 12px 0 16px -12px var(--scrim);
+}
+
+.table-wrap[data-more~="end"] {
+  -webkit-mask-image: linear-gradient(to left, transparent, #000 2.5rem);
+  mask-image: linear-gradient(to left, transparent, #000 2.5rem);
+}
+
+/* A list's card is a solid surface, so the column that stays in view matches what scrolls. */
+.card-flush {
+  background: var(--surface);
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.375rem;
+}
+
+/* A row's action: quiet until pointed at, coloured by what it does. */
+.btn-row {
+  color: var(--tone, var(--text));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone, var(--text-3)) 32%, transparent);
+}
+
+.btn-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tone, var(--text-3)) 12%, transparent);
+}
+
+.nil {
+  color: var(--text-3);
+}
+
+.uuid {
+  display: inline-block;
+  max-width: 9rem;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.long {
+  display: -webkit-box;
+  max-width: 26rem;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+/* A state as a mark: a tick in the success colour, a cross in the quiet one. */
+.flag {
+  display: inline-grid;
+  place-items: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 50%;
+  color: var(--text-3);
+  background: color-mix(in srgb, var(--text-3) 12%, transparent);
+}
+
+.flag .icon {
+  width: 0.8125rem;
+  height: 0.8125rem;
+  stroke-width: 2.5;
+}
+
+.flag[data-on] {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.kv-value .flag {
+  display: inline-flex;
+  gap: 0.375rem;
+  width: auto;
+  height: auto;
+  padding: 0.125rem 0.5rem 0.125rem 0.375rem;
+  border-radius: var(--radius-pill);
+}
+
+.who-system .face-system {
+  color: var(--text-3);
+  background: var(--glass-wash);
+}
+
+.face-system .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.face {
+  width: var(--size, 1.5rem);
+  height: var(--size, 1.5rem);
+}
+
+/* While the next page of a list is on its way, the one shown stays, dimmed. */
+.listing {
+  transition: opacity var(--base);
+}
+
+.listing[data-busy] {
+  opacity: 0.55;
+}
+
+/* --- Rows as cards, where a table has no room for its columns --------- */
+
+@container table (max-width: 40rem) {
+  .data,
+  .data tbody,
+  .data tr,
+  .data td {
+    display: block;
+  }
+
+  .data thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .data tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem 1rem;
+    padding: 1rem 1.125rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .data tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .data td,
+  .data th:first-child,
+  .data td:first-child,
+  .data td:last-child {
+    position: static;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: left;
+    background: none;
+    box-shadow: none;
+  }
+
+  .data td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.1875rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  /* The cell that names the row — the player, the item — is its title. */
+  .data td.is-lead {
+    grid-column: 1 / -1;
+    order: -1;
+    font-size: 0.9375rem;
+    font-weight: 500;
+  }
+
+  .data td.is-lead::before,
+  .data td.is-actions::before {
+    display: none;
+  }
+
+  .data td.is-num {
+    text-align: left;
+  }
+
+  .data td.is-actions {
+    grid-column: 1 / -1;
+    width: auto;
+  }
+
+  .row-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .row-actions .btn {
+    height: 2.5rem;
+    padding: 0 1rem;
+    font-size: 0.875rem;
+  }
+
+  .uuid {
+    max-width: 100%;
+  }
+
+  .long {
+    max-width: none;
+  }
+}
+
+/* --- Pager --------------------------------------------------- */
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  margin-top: 1rem;
+}
+
+.pager-numbers {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.pager-btn {
+  min-width: 2.25rem;
+  padding: 0 0.625rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pager-btn[aria-current="page"] {
+  color: var(--text);
+}
+
+.pager-gap {
+  width: 1.5rem;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.pager-compact {
+  display: none;
+  padding: 0 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+@media (max-width: 559.98px) {
+  .pager-numbers {
+    display: none;
+  }
+
+  .pager-compact {
+    display: block;
+  }
+}
+
+/* ============================================
+   Items: the game's textures, at twice their size, pixel for pixel,
+   and its tooltip, as players know it.
+   ============================================ */
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 0.5rem;
+  vertical-align: middle;
+}
+
+.item[data-tip] {
+  cursor: default;
+}
+
+.sprite {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  border-radius: 0.5rem;
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.sprite img {
+  width: 2rem;
+  height: 2rem;
+  image-rendering: pixelated;
+}
+
+.sprite[data-missing]::after {
+  content: "";
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 0.125rem;
+  background: var(--line-2);
+  transform: rotate(45deg);
+}
+
+.item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-name[data-rarity="custom"] {
+  font-style: italic;
+}
+
+.item-amount {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.mc-tip {
+  position: fixed;
+  z-index: 90;
+  left: 0;
+  top: 0;
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: 0.4375rem 0.625rem 0.5rem;
+  border: 2px solid transparent;
+  border-radius: 0.25rem;
+  background:
+    linear-gradient(var(--mc-tip-bg), var(--mc-tip-bg)) padding-box,
+    linear-gradient(var(--mc-tip-rim-a), var(--mc-tip-rim-b)) border-box;
+  box-shadow: 0 0 0 1px var(--mc-tip-bg), var(--shadow-pop);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--mc-white);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--fast);
+}
+
+.mc-tip[data-on] {
+  opacity: 1;
+}
+
+.mc-name[data-rarity="custom"] {
+  font-style: italic;
+  color: var(--mc-aqua);
+}
+
+.mc-name[data-rarity="enchanted"] {
+  color: var(--mc-aqua);
+}
+
+.mc-enchant {
+  color: var(--mc-gray);
+}
+
+.mc-lore {
+  font-style: italic;
+  color: var(--mc-lore);
+}
+
+.mc-meta {
+  color: var(--mc-gray);
+}
+
+/* ============================================
+   The player profile
+   ============================================ */
+
+.profile-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1.25rem 1.5rem;
+  align-items: center;
+  margin-bottom: 1.75rem;
+}
+
+.profile-head > .face {
+  width: 5rem;
+  height: 5rem;
+  border-radius: 1.25rem;
+  font-size: 1.75rem;
+  box-shadow:
+    inset 0 0 0 1px var(--glass-rim-lo),
+    0 18px 40px -22px var(--accent);
+}
+
+.profile-heading {
+  min-width: 0;
+}
+
+.profile-name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.875rem;
+}
+
+.id-list {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+}
+
+.id-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+
+.id-row .label {
+  min-width: 6.5rem;
+}
+
+.id-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.125rem 0.5rem;
+  margin-left: -0.5rem;
+  border-radius: 0.5rem;
+  color: var(--text-2);
+  text-align: left;
+  transition: color var(--base), background-color var(--base);
+}
+
+.id-value .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.id-value .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--text-3);
+}
+
+.id-value:hover {
+  color: var(--text);
+  background: var(--glass-wash);
+}
+
+.profile-facts {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.profile-fact {
+  min-width: 9.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: linear-gradient(180deg, var(--surface), var(--bg-subtle));
+}
+
+.profile-fact dd {
+  margin: 0.25rem 0 0;
+  font-weight: 500;
+}
+
+@media (min-width: 900px) {
+  .profile-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .profile-head > .face {
+    width: 6rem;
+    height: 6rem;
+    border-radius: 1.5rem;
+  }
+
+  .profile-facts {
+    grid-column: 3;
+    flex-wrap: nowrap;
+  }
+}
+
+.profile-waiting {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+}
+
+.profile-modules {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.profile-slot:empty {
+  display: none;
+}
+
+.profile-card {
+  display: grid;
+  gap: 1.125rem;
+}
+
+.profile-card > .card-head {
+  margin: 0;
+}
+
+.profile-card .table-wrap {
+  margin: 0 -1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.profile-card .tiles-compact .tile {
+  padding: 0.75rem 0.875rem;
+}
+
+.profile-card .tiles-compact .tile-value {
+  font-size: 1.25rem;
+}
+
+.profile-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.profile-list-title {
+  margin-top: 0.25rem;
+}
+
+/* ============================================
+   A module's home
+   ============================================ */
+
+.module-heading {
+  display: flex;
+  align-items: center;
+  gap: 1.125rem;
+}
+
+.mark-tile-lg {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 1.125rem;
+}
+
+.mark-tile-lg .icon {
+  width: 1.625rem;
+  height: 1.625rem;
+}
+
+.module-heading .eyebrow {
+  margin-bottom: 0.5rem;
+  color: var(--text-3);
+}
+
+.page-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  gap: 0.75rem;
+}
+
+.page-card {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1rem 1.125rem;
+}
+
+.page-card .mark-tile {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.75rem;
+}
+
+.page-card .mark-tile .icon {
+  width: 1.0625rem;
+  height: 1.0625rem;
+}
+
+.page-card-text {
+  display: grid;
+  min-width: 0;
+}
+
+.page-card-name {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-card-kind {
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.page-card .icon-go {
+  margin-left: auto;
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-3);
+  transition: transform var(--slow) var(--smooth), color var(--base);
+}
+
+.page-card:hover .icon-go {
+  color: var(--mark, var(--accent));
+  transform: translate3d(3px, 0, 0);
+}
+
+.tiles .skel {
+  margin-bottom: 0.625rem;
+}
+
+.skel-lg {
+  height: 1.5rem;
+  width: 60%;
+}
+
+.tiles-error {
+  grid-column: 1 / -1;
+}
+
+.state-actions {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 1.5rem;
+}
+
+.card-pad {
+  padding: 1.25rem;
+}
+
+/* ============================================
+   Configuration editor
+   ============================================ */
+
+.config-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.config-hint {
+  max-width: 52rem;
+  color: var(--text-2);
+}
+
+.code {
+  --line-h: 1.375rem;
+  position: relative;
+  display: flex;
+  height: min(54svh, 40rem);
+  min-height: 16rem;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 1rem;
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: var(--line-h);
+}
+
+.code:focus-within {
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.code-gutter {
+  flex: none;
+  width: 3.25rem;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  color: var(--text-3);
+  text-align: right;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.code-gutter-inner {
+  padding: 0.875rem 0.625rem 0.875rem 0;
+}
+
+.code-gutter span {
+  display: block;
+  height: var(--line-h);
+  font-variant-numeric: tabular-nums;
+}
+
+.code-gutter span[data-error] {
+  color: var(--danger);
+  font-weight: 500;
+  box-shadow: inset -2px 0 0 var(--danger);
+}
+
+.code-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.code-view,
+.code-input {
+  margin: 0;
+  padding: 0.875rem 1rem;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: 0;
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.code-view {
+  position: absolute;
+  inset: 0 auto auto 0;
+  min-width: 100%;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.code-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--accent);
+  overflow: auto;
+}
+
+.code-input::selection {
+  background: var(--accent-soft);
+  color: transparent;
+}
+
+.code-input:focus-visible {
+  outline: none;
+}
+
+.tok-key {
+  color: var(--accent-hi);
+}
+
+.tok-punct,
+.tok-dash {
+  color: var(--text-3);
+}
+
+.tok-string {
+  color: var(--success);
+}
+
+.tok-number {
+  color: var(--info);
+}
+
+.tok-bool {
+  color: var(--p-protection);
+}
+
+.tok-comment {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.config-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+.config-keys {
+  flex: 1 1 14rem;
+}
+
+.config-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+.config-status:empty {
+  display: none;
+}
+
+.config-status[data-error] {
+  flex-basis: 100%;
+  order: -1;
+  padding: 0.75rem 1rem;
+  border-radius: 0.875rem;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 26%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.config-status .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+  margin-left: auto;
+}
+
+@media (max-width: 559.98px) {
+  .config-actions,
+  .config-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .code {
+    height: 58svh;
+  }
+}
+
+/* ============================================
+   Charts — one series in the module's colour, hairline grid, the
+   axis in muted ink, the value at the pointer or the arrow keys.
+   ============================================ */
+
+.chart-card {
+  --chart: var(--mark, var(--accent));
+}
+
+.chart-card > .card-head {
+  margin-bottom: 0.5rem;
+}
+
+/* A chart's own tools sit in its card's heading, at the right. */
+.chart-card .chart-holder > .chart-tools {
+  position: absolute;
+  top: -2.875rem;
+  right: 0;
+  margin: 0;
+}
+
+.chart-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin: -0.25rem 0 0.25rem;
+}
+
+.chart-holder,
+.heat {
+  position: relative;
+}
+
+.chart {
+  position: relative;
+  border-radius: 0.75rem;
+  outline-offset: 4px;
+}
+
+.chart-plot {
+  height: 220px;
+}
+
+.chart-svg {
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart-base {
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+
+.chart-tick {
+  fill: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-bar {
+  fill: var(--chart);
+  transition: opacity var(--fast);
+}
+
+.chart:has(.chart-bar[data-on]) .chart-bar:not([data-on]) {
+  opacity: 0.45;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--chart);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-area {
+  fill: color-mix(in srgb, var(--chart) 10%, transparent);
+}
+
+.chart-cross {
+  stroke: var(--text-3);
+  stroke-width: 1;
+}
+
+.chart-dot {
+  fill: var(--chart);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+/* The readout: the value leads, the label follows. */
+.chart-tip {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  top: 0;
+  display: grid;
+  gap: 0.0625rem;
+  padding: 0.4375rem 0.6875rem;
+  border-radius: 0.75rem;
+  background: var(--glass-tint-deep);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo), var(--shadow-pop);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--fast);
+}
+
+.chart-tip strong {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.chart-tip span {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+[data-tip] > .chart-tip,
+.chart[data-tip] .chart-tip,
+.heat[data-tip] .chart-tip {
+  opacity: 1;
+}
+
+.chart-table {
+  margin: 0 -1.25rem -1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.skel-chart {
+  height: 220px;
+  border-radius: 0.75rem;
+}
+
+/* --- Heat map ----------------------------------------------- */
+
+.heat-stage {
+  position: relative;
+  overflow-x: auto;
+}
+
+/* As large as the card allows, but never cells bigger than a fingertip
+   or a map taller than most of the screen. */
+.heat-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols), minmax(0.375rem, 1fr));
+  gap: 2px;
+  max-width: min(100%, calc(var(--cols) * 1.375rem), calc(60svh * var(--cols) / var(--rows)));
+  border-radius: 0.5rem;
+  outline-offset: 4px;
+}
+
+.heat[data-busy] {
+  opacity: 0.55;
+  transition: opacity var(--base);
+}
+
+.heat-grid i {
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--accent) calc(var(--v, 0) * 100%), color-mix(in oklab, var(--accent) 10%, var(--surface)));
+}
+
+.heat-grid i[data-empty] {
+  background: var(--heat-empty);
+}
+
+.heat-grid i[data-on] {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 3px var(--text);
+}
+
+.heat-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 1rem;
+}
+
+.heat-ramp {
+  width: 8rem;
+  height: 0.5rem;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 10%, var(--surface)), var(--accent));
+}
+
+.heat-legend-name {
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+/* A choice of two to five, side by side: the world a heat map shows. */
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-right: auto;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.segment {
+  height: 2rem;
+  padding: 0 0.875rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.8125rem;
+  color: var(--text-2);
+  transition: color var(--base), background-color var(--base);
+}
+
+.segment:hover {
+  color: var(--text);
+}
+
+.segment[aria-pressed="true"] {
+  color: var(--text);
+  font-weight: 500;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo), 0 1px 2px var(--scrim);
+}
+
+/* ============================================
+   Legacy pages
+   ============================================ */
+
+.messages {
+  display: grid;
+}
+
+.message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.message:last-child {
+  border-bottom: 0;
+}
+
+.message-body {
+  display: grid;
+  justify-items: start;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.message-text {
+  overflow-wrap: anywhere;
+}
+
+/* A switch, from a checkbox: the knob slides, by transform. */
+.switch {
+  position: relative;
+  width: 2.75rem;
+  height: 1.625rem;
+  flex: none;
+  margin: 0;
+  border-radius: var(--radius-pill);
+  background: var(--line-2);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: background-color var(--base);
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 0.1875rem;
+  left: 0.1875rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 3px var(--scrim);
+  transition: transform var(--base) var(--smooth);
+}
+
+.switch:checked {
+  background: var(--success);
+}
+
+.switch:checked::after {
+  transform: translate3d(1.125rem, 0, 0);
+}
+
+.profile-list-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.profile-list-count {
+  padding: 0.0625rem 0.4375rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-wash);
+  color: var(--text-2);
+  letter-spacing: 0.04em;
+}
+
+.profile-more {
+  justify-self: center;
+  margin-top: -0.25rem;
+}
