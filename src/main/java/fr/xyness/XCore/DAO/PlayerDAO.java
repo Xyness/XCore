@@ -300,6 +300,36 @@ public class PlayerDAO extends AbstractDAO {
     }
 
 	/**
+	 * Moves a player's row onto a new server UUID, and says whether it did.
+	 *
+	 * <p>What the recognition of a returning player under a new UUID goes through. Unlike
+	 * {@link #updateAsync(PlayerData, String)}, which logs a failure and completes as if nothing
+	 * happened, this one answers: the plugins are told to follow only once the row has really moved,
+	 * and a move another login made first (here, or on another server of the network) is not
+	 * announced twice.</p>
+	 *
+	 * @param p       The player data, under the new UUID.
+	 * @param oldUuid The server UUID the row is stored under.
+	 * @return A future completing with {@code true} once the move is committed, {@code false} when no
+	 *         row was left under the old UUID; failing when the database refused it.
+	 */
+    public CompletableFuture<Boolean> moveAsync(PlayerData p, String oldUuid) {
+        return supplyAsync(() -> {
+            try (Connection c = getConnection();
+                 PreparedStatement ps = c.prepareStatement(UPDATE)) {
+                ps.setString(1, p.getUuid().toString());
+                ps.setString(2, p.getMojangUUID());
+                ps.setString(3, p.getName());
+                ps.setString(4, p.getTexture());
+                ps.setString(5, oldUuid);
+                boolean moved = ps.executeUpdate() > 0;
+                main.logger().sendDebug("[DAO] Move of " + oldUuid + " to " + p.getUuid() + ": " + (moved ? "done" : "nothing left to move") + ".");
+                return moved;
+            }
+        });
+    }
+
+	/**
 	 * Deletes a player from the database asynchronously.
 	 *
 	 * @param serverUuid The server UUID of the player to delete.

@@ -143,11 +143,20 @@ public class WebPanel {
      */
     private java.util.concurrent.ExecutorService httpExecutor;
 
-    /** Static files already read from disk, keyed by path, with the modification time they had. */
-    private final java.util.Map<String, byte[]> staticCache = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * A static file as served: its bytes, its compressed form once a browser has asked for it, and
+     * the validator browsers send back to learn whether it changed.
+     *
+     * @param data     The file's bytes.
+     * @param gzip     The gzipped bytes, or {@code null} until first needed.
+     * @param etag     A weak validator derived from the content, so it survives a restart that
+     *                 rewrites the file unchanged.
+     * @param modified The modification time the bytes were read at.
+     */
+    private record StaticFile(byte[] data, byte[] gzip, String etag, long modified) {}
 
-    /** Modification times matching {@link #staticCache}. */
-    private final java.util.Map<String, Long> staticStamps = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Static files already read from disk, keyed by path. */
+    private final java.util.Map<String, StaticFile> staticCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * Live sessions, as {@code SHA-256(token) -> session}.
@@ -500,6 +509,7 @@ public class WebPanel {
         // API endpoints
         server.createContext("/api/lang", this::handleLang);
         server.createContext("/api/sprite/", this::handleSprite);
+        server.createContext("/api/head/", this::handleHead);
         server.createContext("/api/mclang", this::handleMinecraftLang);
         server.createContext("/api/auth", this::handleAuth);
         server.createContext("/api/modules", this::handleModules);
@@ -619,10 +629,21 @@ public class WebPanel {
             logger.sendWarning("Cannot register web module '" + module.getName() + "': server not started.");
             return;
         }
-        // Same name already here: the previous instance of a plugin that was disabled and started
-        // again without its module being taken down. Its routes go first — creating them a second
-        // time throws, and the plugin's start failed on it.
-        if (unregisterModule(module.getName())) {
+        // Same name already here. Replaced when it is the same plugin's, registered again, or when
+        // whoever registered it no longer runs — the previous instance of a plugin disabled and
+        // started again without its module being taken down, whose routes would make creating them
+        // a second time throw. Another running extension's module is never taken down for it: the
+        // newcomer goes without, and the console says why.
+        WebModule existing = findModule(module.getName());
+        if (existing != null) {
+            ClassLoader owner = existing.getClass().getClassLoader();
+            if (owner != module.getClass().getClassLoader() && ownerRunning(owner)) {
+                logger.sendError("Web module '" + module.getName() + "' of " + ownerName(module.getClass().getClassLoader())
+                        + " was not registered: " + ownerName(owner) + " is running and already has a module of that"
+                        + " name. Its pages stay; the newcomer's are not on the dashboard.");
+                return;
+            }
+            removeModule(existing);
             logger.sendDebug("Web module '" + module.getName() + "' replaced by a new instance.");
         }
         String basePath = "/api/" + module.getName().toLowerCase();
@@ -645,15 +666,53 @@ public class WebPanel {
      * @return {@code true} when a module of that name was registered.
      */
     public boolean unregisterModule(String name) {
-        WebModule found = null;
-        synchronized (modules) {
-            for (WebModule module : modules) {
-                if (module.getName().equalsIgnoreCase(name)) { found = module; break; }
-            }
-        }
+        WebModule found = findModule(name);
         if (found == null) return false;
         removeModule(found);
         return true;
+    }
+
+    /** The module registered under a name, compared ignoring case, or {@code null}. */
+    private WebModule findModule(String name) {
+        synchronized (modules) {
+            for (WebModule module : modules) {
+                if (module.getName().equalsIgnoreCase(name)) return module;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether the plugin or addon whose class loader defined a module is still running.
+     *
+     * @param loader The module's class loader.
+     * @return {@code false} when its owner is disabled, or no longer loaded at all.
+     */
+    private boolean ownerRunning(ClassLoader loader) {
+        if (loader == WebPanel.class.getClassLoader()) return main.isEnabled();
+        if (loader instanceof fr.xyness.XCore.Addon.AddonClassLoader addonLoader) {
+            fr.xyness.XCore.Addon.AddonManager addons = main.getAddonManager();
+            fr.xyness.XCore.Addon.AddonState state = addons == null ? null
+                    : addons.getState(addonLoader.getDescriptor().getName());
+            return state == fr.xyness.XCore.Addon.AddonState.ENABLED
+                    || state == fr.xyness.XCore.Addon.AddonState.ENABLING;
+        }
+        for (org.bukkit.plugin.Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
+            if (plugin.getClass().getClassLoader() == loader) return plugin.isEnabled();
+        }
+        return false;
+    }
+
+    /** Who a module's class loader belongs to, for the console. */
+    private String ownerName(ClassLoader loader) {
+        if (loader == WebPanel.class.getClassLoader()) return "XCore";
+        if (loader instanceof fr.xyness.XCore.Addon.AddonClassLoader addonLoader) {
+            return "the addon " + addonLoader.getDescriptor().getName();
+        }
+        for (org.bukkit.plugin.Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
+            if (plugin.getClass().getClassLoader() == loader) return plugin.getName();
+        }
+        return "a plugin no longer loaded";
     }
 
     /**
@@ -904,6 +963,94 @@ public class WebPanel {
         exchange.sendResponseHeaders(200, data.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(data);
+        }
+    }
+
+    /** How many faces are kept in memory: the players a dashboard shows, not every one ever seen. */
+    private static final int HEAD_CACHE_SIZE = 512;
+
+    /** Player faces already fetched, the least recently shown dropped first. */
+    private final java.util.Map<String, byte[]> headCache = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, byte[]>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, byte[]> eldest) {
+                    return size() > HEAD_CACHE_SIZE;
+                }
+            });
+
+    /**
+     * Until when faces are not fetched at all, after the source could not be reached.
+     *
+     * <p>A server with no way out to the internet would otherwise spend a connection timeout on
+     * every face of every table, on the panel's few HTTP threads, and the pages would wait behind
+     * them. The dashboard draws a monogram in the meantime.</p>
+     */
+    private volatile long headsOfflineUntil;
+
+    /**
+     * Handles {@code GET /api/head/<name>.png} — a player's face, served from here.
+     *
+     * <p>The dashboard used to point its images straight at a public site: every reader's browser
+     * told a third party which players were being looked at, and a blocked or offline site left
+     * broken images. As with {@link #handleSprite}, the server fetches each face once and the
+     * browser only ever talks to the server it is already talking to.</p>
+     */
+    private void handleHead(HttpExchange exchange) throws IOException {
+        addCorsHeaders(exchange);
+        if (handlePreflight(exchange)) return;
+
+        String path = exchange.getRequestURI().getPath();
+        String name = path.substring(path.lastIndexOf('/') + 1);
+        if (name.endsWith(".png")) name = name.substring(0, name.length() - 4);
+
+        // The name is pasted into a URL: anything but a player name is refused outright.
+        if (!name.matches("[A-Za-z0-9_]{1,16}")) {
+            exchange.sendResponseHeaders(400, -1);
+            exchange.close();
+            return;
+        }
+
+        String key = name.toLowerCase(java.util.Locale.ROOT);
+        byte[] data = headCache.get(key);
+        if (data == null && System.currentTimeMillis() >= headsOfflineUntil) {
+            data = fetchBytes("https://mc-heads.net/avatar/" + name + "/64");
+            if (data != null) headCache.put(key, data);
+            else headsOfflineUntil = System.currentTimeMillis() + 300_000L;
+        }
+
+        if (data == null) {
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+            return;
+        }
+
+        exchange.getResponseHeaders().set("Content-Type", "image/png");
+        // An hour: a skin changes now and then, and the face should follow without a restart.
+        exchange.getResponseHeaders().set("Cache-Control", "public, max-age=3600");
+        exchange.sendResponseHeaders(200, data.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(data);
+        }
+    }
+
+    /** Reads a remote image, or {@code null} when it cannot be had. */
+    private byte[] fetchBytes(String url) {
+        java.net.HttpURLConnection conn = null;
+        try {
+            conn = (java.net.HttpURLConnection) java.net.URI.create(url).toURL().openConnection();
+            conn.setConnectTimeout(4000);
+            conn.setReadTimeout(4000);
+            conn.setRequestProperty("User-Agent", "XCore-Dashboard");
+            if (conn.getResponseCode() != 200) return null;
+            try (java.io.InputStream in = conn.getInputStream()) {
+                byte[] data = in.readAllBytes();
+                return data.length > 0 ? data : null;
+            }
+        } catch (Exception e) {
+            logger.sendDebug("Could not fetch " + url + ": " + e.getMessage());
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
         }
     }
 
@@ -1254,34 +1401,49 @@ public class WebPanel {
 
         String contentType = guessContentType(filePath.toString());
         exchange.getResponseHeaders().set("Content-Type", contentType);
-        // The page is served from the server it administers, so it is always a local, tiny
-        // transfer — and caching it for an hour is how an updated dashboard looks unchanged
-        // after a restart. Freshness wins over the saved kilobytes.
-        exchange.getResponseHeaders().set("Cache-Control", "no-store, must-revalidate");
 
-        // Held in memory, keyed by modification time: the browser is told not to cache, so every
-        // reader used to re-read app.js from disk on every page load. An edited file is picked up on
-        // its next request, exactly as before.
+        // Held in memory, keyed by modification time, so a page load reads nothing from disk; an
+        // edited file is picked up on its next request.
         String key = filePath.toString();
-        byte[] data;
         long modified = Files.getLastModifiedTime(filePath).toMillis();
-        Long stamp = staticStamps.get(key);
-        if (stamp != null && stamp == modified) {
-            data = staticCache.get(key);
-        } else {
-            data = Files.readAllBytes(filePath);
-            staticCache.put(key, data);
-            staticStamps.put(key, modified);
+        StaticFile file = staticCache.get(key);
+        if (file == null || file.modified() != modified) {
+            byte[] bytes = Files.readAllBytes(filePath);
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            crc.update(bytes);
+            file = new StaticFile(bytes, null,
+                    "W/\"" + Long.toHexString(crc.getValue()) + "-" + Integer.toHexString(bytes.length) + "\"", modified);
+            staticCache.put(key, file);
         }
-        if (data == null) data = Files.readAllBytes(filePath);
 
+        // The dashboard is often reached across the internet, and is a dozen files: downloading all
+        // of them on every visit is what made it slow to open, and caching them for a while is how
+        // an updated dashboard used to look unchanged after a restart. So the browser keeps them
+        // but asks every time whether they changed, and an unchanged file costs a bodiless 304.
+        // A font never changes under its name — a new one gets a new file — so it is not even asked.
+        boolean immutable = filePath.startsWith(webRoot.resolve("fonts"));
+        exchange.getResponseHeaders().set("Cache-Control", immutable ? "public, max-age=31536000, immutable" : "no-cache");
+        exchange.getResponseHeaders().set("ETag", file.etag());
+        String presented = exchange.getRequestHeaders().getFirst("If-None-Match");
+        if (presented != null && etagMatches(presented, file.etag())) {
+            exchange.sendResponseHeaders(304, -1);
+            exchange.close();
+            return;
+        }
+
+        byte[] data = file.data();
         boolean compress = data.length > 1024 && acceptsGzip(exchange) && isCompressible(contentType);
         if (compress) {
-            java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream(data.length / 4);
-            try (java.util.zip.GZIPOutputStream gzip = new java.util.zip.GZIPOutputStream(buffer)) {
-                gzip.write(data);
+            byte[] gzipped = file.gzip();
+            if (gzipped == null) {
+                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream(data.length / 4);
+                try (java.util.zip.GZIPOutputStream gzip = new java.util.zip.GZIPOutputStream(buffer)) {
+                    gzip.write(data);
+                }
+                gzipped = buffer.toByteArray();
+                staticCache.put(key, new StaticFile(file.data(), gzipped, file.etag(), file.modified()));
             }
-            data = buffer.toByteArray();
+            data = gzipped;
             exchange.getResponseHeaders().set("Content-Encoding", "gzip");
             exchange.getResponseHeaders().add("Vary", "Accept-Encoding");
         }
@@ -1290,6 +1452,21 @@ public class WebPanel {
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(data);
         }
+    }
+
+    /**
+     * Whether an {@code If-None-Match} header names this validator. The comparison is the weak
+     * one the header calls for: the same file is sent gzipped or not under one validator.
+     */
+    private static boolean etagMatches(String header, String etag) {
+        String bare = etag.startsWith("W/") ? etag.substring(2) : etag;
+        for (String candidate : header.split(",")) {
+            String value = candidate.trim();
+            if (value.equals("*")) return true;
+            if (value.startsWith("W/")) value = value.substring(2);
+            if (value.equals(bare)) return true;
+        }
+        return false;
     }
 
     /** @return Whether gzip is worth applying to this content type (images already are compressed). */
@@ -1668,6 +1845,8 @@ public class WebPanel {
         if (path.endsWith(".woff2")) return "font/woff2";
         if (path.endsWith(".woff")) return "font/woff";
         if (path.endsWith(".ttf")) return "font/ttf";
+        // The licences shipped beside the fonts and the icons, readable in a browser.
+        if (path.endsWith(".txt")) return "text/plain; charset=UTF-8";
         return "application/octet-stream";
     }
 }

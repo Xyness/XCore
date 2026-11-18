@@ -10,6 +10,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -40,14 +41,17 @@ import io.papermc.paper.plugin.configuration.PluginMeta;
  *       {@code enable()} returns a boolean like an addon's {@code onEnable()} did: {@code false}
  *       disables the plugin, with a line in the console. {@link #disable()} only runs after an
  *       {@code enable()} that returned {@code true} — the contract addons were written against.
- *       {@link #reload()} is what {@code /xcore reload} calls.</li>
+ *       {@link #reload()} is what {@code /xcore reload} calls. {@link #startFailed(String)} is
+ *       called on every path where the plugin does not start, and may keep it enabled in a minimal
+ *       state (an authentication plugin keeping the server closed).</li>
  *   <li><b>Its files</b> live in {@code plugins/<name>/}. On the first start, the folder the addon
- *       used, {@code plugins/XCore/addons/<name>/}, is moved there before anything reads it.</li>
+ *       used, {@code plugins/XCore/addons/<name>/}, is moved there before anything reads it; when
+ *       that fails, the plugin does not start rather than run on default settings.</li>
  *   <li><b>What it creates is its own.</b> {@link #scheduler()} schedules under this plugin, so its
  *       tasks stop when it is disabled; {@link #registerListener(Listener)} registers under this
  *       plugin, still timed by {@code /xcore profile}; its commands go through its own
  *       {@link #getLifecycleManager()}. What it handed XCore — web modules, sync channels,
- *       placeholders — is taken back when it is disabled.</li>
+ *       placeholders, UUID change handlers — is taken back when it is disabled.</li>
  *   <li><b>XCore still sees it.</b> It registers with {@link XCore#extensions()} when it enables,
  *       so {@code /xcore addons}, {@code /xcore reload}, {@code /xcore diag}, the dashboard and the
  *       {@code addons.yml} switches cover it as they cover addons.</li>
@@ -103,6 +107,9 @@ public abstract class XPlugin extends JavaPlugin {
     /** Switched off in {@code addons.yml}: a choice, not an error. */
     private boolean switchedOff;
 
+    /** Did not start, and stays enabled with what {@link #startFailed(String)} set up. */
+    private volatile boolean held;
+
     /** What XCore's registry holds for this plugin. */
     private final View view = new View();
 
@@ -138,6 +145,39 @@ public abstract class XPlugin extends JavaPlugin {
      */
     public void reload() {}
 
+    /**
+     * Called on every path where this plugin does not start: XCore is not running, the plugin could
+     * not be prepared (its files could not be brought over from the addon folder, {@link #load()}
+     * threw), or {@link #enable()} returned {@code false} or threw. Not when it is switched off in
+     * {@code addons.yml}: that is the administrator's choice, not a failure.
+     *
+     * <p>By then, whatever {@code enable()} had registered is taken down: its listeners, tasks,
+     * plugin channels and services, and what XCore held for it. Commands registered through the
+     * lifecycle manager stay — the server offers no way to take them back short of disabling the
+     * plugin — which is one more reason to register them last in {@code enable()}.</p>
+     *
+     * <p>By default nothing more happens, and the plugin is disabled. A plugin whose absence is a
+     * danger in itself returns {@code true} to stay enabled with what it sets up here and nothing
+     * else: an authentication plugin refusing every connection, so that an offline-mode server whose
+     * authentication did not start is closed rather than open to whoever types a name. It is then
+     * listed as errored by {@code /xcore addons}, cannot be reloaded, and {@link #disable()} is not
+     * called for it; what it registered here goes when the server disables it.</p>
+     *
+     * <p><b>XCore may be gone when this runs.</b> When XCore's own start failed, the server has
+     * disabled it and closed its jar: a class of XCore this plugin had no reason to load yet cannot
+     * be loaded any more, and none of its services is there. Use the server's API and this plugin's
+     * own classes only — a listener class of its own registered under this plugin, files read with
+     * {@code YamlConfiguration} — plus {@link #logger()}. Not {@link #api()}, {@link #lang()},
+     * {@link #getConfig()} or {@link #scheduler()}. {@code core() != null && core().isRunning()}
+     * says whether XCore is up.</p>
+     *
+     * @param reason Why the plugin did not start, as the console was told.
+     * @return {@code true} to stay enabled with what was set up here; {@code false} to be disabled.
+     */
+    protected boolean startFailed(String reason) {
+        return false;
+    }
+
     // -------------------------------------------------------------------------
     // The server's lifecycle (final: the hooks above are what subclasses override)
     // -------------------------------------------------------------------------
@@ -151,12 +191,30 @@ public abstract class XPlugin extends JavaPlugin {
             this.guiRegistry = new GuiRegistry();
             this.descriptor = describe();
             this.scheduler = new SchedulerAdapter(this, logger);
+            this.core = findCore();
+
+            // Switched off in addons.yml: left alone, its files included, until it is switched on.
+            // A move that failed here would otherwise stop a plugin the administrator did not want
+            // running — and XLogin would close the server they had chosen to open.
+            if (core != null && isSwitchedOff(name)) {
+                // Said at enable, where the line sits next to the server's own "Enabling".
+                switchedOff = true;
+                state = AddonState.DISABLED;
+                return;
+            }
 
             // First, before anything can read a file: the addon this plugin used to be kept its
             // settings and data in plugins/XCore/addons/<name>/.
-            DataFolderMigration.run(name, getDataFolder(), logger);
+            DataFolderMigration.Result moved = DataFolderMigration.run(name, getDataFolder(), logger);
+            if (moved.failed()) {
+                // Started anyway, it would write its defaults into plugins/<name>/, run on them, and
+                // every later start would find both folders full and move nothing, for good.
+                refusal = "its settings and data could not be brought over from " + moved.oldFolder()
+                        + " (see above), and it does not run on default settings in their place.";
+                state = AddonState.ERRORED;
+                return;
+            }
 
-            this.core = findCore();
             // Resources from this plugin's own jar: XCore's has a config.yml and a lang/en.yml too.
             this.support = new ExtensionSupport(descriptor, core, getDataFolder(), logger, lang, guiRegistry,
                     getClass().getClassLoader(), () -> scheduler, "paper-plugin.yml", "plugin");
@@ -174,12 +232,6 @@ public abstract class XPlugin extends JavaPlugin {
             refusal = "XCore is not loaded, and " + name + " runs on it.";
             state = AddonState.ERRORED;
             logger.sendError(refusal);
-            return;
-        }
-        if (isSwitchedOff(name)) {
-            // Said at enable, where the line sits next to the server's own "Enabling".
-            switchedOff = true;
-            state = AddonState.DISABLED;
             return;
         }
         try {
@@ -202,15 +254,17 @@ public abstract class XPlugin extends JavaPlugin {
             return;
         }
         if (refusal != null || core == null) {
-            logger.sendError(name + " cannot start: " + (refusal != null ? refusal : "XCore is not loaded."));
-            stopHere();
+            String why = refusal != null ? refusal : "XCore is not loaded.";
+            logger.sendError(name + " cannot start: " + why);
+            failClosed(why);
             return;
         }
-        // The server enables a plugin even when the one it depends on failed to start.
+        // The server enables a plugin even when the one it depends on failed to start: XCore is
+        // disabled by now, its jar closed, and this plugin's enable() is never reached.
         if (!core.isRunning()) {
-            state = AddonState.ERRORED;
-            logger.sendError("XCore did not start (see the lines above): " + name + " runs on it and stays disabled.");
-            stopHere();
+            String why = "XCore did not start (see the lines above), and " + name + " runs on it.";
+            logger.sendError(why);
+            failClosed(why);
             return;
         }
 
@@ -227,14 +281,16 @@ public abstract class XPlugin extends JavaPlugin {
         core.extensions().register(view);
 
         boolean enabled;
+        String why = "enable() returned false";
         try {
             enabled = enable();
         } catch (Throwable t) {
             // Caught here rather than left to the server, so a throw ends like a false return:
-            // errored in /xcore addons, disabled, one line saying why. Throwable, because a plugin
-            // built against another XCore fails with a LinkageError, which is not an Exception.
+            // errored in /xcore addons, one line saying why. Throwable, because a plugin built
+            // against another XCore fails with a LinkageError, which is not an Exception.
             logger.sendError("Error enabling " + name + ": " + t);
             enabled = false;
+            why = "enable() failed: " + t;
         }
 
         if (!isEnabled()) {
@@ -245,12 +301,16 @@ public abstract class XPlugin extends JavaPlugin {
             started = true;
             state = AddonState.ENABLED;
             logger.sendInfo("Enabled plugin: " + descriptor);
+            // XCore holds the server's door shut until XLogin is up: this may be what it waits for.
+            try {
+                core.extensionEnabled(name);
+            } catch (Throwable t) {
+                logger.sendDebug("Could not tell XCore that " + name + " is up: " + t);
+            }
             return;
         }
-        state = AddonState.ERRORED;
-        logger.sendError(name + " did not start (enable() returned false): it disables itself."
-                + " The lines above say why.");
-        stopHere();
+        logger.sendError(name + " did not start (" + why + "). The lines above say why.");
+        failClosed(why);
     }
 
     @Override
@@ -258,6 +318,7 @@ public abstract class XPlugin extends JavaPlugin {
         String name = getName();
         boolean wasStarted = started;
         started = false;
+        held = false;
 
         if (wasStarted) {
             state = AddonState.DISABLING;
@@ -289,12 +350,83 @@ public abstract class XPlugin extends JavaPlugin {
     }
 
     /**
+     * Ends a start that did not happen: takes down what {@code enable()} may have left, then lets
+     * {@link #startFailed(String)} keep the plugin enabled in a minimal state, or disables it.
+     *
+     * <p>Runs while XCore may be gone, its jar closed (see {@code startFailed}): nothing here needs a
+     * class of XCore that this plugin had no reason to load already, and every call into XCore is
+     * guarded.</p>
+     *
+     * @param why Why it did not start, as the console was told.
+     */
+    private void failClosed(String why) {
+        String name = getName();
+        state = AddonState.ERRORED;
+        tearDown();
+
+        boolean stay;
+        try {
+            stay = startFailed(why);
+        } catch (Throwable t) {
+            logger.sendError("Error in startFailed() of " + name + ": " + t);
+            stay = false;
+        }
+        if (stay && isEnabled()) {
+            held = true;
+            logger.sendWarning(name + " did not start, and stays enabled with only what it keeps up for that case (see above).");
+            // Listed as errored wherever XCore lists extensions, and refused a reload there.
+            try {
+                if (core != null && core.isRunning()) core.extensions().register(view);
+            } catch (Throwable t) {
+                logger.sendDebug("Could not list " + name + " with XCore's extensions: " + t);
+            }
+            return;
+        }
+        stopHere();
+    }
+
+    /**
+     * Takes down what a start that did not complete may have left behind: the plugin's listeners,
+     * tasks, plugin channels and services on the server's side, what it handed XCore on the other.
+     *
+     * <p>The server takes the first half down itself when it disables a plugin. A plugin that stays
+     * enabled after a failed start would otherwise keep half a start running — listeners calling
+     * managers that were never created.</p>
+     */
+    private void tearDown() {
+        try {
+            HandlerList.unregisterAll(this);
+        } catch (Throwable ignored) {}
+        try {
+            if (scheduler != null) scheduler.cancelAllTasks();
+        } catch (Throwable ignored) {}
+        try {
+            getServer().getMessenger().unregisterIncomingPluginChannel(this);
+            getServer().getMessenger().unregisterOutgoingPluginChannel(this);
+        } catch (Throwable ignored) {}
+        try {
+            getServer().getServicesManager().unregisterAll(this);
+        } catch (Throwable ignored) {}
+        release();
+    }
+
+    /**
+     * Whether this plugin did not start and stays enabled, with only what
+     * {@link #startFailed(String)} set up.
+     *
+     * @return {@code true} while it is held that way.
+     */
+    public final boolean isHeld() {
+        return held;
+    }
+
+    /**
      * Takes back from XCore what this plugin handed it.
      *
      * <p>The server already drops this plugin's tasks and Bukkit listeners, since they are owned by
      * it. XCore holds the rest: the names its listeners are counted under, its dashboard module and
-     * routes, its sync channels, its placeholders. Each is released on its own, so one failing does
-     * not keep the others.</p>
+     * routes, its sync channels, its UUID change handlers, its placeholders. Each is released on its
+     * own, so one failing does not keep the others.</p>
      */
     private void release() {
         if (core == null) return;
@@ -313,6 +445,11 @@ public abstract class XPlugin extends JavaPlugin {
             if (core.getSyncManager() != null) core.getSyncManager().unregisterChannelsOf(loader);
         } catch (Throwable t) {
             logger.sendDebug("Could not release the sync channels: " + t);
+        }
+        try {
+            if (core.uuidChanges() != null) core.uuidChanges().unregisterAll(this);
+        } catch (Throwable t) {
+            logger.sendDebug("Could not release the UUID change handlers: " + t);
         }
         try {
             if (support != null) support.withdrawPlaceholders();
@@ -506,6 +643,30 @@ public abstract class XPlugin extends JavaPlugin {
     }
 
     /**
+     * Has this plugin's data follow a returning player whose UUID changed.
+     *
+     * <p>When XCore recognises a player under a new UUID ({@code migrate-uuid-changes}: a server
+     * switched between offline and online UUIDs, or put behind a proxy that changes them), it moves
+     * its own row during the player's pre-login, then calls every handler with the old and the new
+     * UUID, and the login waits for them — five seconds each at most — before going on. The checks
+     * this plugin runs at pre-login (at {@code NORMAL} or later) and at join therefore already see
+     * the data under the new UUID. A handler that fails or runs out of time is reported under this
+     * plugin's name; the login is not refused for it.</p>
+     *
+     * <pre>{@code
+     * onUuidChange((oldUuid, newUuid, name) -> CompletableFuture.runAsync(
+     *         () -> store.moveAll(oldUuid, newUuid), api().getDbExecutor()));
+     * }</pre>
+     *
+     * <p>Register it in {@link #enable()}. It is taken back when the plugin is disabled.</p>
+     *
+     * @param handler What moves this plugin's data; see {@link fr.xyness.XCore.Identity.UuidChangeHandler}.
+     */
+    public final void onUuidChange(fr.xyness.XCore.Identity.UuidChangeHandler handler) {
+        core.uuidChanges().register(this, handler);
+    }
+
+    /**
      * Returns this plugin's cooldowns.
      *
      * @return A {@link fr.xyness.XCore.Utils.Cooldowns} instance of its own.
@@ -642,6 +803,41 @@ public abstract class XPlugin extends JavaPlugin {
      */
     public final void updateConfigWithDefaults(String... protectedSections) {
         support().updateConfigWithDefaults(protectedSections);
+    }
+
+    /**
+     * Declares keys this plugin renamed since an earlier version, so the value an administrator
+     * gave the old name moves to the new one instead of being replaced by the default.
+     *
+     * <p>A renamed key otherwise looks like one key to add and one to delete: the merge writes the
+     * new name with the shipped default, the prune removes the old one, and the customised value is
+     * gone. Declare the renames first in {@link #enable()} — before
+     * {@link #updateConfigWithDefaults(String...)}, {@link #loadLanguage(String...)} and
+     * {@link #pruneObsoleteKeys(String, String...)} — and keep them across versions: they cost
+     * nothing once applied.</p>
+     *
+     * <pre>{@code
+     * @Override
+     * protected boolean enable() {
+     *     renamedKeys("config.yml", Map.of("anti-afk.enabled", "afk.enabled"));
+     *     renamedKeys("lang/*.yml", Map.of("redstone-clock-detected", "redstone-clock-reported"));
+     *     updateConfigWithDefaults();
+     *     loadLanguage("en", "fr");
+     *     return true;
+     * }
+     * }</pre>
+     *
+     * <p>A value moves only when the new key is absent; nested paths and whole sections move; a
+     * chain ({@code a → b}, then {@code b → c}) is followed; applying it twice changes nothing. Each
+     * move is logged once, when it happens.</p>
+     *
+     * @param file    The file, relative to the data folder: {@code "config.yml"}, {@code "lang/fr.yml"},
+     *                or {@code "lang/*.yml"} for every language file ({@code *} in the last segment only).
+     * @param renames Old path → new path.
+     * @return How many values moved now.
+     */
+    public final int renamedKeys(String file, java.util.Map<String, String> renames) {
+        return support().renamedKeys(file, renames);
     }
 
     /**

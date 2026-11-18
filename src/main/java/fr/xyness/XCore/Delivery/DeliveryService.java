@@ -171,6 +171,32 @@ public class DeliveryService {
     }
 
     /**
+     * Hands what a player is still owed over to their new UUID.
+     *
+     * <p>Part of XCore moving a returning player onto the UUID they came back with: the deliveries
+     * waiting under the old one were owed to nobody any more — an item bought while they were away,
+     * the proceeds of a sale — and sat there for good. Only what is unclaimed moves; what was handed
+     * over is a record of what was done, at the time, under the UUID it was done to.</p>
+     *
+     * @param from The UUID the deliveries are waiting under.
+     * @param to   The UUID the player is connecting with.
+     * @return A future completing with how many deliveries moved; failing when the database refused.
+     */
+    public CompletableFuture<Integer> moveUnclaimed(UUID from, UUID to) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (Connection conn = main.getDataSource().getConnection();
+                 PreparedStatement ps = conn.prepareStatement("UPDATE " + TABLE
+                         + " SET player_uuid = ? WHERE player_uuid = ? AND claimed = 0")) {
+                ps.setString(1, to.toString());
+                ps.setString(2, from.toString());
+                return ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new java.util.concurrent.CompletionException(e);
+            }
+        }, main.getDbExecutor());
+    }
+
+    /**
      * Counts what a player is waiting for.
      *
      * @param owner The player.

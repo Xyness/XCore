@@ -181,6 +181,11 @@ public class XCoreApiService implements XCoreApi {
 	}
 
 	@Override
+	public @NotNull fr.xyness.XCore.Identity.UuidChanges uuidChanges() {
+		return main.uuidChanges();
+	}
+
+	@Override
 	public @NotNull HikariDataSource getDataSource() {
 		return main.getDataSource();
 	}

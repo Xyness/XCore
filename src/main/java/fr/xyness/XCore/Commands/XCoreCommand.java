@@ -358,7 +358,7 @@ public class XCoreCommand {
         out.append("  Database     : ").append(core.getDatabaseType().name()).append('\n');
         out.append("  Connections  : ").append(fr.xyness.XCore.Database.GuardedDataSource.getBorrowCount())
            .append(" borrowed, ").append(fr.xyness.XCore.Database.GuardedDataSource.getTickThreadBorrowCount())
-           .append(" of them from a tick thread\n");
+           .append(" of them from a tick thread while the server ran (the console names each call site)\n");
         out.append("  Pool         : ").append(core.getDataSource().getMaximumPoolSize()).append(" max\n");
         out.append("  Redis        : ").append(core.getJedisPool() != null ? "connected" : "off").append('\n');
         out.append("  Sync         : ").append(core.getSyncManager() != null && core.getSyncManager().isRunning()
@@ -426,9 +426,15 @@ public class XCoreCommand {
         out.append("[Core settings]\n");
         for (String key : new String[]{"language", "debug", "profiling", "database-type", "cross-server.enabled",
                 "cross-server.redis.enabled", "web-dashboard.enabled", "economy.enabled",
-                "cache.max-size", "cache.ttl-minutes"}) {
+                "cache.max-size", "cache.ttl-minutes", "migrate-uuid-changes"}) {
             out.append("  ").append(String.format("%-28s", key)).append(" = ")
                .append(core.getConfig().get(key)).append('\n');
+        }
+        // Who follows a player whose UUID changed: a plugin missing here keeps its data under the old one.
+        if (core.uuidChanges() != null) {
+            List<String> owners = core.uuidChanges().owners();
+            out.append("  ").append(String.format("%-28s", "uuid change handlers")).append(" = ")
+               .append(owners.isEmpty() ? "(none)" : String.join(", ", owners)).append('\n');
         }
         out.append('\n');
 
@@ -706,6 +712,10 @@ public class XCoreCommand {
         core.reloadConfig();
         core.langManager().reload();
         core.logger().setDebug(core.getConfig().getBoolean("debug", false));
+        // Debug was read once at startup by the pool's tick-thread alarm: switching it on here and
+        // reloading used to leave the alarm as quiet as before.
+        fr.xyness.XCore.Database.GuardedDataSource.setWarnOnTickThread(
+                core.getConfig().getBoolean("debug", false) || core.getConfig().getBoolean("profiling", false));
 
         // The dashboard serves its own strings to the browser; a language change has to reach it
         // too, otherwise the setting looks like it needs a restart.

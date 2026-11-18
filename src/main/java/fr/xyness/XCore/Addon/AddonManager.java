@@ -39,9 +39,10 @@ import fr.xyness.XCore.Utils.Logger;
  * The loading process:
  * <ol>
  *   <li>Scan the addons folder for {@code .jar} files</li>
- *   <li>Skip, with a console error saying what to do, the jars that are server plugins and the
- *       jars of addons that are plugins since 2.0 (XAntiLag, XAuctionHouse, XBans, XLogin) or whose
- *       name an installed {@link fr.xyness.XCore.Extension.XPlugin} carries</li>
+ *   <li>Skip, with a console error saying what to do, the jars that are server plugins, the 1.x
+ *       jars of the addons that are plugins since 2.0 (XAntiLag, XAuctionHouse, XBans, XLogin) when
+ *       their 2.0 plugin is there or has run here (see {@link #PLUGINS_SINCE_2_0}), and the jars of
+ *       addons whose name an installed {@link fr.xyness.XCore.Extension.XPlugin} carries</li>
  *   <li>Parse {@code addon.yml} from each JAR via {@link AddonClassLoader}</li>
  *   <li>Sort addons by dependencies (topological sort)</li>
  *   <li>Create class loaders and instantiate main classes</li>
@@ -49,18 +50,32 @@ import fr.xyness.XCore.Utils.Logger;
  *   <li>Call {@link XAddon#onLoad()}, set state to {@link AddonState#LOADED}</li>
  * </ol>
  * </p>
+ * <p>
+ * A {@code depend} entry is met by an addon of that name, or by a plugin of that name installed in
+ * {@code plugins/}. The four addons that became plugins in 2.0 are the second kind now, and they
+ * enable after XCore — so after every addon: an addon depending on one of them finds its classes and
+ * its instance during its own {@code onEnable()}, but that plugin is not running yet. Use it from
+ * {@code ServerLoadEvent} on, or check {@code isEnabled()} first.
+ * </p>
  */
 public class AddonManager {
 
     /**
      * The addons that are plugins of their own since XCore 2.0, in {@code plugins/}.
      *
-     * <p>Their 1.x jars are never loaded, whether or not the 2.0 plugin is installed. With it, both
-     * would run: two sets of listeners and timers working on the same tables. Without it, the 1.x
-     * jar would keep its files in {@code plugins/XCore/addons/<name>/}, which the 2.0 plugin moves
-     * to {@code plugins/<name>/} on its first start — two versions and two folders, and no way to
-     * tell from the console which one holds the current settings. One rule, stated plainly at
-     * startup, is easier to act on.</p>
+     * <p>Their 1.x jars still run on XCore 2.0, and are loaded — with a warning to replace them —
+     * unless the 2.0 plugin makes them wrong to run:</p>
+     * <ul>
+     *   <li>it is installed: both would run, two sets of listeners and timers on the same tables;</li>
+     *   <li>its jar sits in the addons folder too: the administrator is moving to it, and the console
+     *       says where it goes;</li>
+     *   <li>{@code plugins/<name>/} holds files: the 2.0 plugin has run here and moved the settings
+     *       and data there, so the 1.x jar — put back after it, typically — would start on an old or
+     *       empty folder.</li>
+     * </ul>
+     * <p>Refusing them in every case, as this first did, was worse than running them: the order
+     * XCore's notes give is XCore first, then the plugins, and between the two a server that had
+     * XBans enforced no ban at all, since XBans enforces them in its own listener.</p>
      */
     private static final Set<String> PLUGINS_SINCE_2_0 = Set.of("XAntiLag", "XAuctionHouse", "XBans", "XLogin");
 
@@ -73,12 +88,8 @@ public class AddonManager {
     /** Jars of the addons folder that were deliberately not loaded, by file name, with the reason. */
     private final Map<String, String> refused = new LinkedHashMap<>();
 
-    /**
-     * Whether XLogin, which authenticates an offline-mode server, was refused here with nothing
-     * installed to replace it. XCore then closes the server itself, see
-     * {@link #needsLoginLockdown()}.
-     */
-    private boolean loginUnprotected;
+    /** The name of every jar found in the addons folder, addon or misplaced plugin, lower-cased. */
+    private final Set<String> found = new HashSet<>();
 
     /**
      * Creates a new AddonManager.
@@ -105,20 +116,36 @@ public class AddonManager {
             return;
         }
 
+        // Phase 0: the server plugins among them — the 2.0 jar of one of ours, typically, put where
+        // the 1.x jar used to go. Read before anything is loaded: one being here decides what
+        // becomes of the 1.x jar beside it, whichever of the two the folder lists first.
+        Map<File, String> misplaced = new LinkedHashMap<>();
+        for (File jar : jars) {
+            String pluginName = serverPluginName(jar);
+            if (pluginName != null) misplaced.put(jar, pluginName);
+        }
+        Set<String> misplacedNames = new HashSet<>();
+        for (String pluginName : misplaced.values()) misplacedNames.add(pluginName.toLowerCase(java.util.Locale.ROOT));
+        found.addAll(misplacedNames);
+
         // Phase 1: Parse all descriptors
         Map<String, AddonClassLoader> pendingLoaders = new HashMap<>();
         Map<String, AddonDescriptor> descriptors = new HashMap<>();
 
         for (File jar : jars) {
-            // A server plugin dropped here — the 2.0 jar of one of ours, typically, put where the
-            // 1.x jar used to go. Without this it was reported as an addon JAR missing its
-            // addon.yml, which sends the administrator looking for a file that should not exist.
-            if (refuseMisplacedPlugin(jar)) continue;
+            // Without this it was reported as an addon JAR missing its addon.yml, which sends the
+            // administrator looking for a file that should not exist.
+            String pluginName = misplaced.get(jar);
+            if (pluginName != null) {
+                refuseMisplacedPlugin(jar, pluginName);
+                continue;
+            }
             try {
                 AddonClassLoader loader = new AddonClassLoader(jar, core.getClass().getClassLoader());
                 AddonDescriptor desc = loader.getDescriptor();
+                found.add(desc.getName().toLowerCase(java.util.Locale.ROOT));
 
-                if (refuseReplacedAddon(desc, jar)) {
+                if (refuseReplacedAddon(desc, jar, misplacedNames)) {
                     loader.close();
                     continue;
                 }
@@ -157,10 +184,12 @@ public class AddonManager {
             AddonClassLoader loader = pendingLoaders.get(name);
             AddonDescriptor desc = descriptors.get(name);
 
-            // Check hard dependencies
+            // Check hard dependencies: an addon, or a plugin installed in plugins/ — which is what
+            // XAntiLag, XAuctionHouse, XBans and XLogin are since 2.0. "depend: [XAntiLag]" failed
+            // with XAntiLag installed and running, once it was no longer an addon.
             boolean missingDep = false;
             for (String dep : desc.getDepend()) {
-                if (!descriptors.containsKey(dep)) {
+                if (!descriptors.containsKey(dep) && Bukkit.getPluginManager().getPlugin(dep) == null) {
                     logger.sendError("Addon '" + name + "' requires missing dependency: " + dep);
                     missingDep = true;
                 }
@@ -240,6 +269,9 @@ public class AddonManager {
                 if (success) {
                     states.put(name, AddonState.ENABLED);
                     logger.sendInfo("Enabled addon: " + addon.getDescriptor());
+                    // XCore refuses players until XLogin is up, and the 1.x addon counts as much as
+                    // the plugin.
+                    core.extensionEnabled(name);
                 } else {
                     states.put(name, AddonState.ERRORED);
                     logger.sendError("Addon '" + name + "' returned false from onEnable().");
@@ -275,6 +307,8 @@ public class AddonManager {
             }
             // Unregister all Bukkit listeners belonging to this addon
             core.getListenerRegistry().unregisterAll(name);
+            // And what follows its players across a UUID change: its class loader closes below.
+            if (core.uuidChanges() != null) core.uuidChanges().unregisterAll(name);
             states.put(name, AddonState.DISABLED);
             logger.sendInfo("Disabled addon: " + name);
         }
@@ -367,14 +401,14 @@ public class AddonManager {
     }
 
     /**
-     * Whether the server is left without authentication: the XLogin addon was refused (it is a
-     * plugin since 2.0), no XLogin plugin is installed in its place, and it was not switched off in
-     * {@code addons.yml}.
+     * Whether a jar of this name — an addon, loaded or not, or a plugin put here by mistake — was
+     * found in the addons folder.
      *
-     * @return {@code true} when XCore must refuse connections itself.
+     * @param name The name, compared ignoring case.
+     * @return {@code true} when one was.
      */
-    public boolean needsLoginLockdown() {
-        return loginUnprotected;
+    public boolean foundJarOf(String name) {
+        return name != null && found.contains(name.toLowerCase(java.util.Locale.ROOT));
     }
 
     /** One addon, seen as an XCore extension. */
@@ -420,25 +454,33 @@ public class AddonManager {
     // -------------------------------------------------------------------------
 
     /**
-     * Skips a jar that is a server plugin rather than an addon, and says where it belongs.
+     * Reads the name of a jar that is a server plugin rather than an addon.
      *
-     * @param jar The jar found in the addons folder.
-     * @return {@code true} when it was skipped.
+     * @param jar A jar found in the addons folder.
+     * @return The name in its {@code paper-plugin.yml} or {@code plugin.yml}; {@code null} for an
+     *         addon, or a jar that cannot be read (the regular path reports it).
      */
-    private boolean refuseMisplacedPlugin(File jar) {
-        String pluginName;
+    private static String serverPluginName(File jar) {
         try (JarFile file = new JarFile(jar)) {
-            if (file.getJarEntry("addon.yml") != null) return false;
+            if (file.getJarEntry("addon.yml") != null) return null;
             JarEntry descriptor = file.getJarEntry("paper-plugin.yml");
             if (descriptor == null) descriptor = file.getJarEntry("plugin.yml");
-            if (descriptor == null) return false;
+            if (descriptor == null) return null;
             try (InputStreamReader reader = new InputStreamReader(file.getInputStream(descriptor), StandardCharsets.UTF_8)) {
-                pluginName = YamlConfiguration.loadConfiguration(reader).getString("name", jar.getName());
+                return YamlConfiguration.loadConfiguration(reader).getString("name", jar.getName());
             }
         } catch (IOException | RuntimeException e) {
-            // Unreadable: the regular path reports it.
-            return false;
+            return null;
         }
+    }
+
+    /**
+     * Skips a jar that is a server plugin rather than an addon, and says where it belongs.
+     *
+     * @param jar        The jar found in the addons folder.
+     * @param pluginName The name it declares.
+     */
+    private void refuseMisplacedPlugin(File jar, String pluginName) {
         String reason = "a server plugin (" + pluginName + "), not an addon";
         refused.put(jar.getName(), reason);
         logger.sendError(jar.getName() + " was not loaded: it is " + reason + ".");
@@ -448,51 +490,78 @@ public class AddonManager {
         } else {
             logger.sendError("  Move it to plugins/, the folder XCore's own jar is in, and restart.");
         }
-        // The XLogin plugin put here instead of plugins/ leaves the server as open as no XLogin at all.
-        if ("XLogin".equalsIgnoreCase(pluginName) && core.isAddonEnabled("XLogin")
-                && !(Bukkit.getPluginManager().getPlugin("XLogin") instanceof XPlugin)) {
-            loginUnprotected = true;
-        }
-        return true;
     }
 
     /**
-     * Skips the jar of an addon that is now a plugin of its own: one of the four that became
-     * plugins in XCore 2.0, or any addon whose name an installed plugin built on XCore already
-     * carries — both copies running at once is never what was meant.
+     * Skips the jar of an addon that must not run beside the plugin it became: one of the four that
+     * are plugins since XCore 2.0, when that plugin is installed, waits in the addons folder or has
+     * already run here (see {@link #PLUGINS_SINCE_2_0}), or any addon whose name an installed plugin
+     * built on XCore already carries — both copies running at once is never what was meant. The
+     * 1.x jar of one of the four that is still on its own is loaded, with a warning.
      *
-     * @param desc The parsed {@code addon.yml}.
-     * @param jar  The jar.
+     * @param desc           The parsed {@code addon.yml}.
+     * @param jar            The jar.
+     * @param misplacedNames The plugins found in the addons folder, lower-cased.
      * @return {@code true} when it was skipped.
      */
-    private boolean refuseReplacedAddon(AddonDescriptor desc, File jar) {
+    private boolean refuseReplacedAddon(AddonDescriptor desc, File jar, Set<String> misplacedNames) {
         String name = desc.getName();
         Plugin installed = Bukkit.getPluginManager().getPlugin(name);
-        boolean pluginInstalled = installed instanceof XPlugin;
-        boolean ours = PLUGINS_SINCE_2_0.stream().anyMatch(n -> n.equalsIgnoreCase(name));
-        if (!ours && !pluginInstalled) return false;
-
+        String ours = PLUGINS_SINCE_2_0.stream().filter(n -> n.equalsIgnoreCase(name)).findFirst().orElse(null);
         String jarPath = fr.xyness.XCore.Extension.DataFolderMigration.displayPath(jar);
-        if (pluginInstalled) {
+
+        if (ours == null) {
+            if (!(installed instanceof XPlugin)) return false;
             String version = installed.getPluginMeta().getVersion();
             refused.put(jar.getName(), name + " " + version + " is installed as a plugin");
-            if (ours) {
-                logger.sendError(jar.getName() + " was not loaded: " + name + " is a plugin since XCore 2.0, and "
-                        + name + " " + version + " is already installed in plugins/.");
-            } else {
-                logger.sendError(jar.getName() + " was not loaded: " + name + " " + version
-                        + " is installed in plugins/ as a plugin built on XCore, and both cannot run at once.");
-            }
+            logger.sendError(jar.getName() + " was not loaded: " + name + " " + version
+                    + " is installed in plugins/ as a plugin built on XCore, and both cannot run at once.");
             logger.sendError("  Delete " + jarPath + ": the plugin has replaced it.");
-        } else {
-            refused.put(jar.getName(), name + " is a plugin since XCore 2.0");
-            logger.sendError(jar.getName() + " was not loaded: " + name
-                    + " is a plugin since XCore 2.0, not an addon.");
-            logger.sendError("  Put the " + name + " 2.0 jar in plugins/, delete " + jarPath
-                    + ", and restart. Its settings and data are picked up as they are.");
-            if ("XLogin".equalsIgnoreCase(name) && core.isAddonEnabled(name)) loginUnprotected = true;
+            return true;
         }
-        return true;
+
+        if (installed != null) {
+            String version = installed.getPluginMeta().getVersion();
+            refused.put(jar.getName(), ours + " " + version + " is installed as a plugin");
+            logger.sendError(jar.getName() + " was not loaded: " + ours + " is a plugin since XCore 2.0, and "
+                    + ours + " " + version + " is already installed in plugins/.");
+            logger.sendError("  Delete " + jarPath + ": the plugin has replaced it.");
+            return true;
+        }
+        if (misplacedNames.contains(ours.toLowerCase(java.util.Locale.ROOT))) {
+            refused.put(jar.getName(), ours + " 2.0 is in the addons folder too");
+            logger.sendError(jar.getName() + " was not loaded: the " + ours + " 2.0 jar is beside it, in the"
+                    + " addons folder, where it cannot run.");
+            logger.sendError("  Move the " + ours + " 2.0 jar to plugins/, delete " + jarPath
+                    + ", and restart. Its settings and data are picked up as they are.");
+            return true;
+        }
+        File pluginFolder = new File(core.getDataFolder().getParentFile(), ours);
+        if (holdsFiles(pluginFolder)) {
+            String folderShown = fr.xyness.XCore.Extension.DataFolderMigration.displayPath(pluginFolder) + "/";
+            refused.put(jar.getName(), folderShown + " holds the files of " + ours + " 2.0");
+            logger.sendError(jar.getName() + " was not loaded: " + folderShown + " exists, so " + ours
+                    + " 2.0 has run on this server and its settings and data are there now. This jar would"
+                    + " start without them, on the folder the addon used.");
+            logger.sendError("  Put the " + ours + " 2.0 jar back in plugins/ and delete " + jarPath
+                    + ". To stay on the addon instead, move " + folderShown + " back to "
+                    + fr.xyness.XCore.Extension.DataFolderMigration.displayPath(new File(core.getDataFolder(),
+                            "addons" + File.separator + ours)) + "/ (in place of what is left there) and restart.");
+            return true;
+        }
+
+        // Still on its own: it runs, on XCore 2.0 as on 1.x. Refused, it took its features with it —
+        // XBans' bans, XLogin's passwords — until the administrator got to the 2.0 jar.
+        logger.sendWarning(jar.getName() + " is the " + ours + " addon of XCore 1.x. It still runs on XCore 2.0,"
+                + " but " + ours + " is a plugin since 2.0: replace it with " + ours + " 2.0 in plugins/, then delete "
+                + jarPath + ". Its settings and data are picked up as they are.");
+        return false;
+    }
+
+    /** Whether a folder exists and holds anything. */
+    private static boolean holdsFiles(File folder) {
+        String[] entries = folder.list();
+        return entries != null && entries.length > 0;
     }
 
     /**

@@ -200,6 +200,26 @@ public interface XCoreApi {
 	@NotNull fr.xyness.XCore.Integrations.DiscordNotifier discord();
 
 	/**
+	 * Returns where a plugin registers what moves its data when a returning player is recognised
+	 * under a new UUID ({@code migrate-uuid-changes}).
+	 *
+	 * <p>The handlers are called during the player's pre-login, once XCore has moved its own row,
+	 * and the login waits for them (five seconds each at most) before the plugins' own pre-login
+	 * checks run — a ban stored under the old UUID applies to the new one straight away.</p>
+	 *
+	 * <pre>{@code
+	 * api.uuidChanges().register(this, (oldUuid, newUuid, name) ->
+	 *     CompletableFuture.runAsync(() -> myTables.move(oldUuid, newUuid), api.getDbExecutor()));
+	 * }</pre>
+	 *
+	 * <p>A plugin built on {@link fr.xyness.XCore.Extension.XPlugin}, or an addon, calls its own
+	 * {@code onUuidChange(handler)} instead, which also takes the handler back when it stops.</p>
+	 *
+	 * @return The {@link fr.xyness.XCore.Identity.UuidChanges}.
+	 */
+	@NotNull fr.xyness.XCore.Identity.UuidChanges uuidChanges();
+
+	/**
 	 * Returns the shared HikariCP data source.
 	 * External plugins can use this to create their own tables in the same database.
 	 *

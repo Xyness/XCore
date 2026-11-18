@@ -212,6 +212,30 @@ public abstract class XAddon {
     }
 
     /**
+     * Has this addon's data follow a returning player whose UUID changed.
+     *
+     * <p>When XCore recognises a player under a new UUID ({@code migrate-uuid-changes}: a server
+     * switched between offline and online UUIDs, or put behind a proxy that changes them), it moves
+     * its own row during the player's pre-login, then calls every handler with the old and the new
+     * UUID, and the login waits for them — five seconds each at most — before going on. The checks
+     * this addon runs at pre-login (at {@code NORMAL} or later) and at join therefore already see
+     * the data under the new UUID. A handler that fails or runs out of time is reported under this
+     * addon's name; the login is not refused for it.</p>
+     *
+     * <pre>{@code
+     * onUuidChange((oldUuid, newUuid, name) -> CompletableFuture.runAsync(
+     *         () -> store.moveAll(oldUuid, newUuid), api().getDbExecutor()));
+     * }</pre>
+     *
+     * <p>Register it in {@link #onEnable()}. It is taken back when the addon is disabled.</p>
+     *
+     * @param handler What moves this addon's data; see {@link fr.xyness.XCore.Identity.UuidChangeHandler}.
+     */
+    public final void onUuidChange(fr.xyness.XCore.Identity.UuidChangeHandler handler) {
+        core.uuidChanges().register(getDescriptor().getName(), handler);
+    }
+
+    /**
      * Returns this addon's cooldowns.
      *
      * @return A {@link fr.xyness.XCore.Utils.Cooldowns} instance of its own.
@@ -358,6 +382,41 @@ public abstract class XAddon {
      */
     public final void updateConfigWithDefaults(String... protectedSections) {
         support.updateConfigWithDefaults(protectedSections);
+    }
+
+    /**
+     * Declares keys this addon renamed since an earlier version, so the value an administrator gave
+     * the old name moves to the new one instead of being replaced by the default.
+     *
+     * <p>A renamed key otherwise looks like one key to add and one to delete: the merge writes the
+     * new name with the shipped default, the prune removes the old one, and the customised value is
+     * gone. Declare the renames first in {@link #onEnable()} — before
+     * {@link #updateConfigWithDefaults(String...)}, {@link #loadLanguage(String...)} and
+     * {@link #pruneObsoleteKeys(String, String...)} — and keep them across versions: they cost
+     * nothing once applied.</p>
+     *
+     * <pre>{@code
+     * @Override
+     * public boolean onEnable() {
+     *     renamedKeys("config.yml", Map.of("anti-afk.enabled", "afk.enabled"));
+     *     renamedKeys("lang/*.yml", Map.of("lore-buyout", "lore-buyout-drop"));
+     *     updateConfigWithDefaults();
+     *     loadLanguage("en", "fr");
+     *     return true;
+     * }
+     * }</pre>
+     *
+     * <p>A value moves only when the new key is absent; nested paths and whole sections move; a
+     * chain ({@code a → b}, then {@code b → c}) is followed; applying it twice changes nothing. Each
+     * move is logged once, when it happens.</p>
+     *
+     * @param file    The file, relative to the data folder: {@code "config.yml"}, {@code "lang/fr.yml"},
+     *                or {@code "lang/*.yml"} for every language file ({@code *} in the last segment only).
+     * @param renames Old path → new path.
+     * @return How many values moved now.
+     */
+    public final int renamedKeys(String file, java.util.Map<String, String> renames) {
+        return support.renamedKeys(file, renames);
     }
 
     /**

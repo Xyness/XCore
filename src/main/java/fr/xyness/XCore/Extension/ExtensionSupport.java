@@ -69,6 +69,18 @@ public final class ExtensionSupport {
     private fr.xyness.XCore.Utils.Cooldowns cooldowns;
     private fr.xyness.XCore.Integrations.PlaceholderRegistry placeholders;
 
+    /** The renames declared through {@link #renamedKeys(String, java.util.Map)}, in the order they were declared. */
+    private final java.util.List<Renamed> renamed = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /**
+     * One declaration: the files it covers and what moves where.
+     *
+     * @param pattern The file, relative to the data folder, {@code *} allowed in its last segment.
+     * @param files   The same as a regular expression over relative paths written with {@code /}.
+     * @param moves   Old path → new path.
+     */
+    private record Renamed(String pattern, java.util.regex.Pattern files, java.util.Map<String, String> moves) {}
+
     /**
      * @param descriptor     Name, version, author and update address.
      * @param core           The XCore instance.
@@ -321,22 +333,187 @@ public final class ExtensionSupport {
 
         setAsideIfUnreadable(configFile);
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
+        // Renamed keys first: merged before, the new name would arrive with its default.
+        boolean renamedAny = applyRenames("config.yml", diskConfig);
         try (InputStream defStream = resources.getResourceAsStream("config.yml")) {
-            if (defStream == null) return;
+            if (defStream == null) {
+                if (renamedAny) diskConfig.save(configFile);
+                return;
+            }
             YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
                 new InputStreamReader(defStream, StandardCharsets.UTF_8));
 
             java.util.List<String> added = fr.xyness.XCore.Utils.ConfigMerger.addMissingKeys(
                     diskConfig, defConfig, protectedSections);
 
-            if (!added.isEmpty()) {
+            if (renamedAny || !added.isEmpty()) {
                 diskConfig.save(configFile);
-                logger.sendDebug("Added " + added.size() + " new setting(s) to config.yml.");
+                if (!added.isEmpty()) logger.sendDebug("Added " + added.size() + " new setting(s) to config.yml.");
             }
         } catch (IOException e) {
             logger.sendError("Error updating config with defaults: " + e.getMessage());
+        } finally {
+            reloadConfig();
         }
-        reloadConfig();
+    }
+
+    // -------------------------------------------------------------------------
+    // Renamed keys
+    // -------------------------------------------------------------------------
+
+    /**
+     * Declares keys renamed since an earlier version, so that the value an administrator gave the
+     * old name follows it to the new one.
+     *
+     * <p>Without it, a renamed key looks like one key to add and one to delete: the new name is
+     * written with its shipped default, the old one is pruned, and the administrator's value goes
+     * with it. The renames are applied now to every matching file, and again before every later
+     * merge or prune of one, so declare them before {@code updateConfigWithDefaults},
+     * {@code loadLanguage} and {@code pruneObsoleteKeys}. See
+     * {@link fr.xyness.XCore.Utils.ConfigMerger#moveRenamedKeys} for the rules: a value moves only
+     * when the new key is absent, nested paths and whole sections work, chains are followed, and a
+     * second run finds nothing to do. Each move is logged once, when it happens.</p>
+     *
+     * @param file    The file, relative to the data folder: {@code "config.yml"}, {@code "lang/fr.yml"},
+     *                or with {@code *} in its last segment, {@code "lang/*.yml"} for every language file.
+     * @param renames Old path → new path.
+     * @return How many values moved now.
+     */
+    public int renamedKeys(String file, java.util.Map<String, String> renames) {
+        if (file == null || file.isBlank() || renames == null || renames.isEmpty()) return 0;
+        String pattern = normalize(file);
+        java.util.Map<String, String> moves = new java.util.LinkedHashMap<>();
+        renames.forEach((from, to) -> {
+            if (from != null && to != null && !from.isBlank() && !to.isBlank()) moves.put(from.trim(), to.trim());
+        });
+        if (moves.isEmpty()) return 0;
+        renamed.add(new Renamed(pattern, glob(pattern), java.util.Collections.unmodifiableMap(moves)));
+
+        int moved = 0;
+        boolean config = false;
+        for (File target : filesMatching(pattern)) {
+            int count = applyRenames(target);
+            moved += count;
+            if (count > 0 && "config.yml".equals(relative(target))) config = true;
+        }
+        // Whatever read config.yml before this call holds the old names.
+        if (config) reloadConfig();
+        return moved;
+    }
+
+    /**
+     * Applies the declared renames to a file on disk, saving it when something moved.
+     *
+     * @param file The file.
+     * @return How many values moved.
+     */
+    private int applyRenames(File file) {
+        String path = relative(file);
+        if (path == null || !file.isFile()) return 0;
+        java.util.Map<String, String> moves = renamesFor(path);
+        if (moves.isEmpty()) return 0;
+
+        YamlConfiguration yaml = new YamlConfiguration();
+        try {
+            yaml.load(file);
+        } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            // Unreadable: the merge that follows sets it aside and says so. Nothing to move here.
+            return 0;
+        }
+        java.util.List<String> moved = fr.xyness.XCore.Utils.ConfigMerger.moveRenamedKeys(yaml, moves);
+        if (moved.isEmpty()) return 0;
+        try {
+            yaml.save(file);
+        } catch (IOException e) {
+            logger.sendWarning("Could not save " + path + " after moving its renamed keys: " + e.getMessage());
+            return 0;
+        }
+        logMoves(path, moved);
+        return moved.size();
+    }
+
+    /**
+     * Applies the declared renames to a file already loaded, leaving the save to the caller.
+     *
+     * @param path The file, relative to the data folder.
+     * @param yaml Its content.
+     * @return {@code true} when something moved.
+     */
+    private boolean applyRenames(String path, FileConfiguration yaml) {
+        java.util.Map<String, String> moves = renamesFor(normalize(path));
+        if (moves.isEmpty()) return false;
+        java.util.List<String> moved = fr.xyness.XCore.Utils.ConfigMerger.moveRenamedKeys(yaml, moves);
+        if (moved.isEmpty()) return false;
+        logMoves(normalize(path), moved);
+        return true;
+    }
+
+    /** Every rename declared for a file, later declarations overriding earlier ones. */
+    private java.util.Map<String, String> renamesFor(String path) {
+        if (renamed.isEmpty()) return java.util.Map.of();
+        java.util.Map<String, String> moves = new java.util.LinkedHashMap<>();
+        for (Renamed declaration : renamed) {
+            if (declaration.files().matcher(path).matches()) moves.putAll(declaration.moves());
+        }
+        return moves;
+    }
+
+    private void logMoves(String path, java.util.List<String> moved) {
+        logger.sendInfo("Moved " + moved.size() + " renamed key(s) in " + path + ", keeping the values set there:");
+        for (String move : moved) logger.sendInfo("  - " + move);
+    }
+
+    /** The files of the data folder a declaration covers. */
+    private java.util.List<File> filesMatching(String pattern) {
+        int slash = pattern.lastIndexOf('/');
+        String name = pattern.substring(slash + 1);
+        if (!name.contains("*")) {
+            File file = new File(dataFolder, pattern.replace('/', File.separatorChar));
+            return file.isFile() ? java.util.List.of(file) : java.util.List.of();
+        }
+        File folder = slash < 0 ? dataFolder : new File(dataFolder, pattern.substring(0, slash).replace('/', File.separatorChar));
+        File[] listed = folder.listFiles(File::isFile);
+        if (listed == null) return java.util.List.of();
+        java.util.regex.Pattern names = glob(name);
+        java.util.List<File> files = new java.util.ArrayList<>();
+        for (File file : listed) {
+            if (names.matcher(file.getName()).matches()) files.add(file);
+        }
+        files.sort(java.util.Comparator.comparing(File::getName));
+        return files;
+    }
+
+    /** A path written with {@code /}, without a leading {@code ./} or {@code /}. */
+    private static String normalize(String path) {
+        String clean = path.trim().replace('\\', '/');
+        while (clean.startsWith("./")) clean = clean.substring(2);
+        while (clean.startsWith("/")) clean = clean.substring(1);
+        return clean;
+    }
+
+    /** {@code lang/*.yml} as a regular expression: {@code *} stands for any run of characters but {@code /}. */
+    private static java.util.regex.Pattern glob(String pattern) {
+        StringBuilder regex = new StringBuilder();
+        int start = 0;
+        for (int star = pattern.indexOf('*'); star >= 0; star = pattern.indexOf('*', start)) {
+            if (star > start) regex.append(java.util.regex.Pattern.quote(pattern.substring(start, star)));
+            regex.append("[^/]*");
+            start = star + 1;
+        }
+        if (start < pattern.length()) regex.append(java.util.regex.Pattern.quote(pattern.substring(start)));
+        return java.util.regex.Pattern.compile(regex.toString());
+    }
+
+    /** A file's path relative to the data folder, written with {@code /}; {@code null} outside it. */
+    private String relative(File file) {
+        try {
+            java.nio.file.Path base = dataFolder.toPath().toAbsolutePath().normalize();
+            java.nio.file.Path target = file.toPath().toAbsolutePath().normalize();
+            if (!target.startsWith(base)) return null;
+            return base.relativize(target).toString().replace('\\', '/');
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /**
@@ -351,9 +528,12 @@ public final class ExtensionSupport {
         if (!file.exists()) return 0;
 
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(file);
+        // A renamed key is not obsolete: its value moves to the new name before anything is pruned.
+        boolean renamedAny = applyRenames(fileName, diskConfig);
         try (InputStream defStream = resources.getResourceAsStream(fileName)) {
             if (defStream == null) {
                 logger.sendDebug("No bundled " + fileName + " to compare against; nothing pruned.");
+                if (renamedAny) saveRenamed(fileName, diskConfig, file);
                 return 0;
             }
             YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
@@ -382,7 +562,10 @@ public final class ExtensionSupport {
                 removed.add(key);
             }
 
-            if (removed.isEmpty()) return 0;
+            if (removed.isEmpty()) {
+                if (renamedAny) saveRenamed(fileName, diskConfig, file);
+                return 0;
+            }
 
             File backup = new File(dataFolder, fileName + ".pre-prune.bak");
             try {
@@ -404,6 +587,14 @@ public final class ExtensionSupport {
             logger.sendError("Error pruning " + fileName + ": " + e.getMessage());
             return 0;
         }
+    }
+
+    /**
+     * Writes a file whose only change is renamed keys, and re-reads it when it is the configuration.
+     */
+    private void saveRenamed(String fileName, FileConfiguration content, File file) throws IOException {
+        content.save(file);
+        if ("config.yml".equals(normalize(fileName))) reloadConfig();
     }
 
     /**
@@ -486,7 +677,7 @@ public final class ExtensionSupport {
             YamlConfiguration bundled = YamlConfiguration.loadConfiguration(
                     new InputStreamReader(defaults, StandardCharsets.UTF_8));
             YamlConfiguration current = YamlConfiguration.loadConfiguration(target);
-            boolean changed = false;
+            boolean changed = applyRenames(resourcePath, current);
             for (String key : bundled.getKeys(true)) {
                 if (bundled.isConfigurationSection(key) || current.contains(key)) continue;
                 current.set(key, bundled.get(key));
@@ -513,9 +704,14 @@ public final class ExtensionSupport {
 
         // Extract every bundled translation, never overwriting an edited file. The web_ files are
         // the extension's own dashboard strings, and only exist for those that register a web module.
+        java.util.Set<String> renamedFiles = new java.util.HashSet<>();
         for (String code : available) {
             saveDefaultResource("lang/" + code + ".yml");
             saveDefaultResource("lang/web_" + code + ".yml");
+            // Every translation on disk, not only the one loaded below: the others are pruned too,
+            // by whoever calls pruneObsoleteKeys on them, and a text renamed there was lost the same way.
+            applyRenames(new File(langFolder, code + ".yml"));
+            renamedFiles.add(code.toLowerCase() + ".yml");
             // Unlike the message files, nothing merges the dashboard strings: a web_*.yml already
             // on disk never received the keys a later version added, and the page showed the raw
             // key instead of a label. Only missing keys are written, so translations survive.
@@ -537,6 +733,9 @@ public final class ExtensionSupport {
             wanted = fallback;
             target = new File(langFolder, wanted + ".yml");
         }
+
+        // A translation the administrator added themselves (lang/de.yml): its keys were renamed too.
+        if (!renamedFiles.contains(target.getName().toLowerCase())) applyRenames(target);
 
         try (InputStream defaults = resources.getResourceAsStream("lang/" + wanted + ".yml")) {
             lang.reload(target, defaults);

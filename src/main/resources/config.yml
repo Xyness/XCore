@@ -1,8 +1,9 @@
 # XCore Configuration
 
 # Enable debug logging (verbose cache/database/API messages).
-# It also turns on the tick-thread watchdog: any addon querying the database from a tick thread is
-# named in the console, once per call site.
+# Whatever queries the database from a tick thread while the server runs is always named in the
+# console, once per call site and then at most every five minutes with a count. Debug also names
+# what does it while the server starts or stops.
 debug: false
 
 # Measure how long each addon spends in each event handler, readable with /xcore profile.
@@ -29,8 +30,10 @@ server-name: "default"
 # server_uuid is derived from the name in offline mode and comes from Mojang in online mode, so
 # switching that setting — or moving the server behind a proxy that changes it — makes every player
 # look brand new. With this on, their existing row is moved onto the new UUID instead of a second
-# one being created: balances, per-addon columns and history follow them.
-# Matching is by Mojang UUID first, and by name only for accounts that have no Mojang UUID at all.
+# one being created: balances, per-addon columns, pending deliveries and history follow them, and
+# so does the data of every plugin that registered for it, before the player's login goes on.
+# Matching is by Mojang UUID first, and by name — spelled exactly — only for accounts that have no
+# Mojang UUID at all.
 migrate-uuid-changes: true
 
 # MySQL / PostgreSQL settings (ignored for sqlite)

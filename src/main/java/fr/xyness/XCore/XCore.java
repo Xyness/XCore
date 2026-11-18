@@ -81,6 +81,16 @@ public class XCore extends JavaPlugin {
     /** Sync channel used by XCore itself (cache invalidation after bulk writes). */
     public static final String SYNC_CHANNEL = "xcore";
 
+    /**
+     * Version of the messages on {@link #SYNC_CHANNEL}.
+     *
+     * <p>0 is the format XCore 1.x speaks, and 2.0 has not changed it: a network can be updated one
+     * server at a time and keep its caches in step all along. Raise it the day {@code CACHE_CLEAR}
+     * or {@code PLAYER_UPDATE} change meaning, so a server left on the old format ignores the new
+     * messages instead of misreading them.</p>
+     */
+    public static final int SYNC_PROTOCOL = 0;
+
     /** Where the start of the current session is kept, on a player's temporary data. */
     public static final String SESSION_START_KEY = "xcore:session-start";
 
@@ -148,6 +158,15 @@ public class XCore extends JavaPlugin {
     /** Set once {@link #start()} has gone through, cleared when {@link #stop()} begins. */
     private volatile boolean running;
 
+    /** The extension that authenticates players: XCore keeps the door shut until it is up. */
+    private static final String LOGIN_EXTENSION = "XLogin";
+
+    /** Refusing every connection until XLogin is up; {@code null} once it is, or when not needed. */
+    private volatile org.bukkit.event.Listener loginLockdown;
+
+    /** Whether XLogin has started since XCore did. */
+    private volatile boolean loginUp;
+
     /** Whether addons.yml gained a key since it was last written. */
     private boolean dataConfigDirty;
     private Object redisHealthTask;
@@ -175,11 +194,17 @@ public class XCore extends JavaPlugin {
     /** Group and rank lookups, whichever permission plugin is installed. */
     private fr.xyness.XCore.Integrations.RankResolver ranks;
 
+    /** The plugins that follow a returning player onto a new UUID. */
+    private fr.xyness.XCore.Identity.UuidChanges uuidChanges;
+
     /** Sends the buffered player columns to the database. */
     private Object writeFlushTask;
 
     /** Tells the other servers which players changed. */
     private Object invalidationTask;
+
+    /** Prints the counts the tick-thread alarm owes the console. */
+    private Object tickThreadReportTask;
 
     /** Players whose caches elsewhere still have to be dropped. */
     private final java.util.Set<String> pendingInvalidations = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -228,6 +253,43 @@ public class XCore extends JavaPlugin {
             return Math.clamp(value, min, max);
         }
         return value;
+    }
+
+    /**
+     * Copies the web dashboard out of the jar into {@code plugins/XCore/web/}, every file of it.
+     *
+     * <p>The dashboard used to be three files, named here one by one. It is now a folder —
+     * stylesheets, script modules, fonts — and a file added to it must not depend on someone
+     * remembering to list it here: the jar is read for everything under {@code web/}. Every start
+     * overwrites them, so an update is served as soon as the server is back.</p>
+     *
+     * <p>The two files the previous dashboard was made of are removed when the jar no longer
+     * carries them, so nothing stale is left for the panel to serve.</p>
+     */
+    private void extractDashboard() {
+        java.util.Set<String> shipped = new java.util.HashSet<>();
+        try (java.util.jar.JarFile jar = new java.util.jar.JarFile(getFile())) {
+            java.util.Enumeration<java.util.jar.JarEntry> entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                java.util.jar.JarEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (entry.isDirectory() || !name.startsWith("web/")) continue;
+                shipped.add(name);
+                try {
+                    saveResource(name, true);
+                } catch (Exception e) {
+                    logger.sendDebug("Failed to save web resource '" + name + "': " + e.getMessage());
+                }
+            }
+        } catch (IOException e) {
+            logger.sendWarning("Could not read the web dashboard from the jar: " + e.getMessage());
+            return;
+        }
+        for (String old : new String[]{"web/app.js", "web/style.css"}) {
+            if (shipped.contains(old)) continue;
+            File stale = new File(getDataFolder(), old);
+            if (stale.isFile() && !stale.delete()) logger.sendDebug("Could not remove the old " + old + ".");
+        }
     }
 
     /**
@@ -328,8 +390,8 @@ public class XCore extends JavaPlugin {
             hikaConfig.setConnectionTimeout(10000);
 
             this.dataSource = new fr.xyness.XCore.Database.GuardedDataSource(hikaConfig, logger);
-            // Debug mode turns the pool into a watchdog: any addon querying the database from a tick
-            // thread is named, once per call site.
+            // The pool names whoever queries the database from a tick thread while the server runs,
+            // always. Debug mode also names what does it while the server starts or stops.
             fr.xyness.XCore.Database.GuardedDataSource.setWarnOnTickThread(
                     config.getBoolean("debug", false) || config.getBoolean("profiling", false));
 
@@ -425,6 +487,14 @@ public class XCore extends JavaPlugin {
         } catch (SQLException e) {
             logger.sendWarning("Could not index players.last_login : " + e.getMessage());
         }
+        // A player unknown under their UUID is looked for by Mojang UUID, during their login and with
+        // the login waiting: a scan of the whole table per new player without this.
+        try (Connection connection = dataSource.getConnection()) {
+            fr.xyness.XCore.Database.SqlUtils.createIndexIfNotExists(connection, databaseType,
+                    "idx_players_mojang", "players", "mojang_uuid");
+        } catch (SQLException e) {
+            logger.sendWarning("Could not index players.mojang_uuid : " + e.getMessage());
+        }
 
         // ---- Redis ----
         boolean crossServerEnabled = config.getBoolean("cross-server.enabled", false);
@@ -497,8 +567,10 @@ public class XCore extends JavaPlugin {
         int pollSeconds = clamp(config.getInt("cross-server.sync.poll-interval-seconds", 3), 1, 60, "cross-server.sync.poll-interval-seconds");
         int retentionSeconds = clamp(config.getInt("cross-server.sync.retention-seconds", 300), 30, 3600, "cross-server.sync.retention-seconds");
 
+        // Messages are handled on the work pool and written out on the database pool: the database
+        // transport opens a connection for every batch it sends.
         this.syncManager = new SyncManager(
-            jedisPool, dataSource, databaseType, executor,
+            jedisPool, dataSource, databaseType, executor, dbExecutor,
             pollSeconds * 20, retentionSeconds,
             getServerName(),
             logger::sendDebug, logger::sendWarning, logger::sendError
@@ -506,7 +578,7 @@ public class XCore extends JavaPlugin {
 
         // XCore's own channel. CACHE_CLEAR follows a bulk write such as /eco resetall, PLAYER_UPDATE
         // names the players whose row just changed so the other servers drop their copy.
-        syncManager.registerChannel(SYNC_CHANNEL, message -> {
+        syncManager.registerChannel(SYNC_CHANNEL, SYNC_PROTOCOL, message -> {
             switch (message.action()) {
                 case "CACHE_CLEAR" -> {
                     clearAndWarmPlayerCache();
@@ -533,11 +605,16 @@ public class XCore extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new fr.xyness.XCore.Gui.PagedGuiListener(), this);
 
         // ---- Listeners ----
+        // Before the listener that calls it, and before any addon or plugin enables and registers.
+        this.uuidChanges = new fr.xyness.XCore.Identity.UuidChanges(executor, logger);
+        // Registered now, before every addon and plugin built on XCore: within a priority the server
+        // calls listeners in the order they were registered, so XCore's pre-login pass is the first
+        // of its priority. See PlayerListener for why that priority is LOW.
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
 
-        // XLogin 1.x refused by the addon loader with no XLogin plugin to replace it: the server
-        // has no authentication left, so it takes no one until that is fixed.
-        if (addonManager != null && addonManager.needsLoginLockdown()) lockDownLogins();
+        // A server that has XLogin takes no one until XLogin is up — the 1.x addon, enabled below, or
+        // the 2.0 plugin, enabled after XCore — and keeps taking no one if it never comes up.
+        armLoginLockdown();
 
         // Addons are not Bukkit plugins, so /plugins cannot see them. Ours takes the command's
         // place in the map — short and bukkit: forms alike — and prints Paper's own list with one
@@ -557,13 +634,7 @@ public class XCore extends JavaPlugin {
 
         // ---- Web dashboard (must start BEFORE addons so they can register modules) ----
         if (config.getBoolean("web-dashboard.enabled", false)) {
-            for (String f : new String[]{"index.html", "style.css", "app.js"}) {
-                try {
-                    if (getResource("web/" + f) != null) saveResource("web/" + f, true);
-                } catch (Exception e) {
-                    logger.sendDebug("Failed to save web resource '" + f + "': " + e.getMessage());
-                }
-            }
+            extractDashboard();
             int webPort = clamp(config.getInt("web-dashboard.port", 8085), 1, 65535, "web-dashboard.port");
             boolean metricsPublic = config.getBoolean("web-dashboard.metrics-public", true);
 
@@ -716,6 +787,17 @@ public class XCore extends JavaPlugin {
                 logger.sendInfo("Prefetched " + map.size() + " player(s) into cache."));
         }
 
+        // ---- Tick-thread alarm ----
+        // Counting from a second after the first tick: until then the main thread is the server
+        // starting — every plugin building its tables there — and nobody is waiting on it.
+        schedulerAdapter.runGlobalTaskLater(
+                () -> fr.xyness.XCore.Database.GuardedDataSource.setServerRunning(true), 20L);
+        // A call site that went on taking connections after its warning gets its count every five
+        // minutes, even once it has gone quiet; this is what notices it has something to say.
+        tickThreadReportTask = schedulerAdapter.runAsyncTaskTimer(() -> {
+            if (dataSource instanceof fr.xyness.XCore.Database.GuardedDataSource guarded) guarded.reportPending();
+        }, 1200L, 1200L);
+
         running = true;
 
         long end = System.nanoTime();
@@ -726,33 +808,83 @@ public class XCore extends JavaPlugin {
     }
 
     /**
-     * Refuses every connection: XLogin is not running, and on an offline-mode server that means
-     * nobody checks who is who.
+     * Refuses every connection until XLogin is up, on a server that has XLogin.
      *
-     * <p>Follows XLogin's own {@code security.refuse-connections-on-failure}, read from wherever its
-     * files are — {@code plugins/XLogin/} once a 2.0 plugin has run, the old addon folder before.</p>
+     * <p>XLogin is the authentication of an offline-mode server: without it nobody checks who is
+     * who. It closes the server itself when its own start fails — but only once it runs at all. Its
+     * 2.0 jar not in place yet (deleted with the 1.x jar before the new one was put in), refused by
+     * the server, or put in the wrong folder: nothing of XLogin runs, and nothing closed anything.
+     * So XCore closes the door first, from its own start, whenever XLogin is expected here — its
+     * settings exist ({@code plugins/XLogin/} or the old addon folder) or a jar of it is installed —
+     * and opens it the moment XLogin, the 2.0 plugin or the 1.x addon, has started
+     * ({@link #extensionEnabled(String)}). If it never does, the door stays shut.</p>
+     *
+     * <p>{@code addons.XLogin: false} in {@code addons.yml} means XLogin is not wanted: nothing is
+     * refused. XLogin's own {@code security.refuse-connections-on-failure} is honoured, read from
+     * wherever its files are.</p>
      */
-    private void lockDownLogins() {
-        File[] candidates = {
-            new File(getDataFolder().getParentFile(), "XLogin" + File.separator + "config.yml"),
-            new File(getDataFolder(), "addons" + File.separator + "XLogin" + File.separator + "config.yml")
-        };
+    private void armLoginLockdown() {
+        if (!isAddonEnabled(LOGIN_EXTENSION)) return;
+
+        File pluginsDir = getDataFolder().getParentFile();
+        File settings = new File(pluginsDir, LOGIN_EXTENSION + File.separator + "config.yml");
+        if (!settings.isFile()) {
+            File oldFolder = fr.xyness.XCore.Extension.DataFolderMigration.oldFolder(pluginsDir, LOGIN_EXTENSION);
+            settings = oldFolder == null ? null : new File(oldFolder, "config.yml");
+            if (settings != null && !settings.isFile()) settings = null;
+        }
+        boolean expected = settings != null
+                || Bukkit.getPluginManager().getPlugin(LOGIN_EXTENSION) != null
+                || (addonManager != null && addonManager.foundJarOf(LOGIN_EXTENSION));
+        if (!expected) return;
+
         boolean refuse = true;
-        for (File candidate : candidates) {
-            if (!candidate.isFile()) continue;
-            refuse = YamlConfiguration.loadConfiguration(candidate)
-                    .getBoolean("security.refuse-connections-on-failure", true);
-            break;
+        if (settings != null) {
+            try {
+                refuse = YamlConfiguration.loadConfiguration(settings).getBoolean("security.refuse-connections-on-failure", true);
+            } catch (RuntimeException e) {
+                // Unreadable: XLogin will say so; the careful side meanwhile.
+            }
         }
-        if (!refuse) {
-            logger.sendSevere("XLogin is not running and security.refuse-connections-on-failure is false:"
-                    + " this server accepts players WITHOUT any authentication.");
-            return;
+        if (refuse) {
+            org.bukkit.event.Listener lockdown =
+                    new fr.xyness.XCore.Listeners.LoginLockdownListener(langManager.getComponent("auth-unavailable"));
+            getServer().getPluginManager().registerEvents(lockdown, this);
+            loginLockdown = lockdown;
+            logger.sendDebug("Connections are refused until XLogin is running.");
         }
-        getServer().getPluginManager().registerEvents(
-                new fr.xyness.XCore.Listeners.LoginLockdownListener(langManager.getComponent("auth-unavailable")), this);
-        logger.sendSevere("XLogin is not running: every connection is refused until the XLogin 2.0 jar is in plugins/"
-                + " (security.refuse-connections-on-failure in XLogin's config.yml).");
+        // Once the server is up: by then XLogin has started, or never will.
+        schedulerAdapter.runGlobalTaskLater(this::reportLoginLockdown, 1L);
+    }
+
+    /** Says, once the server is up, that XLogin never came: what that leaves, and the way out. */
+    private void reportLoginLockdown() {
+        if (loginUp) return;
+        if (loginLockdown != null) {
+            logger.sendSevere("XLogin is not running: every connection is refused until it is. Put the XLogin 2.0"
+                    + " jar in plugins/ (or see above why it did not start), then restart.");
+            logger.sendSevere("To open this server WITHOUT any authentication instead, set addons.XLogin: false"
+                    + " in plugins/XCore/addons.yml.");
+        } else {
+            logger.sendSevere("XLogin is not running and security.refuse-connections-on-failure is false in its"
+                    + " config.yml: this server accepts players WITHOUT any authentication.");
+        }
+    }
+
+    /**
+     * Told when an addon or a plugin built on XCore has started. Internal: {@code XPlugin} and the
+     * addon manager call it.
+     *
+     * @param name The extension's name.
+     */
+    public void extensionEnabled(String name) {
+        if (!LOGIN_EXTENSION.equalsIgnoreCase(name)) return;
+        loginUp = true;
+        org.bukkit.event.Listener lockdown = loginLockdown;
+        if (lockdown == null) return;
+        loginLockdown = null;
+        HandlerList.unregisterAll(lockdown);
+        logger.sendDebug("XLogin is running: connections are accepted again.");
     }
 
     // -------------------------------------------------------------------------
@@ -764,6 +896,8 @@ public class XCore extends JavaPlugin {
      */
     public void stop() {
         running = false;
+        // From here the main thread is saving, the plugins first: nothing it does is a stall anyone sees.
+        fr.xyness.XCore.Database.GuardedDataSource.setServerRunning(false);
         logger.sendRawBar();
         logger.sendInfo("Stopping the plugin.");
 
@@ -780,6 +914,7 @@ public class XCore extends JavaPlugin {
         // Stop the timers before flushing, so nothing is queued behind our back.
         if (writeFlushTask != null) schedulerAdapter.cancelTask(writeFlushTask);
         if (invalidationTask != null) schedulerAdapter.cancelTask(invalidationTask);
+        if (tickThreadReportTask != null) schedulerAdapter.cancelTask(tickThreadReportTask);
 
         // Anything still buffered belongs in the database, not in memory.
         if (playerDAO != null) playerDAO.writeBuffer().flush();
@@ -923,6 +1058,12 @@ public class XCore extends JavaPlugin {
     /** @return Group and rank lookups. */
     public fr.xyness.XCore.Integrations.RankResolver ranks() { return ranks; }
 
+    /**
+     * @return The plugins that follow a returning player onto a new UUID: where a plugin registers
+     *         the handler that moves its own data.
+     */
+    public fr.xyness.XCore.Identity.UuidChanges uuidChanges() { return uuidChanges; }
+
     /** @return The player data access object. */
     public PlayerDAO playerDAO() { return playerDAO; }
 
@@ -982,6 +1123,21 @@ public class XCore extends JavaPlugin {
             } catch (IllegalArgumentException ignored) {
                 // Not a UUID: nothing to invalidate.
             }
+        }
+    }
+
+    /**
+     * Has the other servers drop their copy of these players, with the next batch of notices.
+     *
+     * <p>For a write that does not go through the column buffer: a row moved onto a new UUID, whose
+     * old copy another server would otherwise go on serving under the old UUID and the name.</p>
+     *
+     * @param uuids The players, by server UUID.
+     */
+    public void invalidateElsewhere(UUID... uuids) {
+        if (syncManager == null || !syncManager.isRunning()) return;
+        for (UUID uuid : uuids) {
+            if (uuid != null) pendingInvalidations.add(uuid.toString());
         }
     }
 

@@ -9,13 +9,14 @@ import org.bukkit.event.player.AsyncPlayerPreLoginEvent.Result;
 import net.kyori.adventure.text.Component;
 
 /**
- * Refuses every connection while the server has lost its authentication to the 2.0 upgrade.
+ * Refuses every connection until XLogin is up, on a server that has XLogin.
  *
- * <p>XLogin is a plugin since XCore 2.0, and XCore no longer loads its 1.x addon jar. Updating
- * XCore before putting the XLogin 2.0 jar in {@code plugins/} — the order XCore's own notes give —
- * left an offline-mode server with nothing checking passwords: whoever typed a name played under
- * it. XLogin itself closes the door when it cannot start; here it is not loaded at all, so XCore
- * does it on its behalf, under the same {@code security.refuse-connections-on-failure} setting.</p>
+ * <p>XCore registers it at its own start whenever XLogin is expected — its settings are there, or a
+ * jar of it is — and removes it the moment XLogin, the 2.0 plugin or the 1.x addon, has started. An
+ * XLogin that never comes up leaves it in place: its 2.0 jar not installed yet, refused by the
+ * server, put in the wrong folder, or failing its own start. XLogin closes the door itself when its
+ * start fails; this covers the cases where nothing of XLogin runs to do it, under the same
+ * {@code security.refuse-connections-on-failure} setting.</p>
  */
 public class LoginLockdownListener implements Listener {
 

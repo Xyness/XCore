@@ -593,6 +593,29 @@ public class SchedulerAdapter {
     }
 
 	/**
+	 * Cancels every task the owner has scheduled, through this adapter or straight through the
+	 * server: what the server does itself when it disables a plugin, for one that stays enabled
+	 * after a start that did not complete. Tasks attached to an entity on Folia are not reachable
+	 * this way; they go when the plugin is disabled.
+	 *
+	 * <p>Server classes only: it runs after a failed start, possibly with XCore's jar closed.</p>
+	 */
+    public void cancelAllTasks() {
+        if (!isFolia) {
+            try {
+                Bukkit.getScheduler().cancelTasks(owner);
+            } catch (Throwable ignored) {}
+        }
+        // Paper has these two as well, beside the Bukkit scheduler; on Folia they are the only ones.
+        try {
+            Bukkit.getGlobalRegionScheduler().cancelTasks(owner);
+        } catch (Throwable ignored) {}
+        try {
+            Bukkit.getAsyncScheduler().cancelTasks(owner);
+        } catch (Throwable ignored) {}
+    }
+
+	/**
 	 * Runs an asynchronous task immediately.
 	 *
 	 * @param task The task to run.

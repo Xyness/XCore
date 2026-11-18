@@ -24,9 +24,16 @@ import redis.clients.jedis.JedisPool;
  * and multiplexes all channels over that transport.
  * </p>
  * <p>
- * Message wire format: a JSON object {@code {"s":serverId,"c":channel,"a":action,"k":key,"p":payload}}.
+ * Message wire format: a JSON object {@code {"s":serverId,"i":instance,"c":channel,"v":protocol,
+ * "a":action,"k":key,"p":payload}}, plus {@code "t":target} for a message meant for one server.
  * Values are escaped by the encoder, so a key or payload containing the delimiter of the previous
  * pipe-separated format no longer shifts the whole message. Only JSON is accepted on read, so a cluster can be restarted one server at a time.
+ * </p>
+ * <p>
+ * {@code "v"} is the protocol version of the channel the message was written for. A server reads
+ * fields by name and ignores the ones it does not know, which is what lets an XCore 1.x server
+ * take a message carrying it without noticing. A message without it comes from a server older than
+ * versions, and counts as version 0.
  * </p>
  */
 public class SyncManager {
@@ -46,9 +53,23 @@ public class SyncManager {
     private final DataSource dataSource;
     private final DatabaseType databaseType;
     private final Executor executor;
+
+    /**
+     * Where batches are written to the transport: the database pool. The database transport opens a
+     * connection for its INSERT, and on the work pool that connection was held by a thread every
+     * other task of the installation waits for. A Redis publish is a connection too.
+     */
+    private final Executor publishExecutor;
     private final int pollIntervalTicks;
     private final int retentionSeconds;
     private final Map<String, SyncChannel> channels = new ConcurrentHashMap<>();
+
+    /**
+     * The protocol mismatches already reported, by channel and source server, with the version that
+     * server was found speaking. One line per pair, not one per message: a server left on the old
+     * version sends a few messages a second, and the console would hold nothing else.
+     */
+    private final Map<String, Integer> reportedMismatches = new ConcurrentHashMap<>();
 
     /** The most messages that travel together. */
     private static final int BATCH_LIMIT = 200;
@@ -96,6 +117,7 @@ public class SyncManager {
      * @param dataSource         The database DataSource for DB-based sync fallback.
      * @param databaseType       The database type (for SQL dialect).
      * @param executor           Async executor for message handling.
+     * @param publishExecutor    Where outgoing batches are written to the transport: the database pool.
      * @param pollIntervalTicks  Poll interval in ticks for database transport (20 ticks = 1 second).
      * @param retentionSeconds   How long to keep DB sync rows before cleanup.
      * @param serverName         Stable identifier for this server ({@code server-name}).
@@ -104,7 +126,7 @@ public class SyncManager {
      * @param logError           Error log callback.
      */
     public SyncManager(JedisPool jedisPool, DataSource dataSource, DatabaseType databaseType,
-                       Executor executor, int pollIntervalTicks, int retentionSeconds,
+                       Executor executor, Executor publishExecutor, int pollIntervalTicks, int retentionSeconds,
                        String serverName,
                        LogCallback logDebug, LogCallback logWarning, LogCallback logError) {
         // Derived from server-name so the identity survives a restart and matches the
@@ -117,6 +139,7 @@ public class SyncManager {
         this.dataSource = dataSource;
         this.databaseType = databaseType;
         this.executor = executor;
+        this.publishExecutor = publishExecutor != null ? publishExecutor : executor;
         this.pollIntervalTicks = pollIntervalTicks;
         this.retentionSeconds = retentionSeconds;
         this.logDebug = logDebug != null ? logDebug : msg -> {};
@@ -125,7 +148,11 @@ public class SyncManager {
     }
 
     /**
-     * Registers a named sync channel with a listener.
+     * Registers a named sync channel with a listener, at protocol version 0.
+     *
+     * <p>Version 0 is what every channel was before versions existed, and what an XCore 1.x server
+     * sends: a channel registered this way keeps talking to those. Use
+     * {@link #registerChannel(String, int, SyncListener)} the day its messages change.</p>
      *
      * @param name     The channel name (must be unique).
      * @param listener The listener that handles incoming messages.
@@ -133,12 +160,47 @@ public class SyncManager {
      * @throws IllegalStateException if a channel with the same name already exists.
      */
     public SyncChannel registerChannel(String name, SyncListener listener) {
-        if (channels.containsKey(name)) {
+        return registerChannel(name, 0, listener);
+    }
+
+    /**
+     * Registers a named sync channel whose messages are written in a given version of their format.
+     *
+     * <h2>Why</h2>
+     * A network is updated one server at a time. While it is, servers on the new version and servers
+     * on the old one read each other's messages, and when the meaning of an action, a key or a
+     * payload changed between the two, each side acted on what the other never said. Every message
+     * now carries the version of its channel, and a message of another version is not handed to the
+     * listener: the console says which server sent it and which side is behind, once.
+     *
+     * <p>Raise the number whenever the messages of the channel change in a way an older listener
+     * would misread — a renamed action, a key holding something else, a payload laid out
+     * differently. Adding an action older servers ignore anyway does not need it. During the update,
+     * the servers simply stop hearing the ones still on the other version, rather than misreading
+     * them.</p>
+     *
+     * <pre>{@code
+     * // Version 1: the payload of BAN became a JSON object.
+     * core().getSyncManager().registerChannel("xbans", 1, message -> handle(message));
+     * }</pre>
+     *
+     * @param name     The channel name (must be unique).
+     * @param protocol The version of the channel's messages, 0 or more. Messages from an XCore 1.x
+     *                 server, which carry none, count as version 0.
+     * @param listener The listener that handles incoming messages.
+     * @return The created {@link SyncChannel}.
+     * @throws IllegalStateException    if a channel with the same name already exists.
+     * @throws IllegalArgumentException if the version is negative.
+     */
+    public SyncChannel registerChannel(String name, int protocol, SyncListener listener) {
+        if (protocol < 0) {
+            throw new IllegalArgumentException("Sync channel '" + name + "': protocol version " + protocol + " is negative.");
+        }
+        SyncChannel channel = new SyncChannel(name, listener, protocol);
+        if (channels.putIfAbsent(name, channel) != null) {
             throw new IllegalStateException("Sync channel '" + name + "' is already registered.");
         }
-        SyncChannel channel = new SyncChannel(name, listener);
-        channels.put(name, channel);
-        logDebug.log("Sync channel '" + name + "' registered.");
+        logDebug.log("Sync channel '" + name + "' registered (protocol " + protocol + ").");
         return channel;
     }
 
@@ -186,7 +248,8 @@ public class SyncManager {
      */
     public void publish(String channelName, SyncMessage message, String targetServer) {
         if (transport == null) return;
-        if (!channels.containsKey(channelName)) {
+        SyncChannel channel = channels.get(channelName);
+        if (channel == null) {
             logWarning.log("Attempted to publish to unregistered channel '" + channelName + "'.");
             return;
         }
@@ -194,6 +257,9 @@ public class SyncManager {
         json.addProperty("s", serverId);
         json.addProperty("i", instanceId);
         json.addProperty("c", channelName);
+        // Always written, 0 included: the absence of the field is what says "a server older than
+        // versions", and the warning on the other side is worded after it.
+        json.addProperty("v", channel.protocol());
         json.addProperty("a", message.action());
         json.addProperty("k", message.key() == null ? "" : message.key());
         json.addProperty("p", message.payload() == null ? "" : message.payload());
@@ -224,9 +290,11 @@ public class SyncManager {
             formatted = array.toString();
         }
 
-        executor.execute(() -> {
+        // The transport as it is now: the batch stop() flushes can be written after it cleared the field.
+        SyncTransport target = transport;
+        publishExecutor.execute(() -> {
             try {
-                transport.publish(formatted);
+                target.publish(formatted);
             } catch (Exception e) {
                 logError.log("Failed to publish " + batch.size() + " sync message(s) : " + e.getMessage());
             }
@@ -332,6 +400,22 @@ public class SyncManager {
         SyncChannel channel = channels.get(channelName);
         if (channel == null) return;                                    // not subscribed here
 
+        // Written in the format this channel speaks here, or not delivered at all: during a rolling
+        // update, a listener reading the other version's messages acted on what was never said.
+        Integer version = protocolOf(json);
+        if (version == null) {
+            logDebug.log("Sync message on '" + channelName + "' from " + sourceServerId + " carries an unreadable protocol version; ignored.");
+            return;
+        }
+        if (version != channel.protocol()) {
+            reportMismatch(channelName, sourceServerId, version, channel.protocol(), !json.has("v"));
+            return;
+        }
+        if (!reportedMismatches.isEmpty()) {
+            // That server speaks our version again: if it ever goes back, it is worth saying again.
+            reportedMismatches.remove(mismatchKey(channelName, sourceServerId));
+        }
+
         SyncMessage message = new SyncMessage(action, key, payload);
         executor.execute(() -> {
             try {
@@ -341,5 +425,53 @@ public class SyncManager {
                 logError.log("Error handling sync message on '" + channelName + "' : " + e.getMessage());
             }
         });
+    }
+
+    /**
+     * Reads the protocol version a message was written in.
+     *
+     * @param json The decoded message.
+     * @return The version; 0 when the message has none (a server older than versions); {@code null}
+     *         when the field is there but is not a number.
+     */
+    private static Integer protocolOf(JsonObject json) {
+        if (!json.has("v")) return 0;
+        try {
+            return json.get("v").getAsInt();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Says, once per channel and server, that a server speaks another version of a channel.
+     *
+     * @param channelName The channel.
+     * @param source      The server the message came from.
+     * @param remote      The version it was written in.
+     * @param local       The version this server speaks.
+     * @param legacy      Whether the message carried no version at all (an XCore 1.x server).
+     */
+    private void reportMismatch(String channelName, String source, int remote, int local, boolean legacy) {
+        String server = serverOf(source);
+        Integer previous = reportedMismatches.put(mismatchKey(channelName, source), remote);
+        if (previous != null && previous == remote) return;
+
+        boolean newer = remote > local;
+        String text = "Server " + server + " runs " + (newer ? "a newer" : "an older") + " " + channelName
+                + " protocol (v" + remote + (legacy ? ", XCore 1.x" : "") + ") than this one (v" + local + "): "
+                + (newer ? "this server is the one behind" : "that server is the one behind")
+                + ", and its " + channelName + " messages are ignored until both speak the same version."
+                + " Update every server of the network.";
+        // The server name comes off the wire: printed as text, never read as formatting.
+        logWarning.log(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().escapeTags(text));
+    }
+
+    private static String serverOf(String source) {
+        return source == null || source.isBlank() ? "unknown" : source;
+    }
+
+    private static String mismatchKey(String channelName, String source) {
+        return channelName + '\u0000' + serverOf(source);
     }
 }

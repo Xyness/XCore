@@ -29,6 +29,13 @@ public class NetworkRegistry {
     /** The channel servers talk to each other on. */
     public static final String CHANNEL = "xcore_net";
 
+    /**
+     * Version of the messages on {@link #CHANNEL}. 0 is the format of XCore 1.x, unchanged since:
+     * servers on either version still see each other during an update. Raise it when a heartbeat or
+     * a player notice changes shape.
+     */
+    public static final int PROTOCOL = 0;
+
     private static final String HEARTBEAT = "HEARTBEAT";
     private static final String PLAYER_JOIN = "PLAYER_JOIN";
     private static final String PLAYER_QUIT = "PLAYER_QUIT";
@@ -67,7 +74,7 @@ public class NetworkRegistry {
         }
         this.heartbeatSeconds = Math.max(5, main.getConfig().getLong("cross-server.heartbeat-seconds", 10));
 
-        main.getSyncManager().registerChannel(CHANNEL, this::onMessage);
+        main.getSyncManager().registerChannel(CHANNEL, PROTOCOL, this::onMessage);
         servers.put(selfName, snapshot());
 
         long ticks = heartbeatSeconds * 20L;

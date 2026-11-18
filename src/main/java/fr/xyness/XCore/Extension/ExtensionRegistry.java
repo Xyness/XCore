@@ -183,6 +183,10 @@ public final class ExtensionRegistry {
      * is nothing left to do here. This is for XCore going away alone — its own start failed, or a
      * plugin manager unloads it — and a plugin must not keep running on a database pool that is
      * about to close under it.</p>
+     *
+     * <p>Except a plugin that did not start and stays enabled on purpose ({@link XPlugin#isHeld()}):
+     * it uses nothing of XCore, and what it keeps up — XLogin refusing every connection — is what
+     * must outlive XCore.</p>
      */
     public void disablePlugins() {
         List<XExtension> running = new ArrayList<>(plugins);
@@ -190,6 +194,7 @@ public final class ExtensionRegistry {
         for (XExtension extension : running) {
             Plugin plugin = extension.plugin();
             if (plugin == null || !plugin.isEnabled()) continue;
+            if (plugin instanceof XPlugin xplugin && xplugin.isHeld()) continue;
             logger.sendWarning("XCore is stopping: disabling " + extension.name() + ", which runs on it.");
             try {
                 Bukkit.getPluginManager().disablePlugin(plugin);
