@@ -30,8 +30,17 @@ import fr.xyness.XCore.XCore;
 @SuppressWarnings("unchecked")
 public class SchedulerAdapter {
 
-	/** Reference to the main plugin instance. */
-    private final XCore main;
+	/**
+	 * The plugin every task is scheduled under.
+	 *
+	 * <p>Bukkit and Folia both cancel a plugin's tasks when that plugin is disabled, and refuse new
+	 * ones from it afterwards. A plugin built on XCore gets an adapter of its own, so what it
+	 * schedules stops with it; XCore's adapter, the one addons share, stays owned by XCore.</p>
+	 */
+    private final Plugin owner;
+
+	/** Where scheduling failures are reported: the owner's own logger. */
+    private final Logger logger;
 
 	/** Whether the server is running Folia (detected at construction time, reset to false on reflection failure). */
     private boolean isFolia;
@@ -73,13 +82,24 @@ public class SchedulerAdapter {
     private final java.util.Map<Class<?>, Method> cancelMethods = new java.util.concurrent.ConcurrentHashMap<>();
 
 	/**
-	 * Creates a new SchedulerAdapter and resolves all Folia scheduler methods via reflection
-	 * if the server is running Folia.
+	 * Creates the adapter XCore and its addons share, owned by XCore.
 	 *
 	 * @param main The main plugin instance.
 	 */
     public SchedulerAdapter(XCore main) {
-    	this.main = main;
+        this(main, main.logger());
+    }
+
+	/**
+	 * Creates a new SchedulerAdapter and resolves all Folia scheduler methods via reflection
+	 * if the server is running Folia.
+	 *
+	 * @param owner  The plugin the tasks belong to: they are cancelled when it is disabled.
+	 * @param logger Where scheduling failures are reported.
+	 */
+    public SchedulerAdapter(Plugin owner, Logger logger) {
+    	this.owner = owner;
+    	this.logger = logger;
     	this.isFolia = isFoliaAvailable();
 
     	if (isFolia) {
@@ -116,7 +136,7 @@ public class SchedulerAdapter {
                 asyncScheduler = Bukkit.class.getMethod("getAsyncScheduler").invoke(null);
 
             } catch (Exception e) {
-                main.logger().sendWarning("Failed to initialize Folia scheduler, falling back to Bukkit : " + e.getMessage());
+                logger.sendWarning("Failed to initialize Folia scheduler, falling back to Bukkit : " + e.getMessage());
                 isFolia = false;
             }
         }
@@ -162,12 +182,12 @@ public class SchedulerAdapter {
         if (isFolia) {
             try {
                 Object scheduler = playerGetSchedulerMethod.invoke(player);
-                entitySchedulerRunMethod.invoke(scheduler, main, wrapConsumer(task), null);
+                entitySchedulerRunMethod.invoke(scheduler, owner, wrapConsumer(task), null);
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia entity task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia entity task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTask(main, task);
+            Bukkit.getScheduler().runTask(owner, task);
         }
     }
 
@@ -188,7 +208,7 @@ public class SchedulerAdapter {
         if (isFolia) {
             try {
                 Object scheduler = playerGetSchedulerMethod.invoke(player);
-                Object handle = entitySchedulerRunMethod.invoke(scheduler, main, wrapConsumer(task), retired);
+                Object handle = entitySchedulerRunMethod.invoke(scheduler, owner, wrapConsumer(task), retired);
                 if (handle == null) {
                     // Already retired: Folia neither runs the task nor calls the callback.
                     if (retired != null) retired.run();
@@ -196,7 +216,7 @@ public class SchedulerAdapter {
                 }
                 return true;
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia entity task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia entity task : " + e.getMessage());
                 if (retired != null) retired.run();
                 return false;
             }
@@ -205,7 +225,7 @@ public class SchedulerAdapter {
             if (retired != null) retired.run();
             return false;
         }
-        Bukkit.getScheduler().runTask(main, () -> {
+        Bukkit.getScheduler().runTask(owner, () -> {
             if (player.isOnline()) task.run();
             else if (retired != null) retired.run();
         });
@@ -223,12 +243,12 @@ public class SchedulerAdapter {
 	    if (isFolia) {
 	        try {
 	            Object scheduler = playerGetSchedulerMethod.invoke(player);
-	            entitySchedulerRunDelayedMethod.invoke(scheduler, main, wrapConsumer(task), null, delayTicks);
+	            entitySchedulerRunDelayedMethod.invoke(scheduler, owner, wrapConsumer(task), null, delayTicks);
 	        } catch (Exception e) {
-	            main.logger().sendError("Failed to schedule delayed entity task: " + e.getMessage());
+	            logger.sendError("Failed to schedule delayed entity task: " + e.getMessage());
 	        }
 	    } else {
-	        Bukkit.getScheduler().runTaskLater(main, task, delayTicks);
+	        Bukkit.getScheduler().runTaskLater(owner, task, delayTicks);
 	    }
 	}
 
@@ -245,12 +265,12 @@ public class SchedulerAdapter {
 	    if (isFolia) {
 	        try {
 	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
-	            entitySchedulerRunMethod.invoke(scheduler, main, wrapConsumer(task), null);
+	            entitySchedulerRunMethod.invoke(scheduler, owner, wrapConsumer(task), null);
 	        } catch (Exception e) {
-	            main.logger().sendError("Failed to schedule Folia entity task : " + e.getMessage());
+	            logger.sendError("Failed to schedule Folia entity task : " + e.getMessage());
 	        }
 	    } else {
-	        Bukkit.getScheduler().runTask(main, task);
+	        Bukkit.getScheduler().runTask(owner, task);
 	    }
 	}
 
@@ -267,12 +287,12 @@ public class SchedulerAdapter {
 	    if (isFolia) {
 	        try {
 	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
-	            entitySchedulerRunDelayedMethod.invoke(scheduler, main, wrapConsumer(task), null, delayTicks);
+	            entitySchedulerRunDelayedMethod.invoke(scheduler, owner, wrapConsumer(task), null, delayTicks);
 	        } catch (Exception e) {
-	            main.logger().sendError("Failed to schedule delayed entity task : " + e.getMessage());
+	            logger.sendError("Failed to schedule delayed entity task : " + e.getMessage());
 	        }
 	    } else {
-	        Bukkit.getScheduler().runTaskLater(main, task, delayTicks);
+	        Bukkit.getScheduler().runTaskLater(owner, task, delayTicks);
 	    }
 	}
 
@@ -295,14 +315,14 @@ public class SchedulerAdapter {
 	    if (isFolia) {
 	        try {
 	            Object scheduler = entityGetSchedulerMethod.invoke(entity);
-	            return entitySchedulerRunAtFixedRateMethod.invoke(scheduler, main, wrapConsumer(task), null,
+	            return entitySchedulerRunAtFixedRateMethod.invoke(scheduler, owner, wrapConsumer(task), null,
 	                    Math.max(1L, startTicks), Math.max(1L, periodTicks));
 	        } catch (Exception e) {
-	            main.logger().sendError("Failed to schedule Folia entity task timer : " + e.getMessage());
+	            logger.sendError("Failed to schedule Folia entity task timer : " + e.getMessage());
 	            return null;
 	        }
 	    }
-	    return Bukkit.getScheduler().runTaskTimer(main, task, startTicks, periodTicks);
+	    return Bukkit.getScheduler().runTaskTimer(owner, task, startTicks, periodTicks);
 	}
 
 	/**
@@ -322,13 +342,13 @@ public class SchedulerAdapter {
 	        player.teleportAsync(location)
 	              .thenAccept(result -> future.complete(Boolean.TRUE.equals(result)))
 	              .exceptionally(ex -> {
-	                  main.logger().sendError("Asynchronous teleport failed : " + ex.getMessage());
+	                  logger.sendError("Asynchronous teleport failed : " + ex.getMessage());
 	                  future.complete(false);
 	                  return null;
 	              });
 	    } catch (Throwable t) {
 	        // A fork without the method: fall back to the classic path rather than not teleporting.
-	        main.logger().sendDebug("teleportAsync unavailable (" + t + "), falling back to a scheduled teleport.");
+	        logger.sendDebug("teleportAsync unavailable (" + t + "), falling back to a scheduled teleport.");
 	        runLocationTask(() -> future.complete(player.teleport(location)), location);
 	    }
 	    return future;
@@ -342,12 +362,12 @@ public class SchedulerAdapter {
     public void runGlobalTask(Runnable task) {
         if (isFolia) {
             try {
-                globalSchedulerRunMethod.invoke(globalScheduler, main, wrapConsumer(task));
+                globalSchedulerRunMethod.invoke(globalScheduler, owner, wrapConsumer(task));
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia global task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia global task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTask(main, task);
+            Bukkit.getScheduler().runTask(owner, task);
         }
     }
 
@@ -365,13 +385,13 @@ public class SchedulerAdapter {
     public Object runGlobalTaskLater(Runnable task, long delayTicks) {
         if (isFolia) {
             try {
-                return globalSchedulerRunDelayedMethod.invoke(globalScheduler, main, wrapConsumer(task), Math.max(1L, delayTicks));
+                return globalSchedulerRunDelayedMethod.invoke(globalScheduler, owner, wrapConsumer(task), Math.max(1L, delayTicks));
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia delayed global task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia delayed global task : " + e.getMessage());
                 return null;
             }
         }
-        return Bukkit.getScheduler().runTaskLater(main, task, Math.max(1L, delayTicks));
+        return Bukkit.getScheduler().runTaskLater(owner, task, Math.max(1L, delayTicks));
     }
 
 	/**
@@ -385,13 +405,13 @@ public class SchedulerAdapter {
     public Object runGlobalTaskTimer(Runnable task, long startTicks, long periodTicks) {
         if (isFolia) {
             try {
-                return globalSchedulerRunAtFixedRateMethod.invoke(globalScheduler, main, wrapConsumer(task), Math.max(1, startTicks), Math.max(1, periodTicks));
+                return globalSchedulerRunAtFixedRateMethod.invoke(globalScheduler, owner, wrapConsumer(task), Math.max(1, startTicks), Math.max(1, periodTicks));
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia global task timer : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia global task timer : " + e.getMessage());
                 return null;
             }
         } else {
-            return Bukkit.getScheduler().runTaskTimer(main, task, startTicks, periodTicks);
+            return Bukkit.getScheduler().runTaskTimer(owner, task, startTicks, periodTicks);
         }
     }
 
@@ -404,12 +424,12 @@ public class SchedulerAdapter {
     public void runLocationTask(Runnable task, Location location) {
         if (isFolia) {
             try {
-                regionSchedulerRunLocationMethod.invoke(regionScheduler, main, location, wrapConsumer(task));
+                regionSchedulerRunLocationMethod.invoke(regionScheduler, owner, location, wrapConsumer(task));
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia located task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia located task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTask(main, task);
+            Bukkit.getScheduler().runTask(owner, task);
         }
     }
 
@@ -423,12 +443,12 @@ public class SchedulerAdapter {
     public void runLocationTaskLater(Runnable task, Location location, long delayTicks) {
         if (isFolia) {
             try {
-                regionSchedulerRunLocationDelayedMethod.invoke(regionScheduler, main, location, wrapConsumer(task), delayTicks);
+                regionSchedulerRunLocationDelayedMethod.invoke(regionScheduler, owner, location, wrapConsumer(task), delayTicks);
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia located task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia located task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTaskLater(main, task, Math.max(1L, delayTicks));
+            Bukkit.getScheduler().runTaskLater(owner, task, Math.max(1L, delayTicks));
         }
     }
 
@@ -443,12 +463,12 @@ public class SchedulerAdapter {
     public void runChunkTask(Runnable task, World world, int chunkX, int chunkZ) {
         if (isFolia) {
             try {
-                regionSchedulerRunChunkMethod.invoke(regionScheduler, main, world, chunkX, chunkZ, wrapConsumer(task));
+                regionSchedulerRunChunkMethod.invoke(regionScheduler, owner, world, chunkX, chunkZ, wrapConsumer(task));
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia chunk task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia chunk task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTask(main, task);
+            Bukkit.getScheduler().runTask(owner, task);
         }
     }
 
@@ -464,12 +484,12 @@ public class SchedulerAdapter {
     public void runChunkTaskLater(Runnable task, World world, int chunkX, int chunkZ, long delayTicks) {
         if (isFolia) {
             try {
-                regionSchedulerRunChunkDelayedMethod.invoke(regionScheduler, main, world, chunkX, chunkZ, wrapConsumer(task), delayTicks);
+                regionSchedulerRunChunkDelayedMethod.invoke(regionScheduler, owner, world, chunkX, chunkZ, wrapConsumer(task), delayTicks);
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia chunk task : " + e.getMessage());
+                logger.sendError("Failed to schedule Folia chunk task : " + e.getMessage());
             }
         } else {
-            Bukkit.getScheduler().runTaskLater(main, task, Math.max(1L, delayTicks));
+            Bukkit.getScheduler().runTaskLater(owner, task, Math.max(1L, delayTicks));
         }
     }
 
@@ -487,13 +507,13 @@ public class SchedulerAdapter {
             try {
                 long initialDelayMs = Math.max(1L, startTicks * 50L);
                 long periodMs = Math.max(1L, periodTicks * 50L);
-                return asyncSchedulerRunAtFixedRateMethod.invoke(asyncScheduler, main, wrapConsumer(task), initialDelayMs, periodMs, TimeUnit.MILLISECONDS);
+                return asyncSchedulerRunAtFixedRateMethod.invoke(asyncScheduler, owner, wrapConsumer(task), initialDelayMs, periodMs, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia async task timer: " + e);
+                logger.sendError("Failed to schedule Folia async task timer: " + e);
                 return null;
             }
         } else {
-            return Bukkit.getScheduler().runTaskTimerAsynchronously(main, task, startTicks, periodTicks);
+            return Bukkit.getScheduler().runTaskTimerAsynchronously(owner, task, startTicks, periodTicks);
         }
     }
 
@@ -509,16 +529,16 @@ public class SchedulerAdapter {
 	    if (isFolia) {
 	        try {
 	            long delayMs = Math.max(1L, delayTicks * 50L);
-	            return asyncSchedulerRunDelayedMethod.invoke(asyncScheduler, main, wrapConsumer(task), delayMs, TimeUnit.MILLISECONDS);
+	            return asyncSchedulerRunDelayedMethod.invoke(asyncScheduler, owner, wrapConsumer(task), delayMs, TimeUnit.MILLISECONDS);
 	        } catch (Exception e) {
-	            main.logger().sendError("Failed to schedule delayed async task: " + e.getMessage());
+	            logger.sendError("Failed to schedule delayed async task: " + e.getMessage());
 	            return null;
 	        }
 	    } else {
 	        // Asynchronously, as the name says. This called runTaskLater, so off Folia every delayed
 	        // "async" task ran on the server thread: its queries were made there, and one that waited
 	        // on a task the server thread itself had to run froze the server for good.
-	        return Bukkit.getScheduler().runTaskLaterAsynchronously(main, task, delayTicks);
+	        return Bukkit.getScheduler().runTaskLaterAsynchronously(owner, task, delayTicks);
 	    }
 	}
 
@@ -564,11 +584,11 @@ public class SchedulerAdapter {
             } else {
                 // Saying so is the whole point: a task nobody can cancel is a leak, and silence
                 // about it is how it goes unnoticed.
-                main.logger().sendWarning("Cannot cancel a task handle of type "
+                logger.sendWarning("Cannot cancel a task handle of type "
                         + taskHandle.getClass().getName() + " — it offers no cancel() method.");
             }
         } catch (Exception e) {
-            main.logger().sendError("Failed to cancel task : " + e.getMessage());
+            logger.sendError("Failed to cancel task : " + e.getMessage());
         }
     }
 
@@ -581,13 +601,13 @@ public class SchedulerAdapter {
     public Object runAsyncTask(Runnable task) {
         if (isFolia) {
             try {
-                return asyncSchedulerRunNowMethod.invoke(asyncScheduler, main, wrapConsumer(task));
+                return asyncSchedulerRunNowMethod.invoke(asyncScheduler, owner, wrapConsumer(task));
             } catch (Exception e) {
-                main.logger().sendError("Failed to schedule Folia async task : " + e);
+                logger.sendError("Failed to schedule Folia async task : " + e);
                 return null;
             }
         } else {
-            return Bukkit.getScheduler().runTaskAsynchronously(main, task);
+            return Bukkit.getScheduler().runTaskAsynchronously(owner, task);
         }
     }
 
@@ -607,7 +627,7 @@ public class SchedulerAdapter {
         try {
             return world.getChunkAtAsync(x, z);
         } catch (Throwable t) {
-            main.logger().sendError("Failed to load chunk asynchronously: " + t.getMessage());
+            logger.sendError("Failed to load chunk asynchronously: " + t.getMessage());
             return CompletableFuture.failedFuture(t);
         }
     }

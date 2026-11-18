@@ -33,6 +33,7 @@ import fr.xyness.XCore.API.XCoreApiProvider;
 import fr.xyness.XCore.API.XCoreApiService;
 import fr.xyness.XCore.Addon.AddonListenerRegistry;
 import fr.xyness.XCore.Addon.AddonManager;
+import fr.xyness.XCore.Extension.ExtensionRegistry;
 import fr.xyness.XCore.Cache.PlayerCache;
 import fr.xyness.XCore.Commands.XCoreCommand;
 import fr.xyness.XCore.DAO.PlayerDAO;
@@ -60,6 +61,12 @@ import redis.clients.jedis.JedisPoolConfig;
  * <p>
  * XCore is a shared framework that provides database management, player caching,
  * cross-server sync, GUI management, and an addon system for modular extensions.
+ * </p>
+ * <p>
+ * Since 2.0 the four official addons are plugins of their own, built on
+ * {@link fr.xyness.XCore.Extension.XPlugin}: they live in {@code plugins/}, depend on XCore, and
+ * register with {@link #extensions()} so that everything XCore lists, reloads and measures still
+ * covers them. Third-party addons keep loading from {@code plugins/XCore/addons/}.
  * </p>
  */
 public class XCore extends JavaPlugin {
@@ -134,6 +141,15 @@ public class XCore extends JavaPlugin {
     private SyncManager syncManager;
     private AddonManager addonManager;
     private AddonListenerRegistry listenerRegistry;
+
+    /** Addons and plugins built on XCore, as one list. Exists from construction: plugins register in their onEnable. */
+    private final ExtensionRegistry extensions = new ExtensionRegistry(this);
+
+    /** Set once {@link #start()} has gone through, cleared when {@link #stop()} begins. */
+    private volatile boolean running;
+
+    /** Whether addons.yml gained a key since it was last written. */
+    private boolean dataConfigDirty;
     private Object redisHealthTask;
     private WebPanel webPanel;
     private CoinsManager coinsManager;
@@ -519,6 +535,10 @@ public class XCore extends JavaPlugin {
         // ---- Listeners ----
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
 
+        // XLogin 1.x refused by the addon loader with no XLogin plugin to replace it: the server
+        // has no authentication left, so it takes no one until that is fixed.
+        if (addonManager != null && addonManager.needsLoginLockdown()) lockDownLogins();
+
         // Addons are not Bukkit plugins, so /plugins cannot see them. Ours takes the command's
         // place in the map — short and bukkit: forms alike — and prints Paper's own list with one
         // more section. Set plugins-command.override to false to hand it back.
@@ -696,11 +716,43 @@ public class XCore extends JavaPlugin {
                 logger.sendInfo("Prefetched " + map.size() + " player(s) into cache."));
         }
 
+        running = true;
+
         long end = System.nanoTime();
         long durationInMillis = (end - startTime) / 1_000_000;
         logger.sendInfo("Plugin loaded in <aqua>" + methods.getNumberSeparate(durationInMillis) + "ms</aqua> <green>\u2713");
         logger.sendRawBar();
         return true;
+    }
+
+    /**
+     * Refuses every connection: XLogin is not running, and on an offline-mode server that means
+     * nobody checks who is who.
+     *
+     * <p>Follows XLogin's own {@code security.refuse-connections-on-failure}, read from wherever its
+     * files are — {@code plugins/XLogin/} once a 2.0 plugin has run, the old addon folder before.</p>
+     */
+    private void lockDownLogins() {
+        File[] candidates = {
+            new File(getDataFolder().getParentFile(), "XLogin" + File.separator + "config.yml"),
+            new File(getDataFolder(), "addons" + File.separator + "XLogin" + File.separator + "config.yml")
+        };
+        boolean refuse = true;
+        for (File candidate : candidates) {
+            if (!candidate.isFile()) continue;
+            refuse = YamlConfiguration.loadConfiguration(candidate)
+                    .getBoolean("security.refuse-connections-on-failure", true);
+            break;
+        }
+        if (!refuse) {
+            logger.sendSevere("XLogin is not running and security.refuse-connections-on-failure is false:"
+                    + " this server accepts players WITHOUT any authentication.");
+            return;
+        }
+        getServer().getPluginManager().registerEvents(
+                new fr.xyness.XCore.Listeners.LoginLockdownListener(langManager.getComponent("auth-unavailable")), this);
+        logger.sendSevere("XLogin is not running: every connection is refused until the XLogin 2.0 jar is in plugins/"
+                + " (security.refuse-connections-on-failure in XLogin's config.yml).");
     }
 
     // -------------------------------------------------------------------------
@@ -711,11 +763,16 @@ public class XCore extends JavaPlugin {
      * Main shutdown sequence.
      */
     public void stop() {
+        running = false;
         logger.sendRawBar();
         logger.sendInfo("Stopping the plugin.");
 
         // Put /plugins back before anything else: the addon list it prints is about to be empty.
         fr.xyness.XCore.Commands.PluginsCommand.uninstall();
+
+        // Plugins built on XCore still running: only when XCore stops on its own, since the server
+        // disables them first otherwise. They go before the pools they write to.
+        extensions.disablePlugins();
 
         // Addons first (reverse dependency order)
         if (addonManager != null) addonManager.disableAddons();
@@ -949,6 +1006,22 @@ public class XCore extends JavaPlugin {
     /** @return The addon manager. */
     public AddonManager getAddonManager() { return addonManager; }
 
+    /**
+     * Returns every XCore extension: the addons, and the plugins built on
+     * {@link fr.xyness.XCore.Extension.XPlugin}.
+     *
+     * @return The extension registry.
+     */
+    public ExtensionRegistry extensions() { return extensions; }
+
+    /**
+     * Whether XCore started and has not begun stopping: what a plugin built on it checks before
+     * enabling, since the server enables a plugin even when the one it depends on failed to start.
+     *
+     * @return {@code true} while every shared service is up.
+     */
+    public boolean isRunning() { return running && isEnabled(); }
+
     /** @return The addon listener registry. */
     public AddonListenerRegistry getListenerRegistry() { return listenerRegistry; }
 
@@ -977,6 +1050,7 @@ public class XCore extends JavaPlugin {
         String path = "addons." + addonName;
         if (!addonsConfig.contains(path)) {
             addonsConfig.set(path, true);
+            dataConfigDirty = true;
         }
     }
 
@@ -995,13 +1069,27 @@ public class XCore extends JavaPlugin {
         String path = "sync-addons." + addonName;
         if (!addonsConfig.contains(path)) {
             addonsConfig.set(path, false);
+            dataConfigDirty = true;
         }
     }
 
     /** Saves the addons.yml file (called once after all addons are loaded). */
     public void saveDataConfig() {
-        try { addonsConfig.save(addonsFile); }
+        try {
+            addonsConfig.save(addonsFile);
+            dataConfigDirty = false;
+        }
         catch (IOException e) { logger.sendError("Failed to save addons.yml: " + e.getMessage()); }
+    }
+
+    /**
+     * Saves addons.yml only if a key was added since it was last written.
+     *
+     * <p>For the plugins built on XCore: they enable after XCore has written the file, one by one,
+     * and the first start of each adds its switches. A start with nothing new writes nothing.</p>
+     */
+    public void saveDataConfigIfChanged() {
+        if (dataConfigDirty) saveDataConfig();
     }
 
 

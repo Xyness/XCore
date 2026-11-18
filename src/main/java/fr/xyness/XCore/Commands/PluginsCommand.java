@@ -173,12 +173,14 @@ public class PluginsCommand extends Command {
             }
         }
 
-        // The one section the server cannot produce.
-        sender.sendMessage(Component.text()
-                .append(INFO_ICON_ADDON)
-                .append(header("XCore Addons", ADDON_COLOR, addons.size(), showSizes))
-                .build());
+        // The one section the server cannot produce. Left out when empty, as Paper leaves out its
+        // own empty sections: since 2.0 the official addons are plugins, listed above with the
+        // others, and on most servers no addon is left to show here.
         if (!addons.isEmpty()) {
+            sender.sendMessage(Component.text()
+                    .append(INFO_ICON_ADDON)
+                    .append(header("XCore Addons", ADDON_COLOR, addons.size(), showSizes))
+                    .build());
             List<Component> entries = new ArrayList<>(addons.size());
             for (Map.Entry<String, XAddon> entry : addons.entrySet()) {
                 entries.add(formatAddon(manager, entry.getKey(), entry.getValue()));

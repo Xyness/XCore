@@ -18,6 +18,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.EventExecutor;
+import org.bukkit.plugin.Plugin;
 
 import fr.xyness.XCore.XCore;
 import fr.xyness.XCore.Utils.Profiler;
@@ -29,6 +30,11 @@ import fr.xyness.XCore.Utils.Profiler;
  * (since addons are not standalone Bukkit plugins). This registry keeps track
  * of which listeners belong to which addon, enabling clean unregistration
  * when an individual addon is disabled without affecting other addons or XCore itself.
+ * </p>
+ * <p>
+ * A plugin built on {@link fr.xyness.XCore.Extension.XPlugin} registers here too, under its own
+ * plugin instance: the server sees its listeners as its own, and XCore keeps timing and counting
+ * them by name exactly as it does for addons.
  * </p>
  *
  * <pre>{@code
@@ -64,12 +70,29 @@ public class AddonListenerRegistry {
      * @param listener  The Bukkit event listener to register.
      */
     public void registerListener(String addonName, Listener listener) {
-        if (!registerTimed(addonName, listener)) {
+        registerListener(addonName, core, listener);
+    }
+
+    /**
+     * Registers a Bukkit event listener under the given name, owned by the given plugin.
+     *
+     * <p>What a plugin built on {@link fr.xyness.XCore.Extension.XPlugin} goes through. The listener
+     * is the plugin's to the server — a timings report or Spark names that plugin, not XCore, and
+     * the server drops the listener by itself when the plugin is disabled — while XCore still
+     * times each handler for {@code /xcore profile} and counts it in {@code /xcore diag}.</p>
+     *
+     * @param name     The name it is tracked and measured under (the plugin or addon name).
+     * @param owner    The plugin the server registers the listener for.
+     * @param listener The Bukkit event listener to register.
+     */
+    public void registerListener(String name, Plugin owner, Listener listener) {
+        Plugin plugin = owner != null ? owner : core;
+        if (!registerTimed(name, plugin, listener)) {
             // Anything unexpected in the reflective path and the listener still gets registered the
             // plain way: a missing measurement is a nuisance, a missing listener is a broken addon.
-            Bukkit.getPluginManager().registerEvents(listener, core);
+            Bukkit.getPluginManager().registerEvents(listener, plugin);
         }
-        addonListeners.computeIfAbsent(addonName, k -> new CopyOnWriteArrayList<>()).add(listener);
+        addonListeners.computeIfAbsent(name, k -> new CopyOnWriteArrayList<>()).add(listener);
     }
 
     /**
@@ -83,10 +106,11 @@ public class AddonListenerRegistry {
      * uses — so the only cost added when profiling is off is one volatile read per event.</p>
      *
      * @param addonName The owning addon.
+     * @param plugin    The plugin the server registers each handler for.
      * @param listener  The listener to register.
      * @return {@code true} when every handler was registered here.
      */
-    private boolean registerTimed(String addonName, Listener listener) {
+    private boolean registerTimed(String addonName, Plugin plugin, Listener listener) {
         try {
             Set<Method> methods = new LinkedHashSet<>();
             Collections.addAll(methods, listener.getClass().getMethods());
@@ -123,7 +147,7 @@ public class AddonListenerRegistry {
                 };
 
                 Bukkit.getPluginManager().registerEvent(eventClass, listener, annotation.priority(),
-                        executor, core, annotation.ignoreCancelled());
+                        executor, plugin, annotation.ignoreCancelled());
                 any = true;
             }
             return any;

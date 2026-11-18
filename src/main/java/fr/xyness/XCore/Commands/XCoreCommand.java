@@ -9,9 +9,8 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 import fr.xyness.XCore.XCore;
-import fr.xyness.XCore.Addon.AddonManager;
 import fr.xyness.XCore.Addon.AddonState;
-import fr.xyness.XCore.Addon.XAddon;
+import fr.xyness.XCore.Extension.XExtension;
 import fr.xyness.XCore.Cache.PlayerCache;
 import fr.xyness.XCore.Models.PlayerData;
 import fr.xyness.XCore.Utils.LangManager;
@@ -32,10 +31,10 @@ import org.bukkit.entity.Player;
  * <ul>
  *   <li>{@code /xcore} — overview panel: version, uptime, database, addons, sync, dashboard</li>
  *   <li>{@code /xcore stats} — cache, API and circuit-breaker counters</li>
- *   <li>{@code /xcore addons} — every addon with its version and state</li>
+ *   <li>{@code /xcore addons} — every addon and every plugin built on XCore, with its version and state</li>
  *   <li>{@code /xcore dashboard} — web dashboard address and one-click login link</li>
- *   <li>{@code /xcore reload} — reload the core and every addon</li>
- *   <li>{@code /xcore reload <addon>} — reload one addon</li>
+ *   <li>{@code /xcore reload} — reload the core, every addon and every plugin built on it</li>
+ *   <li>{@code /xcore reload <name>} — reload one addon or plugin</li>
  *   <li>{@code /xcore clear-cache} — empty every cache region</li>
  *   <li>{@code /xcore player <name>} — look up a player</li>
  * </ul>
@@ -70,11 +69,12 @@ public class XCoreCommand {
         return builder.buildFuture();
     };
 
-    /** Suggests loaded addon names. */
+    /** Suggests the names of the loaded addons and of the plugins built on XCore. */
     private SuggestionProvider<CommandSourceStack> addonSuggestions() {
         return (ctx, builder) -> {
             String input = builder.getRemainingLowerCase();
-            for (String name : core.getAddonManager().getAddons().keySet()) {
+            for (XExtension extension : core.extensions().all()) {
+                String name = extension.name();
                 if (name.toLowerCase().startsWith(input)) {
                     builder.suggest(name);
                 }
@@ -200,9 +200,8 @@ public class XCoreCommand {
     // -------------------------------------------------------------------------
 
     private void sendOverview(CommandSender sender) {
-        AddonManager am = core.getAddonManager();
-        Map<String, XAddon> addons = am.getAddons();
-        long enabled = addons.keySet().stream().filter(n -> am.getState(n) == AddonState.ENABLED).count();
+        List<XExtension> extensions = core.extensions().all();
+        long enabled = extensions.stream().filter(e -> e.state() == AddonState.ENABLED).count();
 
         send(sender, "bar");
         send(sender, "info-header", "version", core.getPluginMeta().getVersion());
@@ -221,8 +220,8 @@ public class XCoreCommand {
             "writes", number(core.playerCache().getDbWrites()));
         send(sender, "info-addons",
             "enabled", String.valueOf(enabled),
-            "total", String.valueOf(addons.size()),
-            "list", addonHoverList(am, addons));
+            "total", String.valueOf(extensions.size()),
+            "list", addonHoverList(extensions));
         send(sender, "info-sync",
             "status", onOff(core.getSyncManager() != null && core.getSyncManager().isRunning()),
             "backend", lang().getMessageString(core.getJedisPool() != null ? "sync-backend-redis" : "sync-backend-database"));
@@ -243,15 +242,15 @@ public class XCoreCommand {
         send(sender, "bar");
     }
 
-    /** The addon roster shown when hovering the addon counter. */
-    private String addonHoverList(AddonManager am, Map<String, XAddon> addons) {
-        if (addons.isEmpty()) return tagSafe(lang().getMessageString("info-addons-none"));
+    /** The roster shown when hovering the addon counter: addons and plugins built on XCore. */
+    private String addonHoverList(List<XExtension> extensions) {
+        if (extensions.isEmpty()) return tagSafe(lang().getMessageString("info-addons-none"));
         List<String> rows = new ArrayList<>();
-        for (Map.Entry<String, XAddon> entry : addons.entrySet()) {
+        for (XExtension extension : extensions) {
             rows.add(lang().getMessage("info-addons-entry",
-                "name", entry.getKey(),
-                "version", entry.getValue().getDescriptor().getVersion(),
-                "state", stateLabel(am.getState(entry.getKey()))));
+                "name", extension.name(),
+                "version", extension.version(),
+                "state", stateLabel(extension.state())));
         }
         return tagSafe(String.join("<newline>", rows));
     }
@@ -264,7 +263,9 @@ public class XCoreCommand {
      * Prints the heaviest event handlers, addon by addon.
      *
      * <p>Every addon runs under XCore's plugin identity, so a timings report blames XCore for
-     * everything they do. This is the only place that can say which addon actually spent the time.</p>
+     * everything they do. This is the only place that can say which addon actually spent the time.
+     * Plugins built on XCore are named by the server's own tools, and timed here too, under the same
+     * {@code Name/Listener#Event} keys, so the two kinds stay comparable in one report.</p>
      */
     private void handleProfile(CommandSender sender) {
         fr.xyness.XCore.Utils.Profiler profiler = core.profiler();
@@ -330,7 +331,7 @@ public class XCoreCommand {
      * behaviour — the questions that otherwise take four round trips to ask.</p>
      */
     private void handleDiag(CommandSender sender) {
-        AddonManager am = core.getAddonManager();
+        List<XExtension> extensions = core.extensions().all();
         StringBuilder out = new StringBuilder();
         String stamp = java.time.LocalDateTime.now().format(XCore.FORMATTER);
 
@@ -395,17 +396,29 @@ public class XCoreCommand {
             out.append('\n');
         }
 
-        out.append("[Addons]\n");
-        Map<String, XAddon> addons = am.getAddons();
-        if (addons.isEmpty()) {
+        // Plugins built on XCore next to the addons: support needs to know which form each one
+        // takes, since a 1.x addon jar left behind is refused and named below.
+        out.append("[Addons and plugins]\n");
+        if (extensions.isEmpty()) {
             out.append("  (none)\n");
         } else {
-            for (Map.Entry<String, XAddon> entry : addons.entrySet()) {
-                out.append("  ").append(String.format("%-18s", entry.getKey()))
-                   .append(" v").append(entry.getValue().getDescriptor().getVersion())
-                   .append("  ").append(am.getState(entry.getKey()))
-                   .append("  listeners=").append(core.getListenerRegistry().getListenerCount(entry.getKey()))
-                   .append('\n');
+            for (XExtension extension : extensions) {
+                out.append("  ").append(String.format("%-18s", extension.name()))
+                   .append(" v").append(String.format("%-10s", extension.version()))
+                   .append(' ').append(extension.kind() == XExtension.Kind.PLUGIN ? "plugin" : "addon ")
+                   .append("  ").append(extension.state())
+                   .append("  listeners=").append(core.getListenerRegistry().getListenerCount(extension.name()));
+                fr.xyness.XCore.Utils.Updater updater = extension.updater();
+                if (updater != null && updater.isUpdateAvailable()) {
+                    out.append("  update available: ").append(updater.getNewVersionAvailable());
+                }
+                out.append('\n');
+            }
+        }
+        if (core.getAddonManager() != null) {
+            for (Map.Entry<String, String> refused : core.getAddonManager().getRefused().entrySet()) {
+                out.append("  not loaded       ").append(refused.getKey()).append(" (")
+                   .append(refused.getValue()).append(")\n");
             }
         }
         out.append('\n');
@@ -460,9 +473,9 @@ public class XCoreCommand {
                     "queries", number(fr.xyness.XCore.Database.GuardedDataSource.getBorrowCount()),
                     "blocking", number(fr.xyness.XCore.Database.GuardedDataSource.getTickThreadBorrowCount()));
                 send(sender, "diag-addons",
-                    "count", String.valueOf(addons.size()),
-                    "enabled", String.valueOf(addons.keySet().stream()
-                            .filter(n -> am.getState(n) == AddonState.ENABLED).count()));
+                    "count", String.valueOf(extensions.size()),
+                    "enabled", String.valueOf(extensions.stream()
+                            .filter(e -> e.state() == AddonState.ENABLED).count()));
                 send(sender, "blank");
                 send(sender, "diag-written", "file", file.getName());
                 send(sender, "bar");
@@ -564,22 +577,20 @@ public class XCoreCommand {
     // -------------------------------------------------------------------------
 
     private void handleAddons(CommandSender sender) {
-        AddonManager am = core.getAddonManager();
-        Map<String, XAddon> addons = am.getAddons();
+        List<XExtension> extensions = core.extensions().all();
 
         send(sender, "bar");
-        send(sender, "addons-header", "count", String.valueOf(addons.size()));
+        send(sender, "addons-header", "count", String.valueOf(extensions.size()));
         send(sender, "blank");
 
-        if (addons.isEmpty()) {
+        if (extensions.isEmpty()) {
             send(sender, "addons-empty");
         } else {
-            for (Map.Entry<String, XAddon> entry : addons.entrySet()) {
-                String name = entry.getKey();
+            for (XExtension extension : extensions) {
                 send(sender, "addons-entry",
-                    "name", name,
-                    "version", entry.getValue().getDescriptor().getVersion(),
-                    "state", stateLabel(am.getState(name)));
+                    "name", extension.name(),
+                    "version", extension.version(),
+                    "state", stateLabel(extension.state()));
             }
         }
         send(sender, "bar");
@@ -701,18 +712,14 @@ public class XCoreCommand {
         if (core.getWebPanel() != null) core.getWebPanel().reloadStrings();
         if (core.getCoinsManager() != null) core.getCoinsManager().reload();
 
-        AddonManager am = core.getAddonManager();
+        // Addons and plugins built on XCore alike. The registry catches what a reload hook throws
+        // and reports it, so a failure now lands in the failed list instead of only in the console.
         List<String> reloaded = new ArrayList<>();
         List<String> failed = new ArrayList<>();
-        for (String name : new ArrayList<>(am.getAddons().keySet())) {
-            if (am.getState(name) != AddonState.ENABLED) continue;
-            try {
-                am.reloadAddon(name);
-                reloaded.add(name);
-            } catch (Throwable t) {
-                failed.add(name);
-                core.logger().sendError("Error reloading addon '" + name + "': " + t.getMessage());
-            }
+        for (XExtension extension : core.extensions().all()) {
+            if (extension.state() != AddonState.ENABLED) continue;
+            if (core.extensions().reload(extension)) reloaded.add(extension.name());
+            else failed.add(extension.name());
         }
 
         send(sender, "reload-core");
@@ -730,13 +737,17 @@ public class XCoreCommand {
     }
 
     private void handleReloadAddon(CommandSender sender, String addonName) {
-        AddonManager am = core.getAddonManager();
-        if (am.getAddon(addonName).isEmpty()) {
+        java.util.Optional<XExtension> extension = core.extensions().find(addonName);
+        if (extension.isEmpty()) {
             send(sender, "addon-not-found", "name", addonName);
             return;
         }
-        am.reloadAddon(addonName);
-        send(sender, "reload-addon-success", "name", addonName);
+        String name = extension.get().name();
+        if (core.extensions().reload(extension.get())) {
+            send(sender, "reload-addon-success", "name", name);
+        } else {
+            send(sender, "reload-addons-failed", "list", tagSafe(name));
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -42,6 +42,12 @@ public class PlaceholderRegistry {
     private boolean published;
 
     /**
+     * The expansion once published, typed {@code Object} so this class never makes the JVM load
+     * PlaceholderAPI's types on a server that does not have it.
+     */
+    private Object expansion;
+
+    /**
      * @param identifier The prefix placeholders will carry, without the percent signs.
      * @param author     Shown by {@code /papi info}.
      * @param version    Shown by {@code /papi info}.
@@ -119,10 +125,32 @@ public class PlaceholderRegistry {
         if (published || handlers.isEmpty()) return false;
         if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") == null) return false;
         try {
-            published = new AddonExpansion(this, author, version).register();
+            AddonExpansion created = new AddonExpansion(this, author, version);
+            published = created.register();
+            if (published) expansion = created;
             return published;
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /**
+     * Takes the placeholders back from PlaceholderAPI.
+     *
+     * <p>Called for a plugin built on XCore when it is disabled. The expansion is persistent, so
+     * PlaceholderAPI would otherwise keep it — and with it the stopped plugin — for as long as the
+     * server runs. Does nothing when nothing was published.</p>
+     */
+    public void withdraw() {
+        if (!published || expansion == null) return;
+        try {
+            // Cast here and nowhere else: like publish(), this only runs once PlaceholderAPI was
+            // found, so the expansion class is never loaded on a server without it.
+            ((AddonExpansion) expansion).unregister();
+        } catch (Throwable ignored) {
+            // PlaceholderAPI gone first: there is nothing left to take back from.
+        }
+        expansion = null;
+        published = false;
     }
 }

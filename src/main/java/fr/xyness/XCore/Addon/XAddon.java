@@ -1,20 +1,14 @@
 package fr.xyness.XCore.Addon;
 
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 
 import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.event.Listener;
 
 import org.bukkit.entity.Player;
 
 import fr.xyness.XCore.XCore;
+import fr.xyness.XCore.Extension.ExtensionSupport;
 import fr.xyness.XCore.Gui.GuiRegistry;
 import fr.xyness.XCore.Gui.GuiUtils;
 import fr.xyness.XCore.Lang.LangNamespace;
@@ -29,6 +23,11 @@ import fr.xyness.XCore.Utils.Updater;
  * The addon lifecycle is managed by {@link AddonManager}, which injects dependencies
  * via {@link #init(AddonDescriptor, XCore, File, Logger, LangNamespace, GuiRegistry)}
  * before any lifecycle methods are called.
+ * </p>
+ * <p>
+ * A plugin of its own — a jar in {@code plugins/} that depends on XCore — extends
+ * {@link fr.xyness.XCore.Extension.XPlugin} instead, which offers the same methods. Both share one
+ * implementation, so an addon and a plugin read their files the same way.
  * </p>
  *
  * <pre>{@code
@@ -48,21 +47,17 @@ public abstract class XAddon {
     private XCore core;
     private File dataFolder;
     private Logger logger;
-    /** Language key for the in-game "an update is available" notice. */
-    private static final String UPDATE_MESSAGE_KEY = "update-available";
-
     private LangNamespace lang;
     private GuiRegistry guiRegistry;
-    private FileConfiguration config;
-    private File configFile;
-    private Updater updater;
+
+    /** Configuration, files, languages and updates: shared with {@code XPlugin}, created by {@link #init}. */
+    private ExtensionSupport support;
 
     /** Built on first use, so an addon that never opens a GUI never creates one. */
     private GuiUtils guiUtils;
 
-    /** Same for cooldowns and placeholders. */
+    /** Same for cooldowns. */
     private fr.xyness.XCore.Utils.Cooldowns cooldowns;
-    private fr.xyness.XCore.Integrations.PlaceholderRegistry placeholders;
 
     // -------------------------------------------------------------------------
     // Lifecycle methods (override in subclasses)
@@ -236,11 +231,7 @@ public abstract class XAddon {
      * @return The {@link fr.xyness.XCore.Integrations.PlaceholderRegistry}.
      */
     public final fr.xyness.XCore.Integrations.PlaceholderRegistry placeholders() {
-        if (placeholders == null) {
-            placeholders = new fr.xyness.XCore.Integrations.PlaceholderRegistry(
-                    descriptor.getName().toLowerCase(), descriptor.getAuthor(), descriptor.getVersion());
-        }
-        return placeholders;
+        return support.placeholders();
     }
 
     // -------------------------------------------------------------------------
@@ -274,12 +265,7 @@ public abstract class XAddon {
      * if it does not already exist.
      */
     public final void saveDefaultConfig() {
-        if (configFile == null) {
-            configFile = new File(dataFolder, "config.yml");
-        }
-        if (!configFile.exists()) {
-            saveDefaultResource("config.yml");
-        }
+        support.saveDefaultConfig();
     }
 
     /**
@@ -288,44 +274,14 @@ public abstract class XAddon {
      * @param path The resource path inside the JAR (e.g. {@code "config.yml"}, {@code "lang.yml"}).
      */
     public final void saveDefaultResource(String path) {
-        File outFile = new File(dataFolder, path);
-        if (outFile.exists()) return;
-
-        outFile.getParentFile().mkdirs();
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(path)) {
-            if (is == null) {
-                logger.sendDebug("Resource not found in JAR: " + path);
-                return;
-            }
-            try (OutputStream os = Files.newOutputStream(outFile.toPath())) {
-                byte[] buffer = new byte[4096];
-                int read;
-                while ((read = is.read(buffer)) != -1) {
-                    os.write(buffer, 0, read);
-                }
-            }
-        } catch (IOException e) {
-            logger.sendError("Failed to save default resource '" + path + "': " + e.getMessage());
-        }
+        support.saveDefaultResource(path);
     }
 
     /**
      * Alias for {@link #saveDefaultResource(String)}.
      */
     public final void saveResource(String path, boolean replace) {
-        File outFile = new File(dataFolder, path);
-        if (outFile.exists() && !replace) return;
-        outFile.getParentFile().mkdirs();
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(path)) {
-            if (is == null) return;
-            try (OutputStream os = Files.newOutputStream(outFile.toPath())) {
-                byte[] buffer = new byte[4096];
-                int read;
-                while ((read = is.read(buffer)) != -1) os.write(buffer, 0, read);
-            }
-        } catch (IOException e) {
-            logger.sendError("Failed to save resource '" + path + "': " + e.getMessage());
-        }
+        support.saveResource(path, replace);
     }
 
     /**
@@ -335,32 +291,21 @@ public abstract class XAddon {
      * @return The {@link FileConfiguration} for this addon.
      */
     public final FileConfiguration getConfig() {
-        if (config == null) {
-            reloadConfig();
-        }
-        return config;
+        return support.getConfig();
     }
 
     /**
      * Reloads the addon's configuration from disk.
      */
     public final void reloadConfig() {
-        if (configFile == null) {
-            configFile = new File(dataFolder, "config.yml");
-        }
-        config = YamlConfiguration.loadConfiguration(configFile);
+        support.reloadConfig();
     }
 
     /**
      * Saves the addon's configuration to disk.
      */
     public final void saveConfig() {
-        if (config == null || configFile == null) return;
-        try {
-            config.save(configFile);
-        } catch (IOException e) {
-            logger.sendWarning("Failed to save config.yml: " + e.getMessage());
-        }
+        support.saveConfig();
     }
 
     // -------------------------------------------------------------------------
@@ -375,12 +320,7 @@ public abstract class XAddon {
      * checking stays off.</p>
      */
     public final void initUpdater() {
-        String url = descriptor.getUpdateUrl();
-        if (url == null || url.isBlank()) {
-            logger.sendWarning("No 'update-url' in addon.yml: update checking is off for this addon.");
-            return;
-        }
-        this.updater = new Updater(url, descriptor.getVersion(), logger);
+        support.initUpdater();
     }
 
 
@@ -389,7 +329,7 @@ public abstract class XAddon {
      *
      * @return The {@link Updater} instance.
      */
-    public final Updater updater() { return updater; }
+    public final Updater updater() { return support == null ? null : support.updater(); }
 
     /**
      * Checks for updates and notifies the player if one is available.
@@ -403,31 +343,7 @@ public abstract class XAddon {
      * @param permissionNode The permission required to receive update notifications (e.g. {@code "ah.update"}).
      */
     public final void notifyUpdateOnJoin(Player player, String permissionNode) {
-        if (updater == null || !updater.isUpdateAvailable()) return;
-        if (!player.hasPermission(permissionNode)) return;
-        if (!getConfig().getBoolean("update.notifications", true)) return;
-
-        String addonName = descriptor.getName();
-        String newVersion = updater.getNewVersionAvailable();
-        String date = updater.getDate();
-
-        // The addon's own file wins when it defines the key, so an addon can word it its way;
-        // otherwise the single copy in XCore's lang/<code>.yml speaks for all of them.
-        String template = lang.getRaw(UPDATE_MESSAGE_KEY);
-        if (UPDATE_MESSAGE_KEY.equals(template)) {
-            template = core.langManager().getRaw(UPDATE_MESSAGE_KEY);
-        }
-        final String message = template
-                .replace("{addon}", addonName)
-                .replace("{version}", newVersion)
-                .replace("{date}", date == null ? "" : date);
-
-        core.schedulerAdapter().runEntityTaskLater(player, () -> {
-            if (player.isOnline()) {
-                player.sendMessage(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage()
-                        .deserialize(message));
-            }
-        }, 60L);
+        support.notifyUpdateOnJoin(player, permissionNode);
     }
 
     /**
@@ -441,36 +357,7 @@ public abstract class XAddon {
      *                          still written on first run via {@link #saveDefaultConfig()}.
      */
     public final void updateConfigWithDefaults(String... protectedSections) {
-        if (configFile == null) {
-            configFile = new File(dataFolder, "config.yml");
-        }
-        if (!configFile.exists()) {
-            saveDefaultConfig();
-            return;
-        }
-
-        setAsideIfUnreadable(configFile);
-        FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
-        try (InputStream defStream = getClass().getClassLoader().getResourceAsStream("config.yml")) {
-            if (defStream == null) return;
-            YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
-                new InputStreamReader(defStream, StandardCharsets.UTF_8));
-
-            java.util.List<String> added = fr.xyness.XCore.Utils.ConfigMerger.addMissingKeys(
-                    diskConfig, defConfig, protectedSections);
-
-            if (!added.isEmpty()) {
-                diskConfig.save(configFile);
-                logger.sendDebug("Added " + added.size() + " new setting(s) to config.yml.");
-            }
-        } catch (IOException e) {
-            logger.sendError("Error updating config with defaults: " + e.getMessage());
-        }
-        reloadConfig();
-    }
-
-    private static boolean isUnderProtectedSection(String key, String[] protectedSections) {
-        return fr.xyness.XCore.Utils.ConfigMerger.isUnderProtectedSection(key, protectedSections);
+        support.updateConfigWithDefaults(protectedSections);
     }
 
     /**
@@ -495,63 +382,7 @@ public abstract class XAddon {
      * @return The number of keys removed.
      */
     public final int pruneObsoleteKeys(String fileName, String... protectedSections) {
-        File file = new File(dataFolder, fileName);
-        if (!file.exists()) return 0;
-
-        FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(file);
-        try (InputStream defStream = getClass().getClassLoader().getResourceAsStream(fileName)) {
-            if (defStream == null) {
-                logger.sendDebug("No bundled " + fileName + " to compare against; nothing pruned.");
-                return 0;
-            }
-            YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
-                new InputStreamReader(defStream, StandardCharsets.UTF_8));
-
-            // Shallowest first, so removing an obsolete section lets its children be skipped
-            // instead of being reported one by one.
-            java.util.List<String> candidates = new java.util.ArrayList<>();
-            for (String key : diskConfig.getKeys(true)) {
-                if (defConfig.contains(key)) continue;
-                if (isUnderProtectedSection(key, protectedSections)) continue;
-                candidates.add(key);
-            }
-            candidates.sort(java.util.Comparator.comparingInt(k -> k.split("\\.").length));
-
-            java.util.List<String> removed = new java.util.ArrayList<>();
-            for (String key : candidates) {
-                // Already gone with an ancestor.
-                boolean covered = false;
-                for (String done : removed) {
-                    if (key.startsWith(done + ".")) { covered = true; break; }
-                }
-                if (covered) continue;
-                if (!diskConfig.contains(key)) continue;
-                diskConfig.set(key, null);
-                removed.add(key);
-            }
-
-            if (removed.isEmpty()) return 0;
-
-            File backup = new File(dataFolder, fileName + ".pre-prune.bak");
-            try {
-                java.nio.file.Files.copy(file.toPath(), backup.toPath(),
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                logger.sendWarning("Could not back up " + fileName + " before pruning: " + e.getMessage()
-                        + " — leaving the file untouched.");
-                return 0;
-            }
-
-            diskConfig.save(file);
-            logger.sendInfo("Pruned " + removed.size() + " obsolete key(s) from " + fileName
-                    + " (backup: " + backup.getName() + "):");
-            for (String key : removed) logger.sendInfo("  - " + key);
-            return removed.size();
-
-        } catch (IOException e) {
-            logger.sendError("Error pruning " + fileName + ": " + e.getMessage());
-            return 0;
-        }
+        return support.pruneObsoleteKeys(fileName, protectedSections);
     }
 
     /**
@@ -562,9 +393,7 @@ public abstract class XAddon {
      * @return The number of keys removed.
      */
     public final int pruneObsoleteConfigKeys(String... protectedSections) {
-        int removed = pruneObsoleteKeys("config.yml", protectedSections);
-        if (removed > 0) reloadConfig();
-        return removed;
+        return support.pruneObsoleteConfigKeys(protectedSections);
     }
 
     // -------------------------------------------------------------------------
@@ -582,21 +411,9 @@ public abstract class XAddon {
      * @return The language code, lower-cased (e.g. {@code "fr"}).
      */
     public final String getLanguage() {
-        String own = getConfig().getString("language", "");
-        if (own != null && !own.isBlank()) return own.trim().toLowerCase();
-        return core.getLanguage();
+        return support.getLanguage();
     }
 
-    /**
-     * Loads this addon's language file, honouring the resolved language.
-     *
-     * <p>Files live in {@code <addon>/lang/<code>.yml}. Every language bundled in the jar is
-     * extracted on first run so the administrator can read and edit them all; the one matching
-     * {@link #getLanguage()} is the one loaded, falling back to English when the addon ships no
-     * translation for it.</p>
-     *
-     * @param available The language codes bundled in the jar, English first.
-     */
     /**
      * Copies a YAML file aside when it cannot be parsed, and says so.
      *
@@ -610,96 +427,21 @@ public abstract class XAddon {
      * @return {@code true} when the file could not be read and a copy was made.
      */
     protected final boolean setAsideIfUnreadable(File file) {
-        if (file == null || !file.isFile()) return false;
-        try {
-            new YamlConfiguration().load(file);
-            return false;
-        } catch (org.bukkit.configuration.InvalidConfigurationException e) {
-            File copy = new File(file.getParentFile(), file.getName() + ".unreadable-" + System.currentTimeMillis());
-            try {
-                java.nio.file.Files.copy(file.toPath(), copy.toPath());
-            } catch (IOException copyError) {
-                logger.sendError(file.getName() + " is not valid YAML and could not be copied aside: " + copyError.getMessage());
-                return false;
-            }
-            String reason = String.valueOf(e.getMessage());
-            int cut = reason.indexOf('\n');
-            logger.sendError(file.getName() + " is not valid YAML and was not read: " + (cut > 0 ? reason.substring(0, cut) : reason));
-            logger.sendError("Your file is kept as " + copy.getName() + ". The defaults are used until it is repaired and put back.");
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
+        return support.setAsideIfUnreadable(file);
     }
 
     /**
-     * Adds to a file on disk the keys its bundled version has and it does not.
+     * Loads this addon's language file, honouring the resolved language.
      *
-     * <p>Never overwrites: an administrator's translation is theirs. Used for the dashboard string
-     * files, which have no merge pass of their own.</p>
+     * <p>Files live in {@code <addon>/lang/<code>.yml}. Every language bundled in the jar is
+     * extracted on first run so the administrator can read and edit them all; the one matching
+     * {@link #getLanguage()} is the one loaded, falling back to English when the addon ships no
+     * translation for it.</p>
      *
-     * @param resourcePath The resource inside the addon jar, e.g. {@code lang/web_fr.yml}.
+     * @param available The language codes bundled in the jar, English first.
      */
-    private void mergeMissingKeys(String resourcePath) {
-        File target = new File(dataFolder, resourcePath.replace('/', File.separatorChar));
-        if (!target.isFile()) return;
-        setAsideIfUnreadable(target);
-        try (InputStream defaults = getClass().getClassLoader().getResourceAsStream(resourcePath)) {
-            if (defaults == null) return;
-            YamlConfiguration bundled = YamlConfiguration.loadConfiguration(
-                    new InputStreamReader(defaults, StandardCharsets.UTF_8));
-            YamlConfiguration current = YamlConfiguration.loadConfiguration(target);
-            boolean changed = false;
-            for (String key : bundled.getKeys(true)) {
-                if (bundled.isConfigurationSection(key) || current.contains(key)) continue;
-                current.set(key, bundled.get(key));
-                changed = true;
-            }
-            if (changed) {
-                current.save(target);
-                logger.sendDebug("Added missing keys to " + resourcePath + ".");
-            }
-        } catch (Exception e) {
-            logger.sendDebug("Failed to merge " + resourcePath + ": " + e.getMessage());
-        }
-    }
-
     public final void loadLanguage(String... available) {
-        File langFolder = new File(dataFolder, "lang");
-        if (!langFolder.exists()) langFolder.mkdirs();
-
-        // Extract every bundled translation, never overwriting an edited file. The web_ files are
-        // the addon's own dashboard strings, and only exist for addons that register a web module.
-        for (String code : available) {
-            saveDefaultResource("lang/" + code + ".yml");
-            saveDefaultResource("lang/web_" + code + ".yml");
-            // Unlike the message files, nothing merges the dashboard strings: a web_*.yml already
-            // on disk never received the keys a later version added, and the page showed the raw
-            // key instead of a label. Only missing keys are written, so translations survive.
-            mergeMissingKeys("lang/web_" + code + ".yml");
-        }
-
-        String wanted = getLanguage();
-        boolean bundled = false;
-        for (String code : available) {
-            if (code.equalsIgnoreCase(wanted)) { bundled = true; break; }
-        }
-
-        File target = new File(langFolder, wanted + ".yml");
-
-        if (!bundled && !target.exists()) {
-            String fallback = available.length > 0 ? available[0] : "en";
-            logger.sendWarning("No '" + wanted + "' translation bundled and no lang/" + wanted
-                    + ".yml on disk — falling back to '" + fallback + "'.");
-            wanted = fallback;
-            target = new File(langFolder, wanted + ".yml");
-        }
-
-        try (InputStream defaults = getClass().getClassLoader().getResourceAsStream("lang/" + wanted + ".yml")) {
-            lang.reload(target, defaults);
-        } catch (IOException e) {
-            logger.sendError("Failed to load language '" + wanted + "': " + e.getMessage());
-        }
+        support.loadLanguage(available);
     }
 
     // -------------------------------------------------------------------------
@@ -723,5 +465,9 @@ public abstract class XAddon {
         this.logger = logger;
         this.lang = lang;
         this.guiRegistry = guiRegistry;
+        // Resources come from the addon's own class loader, which looks in its JAR before XCore's:
+        // both ship a config.yml and a lang/en.yml, and the addon's are the ones meant here.
+        this.support = new ExtensionSupport(descriptor, core, dataFolder, logger, lang, guiRegistry,
+                getClass().getClassLoader(), core::schedulerAdapter, "addon.yml", "addon");
     }
 }

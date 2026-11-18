@@ -98,7 +98,7 @@ diag-failed: " <red>Could not write the report: <gray>{error}"
 # ---------------------------------------------------------------------------
 
 addons-header: " <aqua>Addons <yellow>({count})"
-addons-empty: " <yellow>▸ <white>No addon installed. Drop their JARs in <gray>plugins/XCore/addons<white>."
+addons-empty: " <yellow>▸ <white>No addon installed. Plugins built on XCore go in <gray>plugins<white>, addons in <gray>plugins/XCore/addons<white>."
 addons-entry: " <yellow>▸ <green>{name} <yellow>v{version} <white>— {state}"
 addon-state-enabled: "<green>enabled"
 addon-state-loading: "<yellow>loading"
@@ -232,6 +232,13 @@ eco-help-message: |
 # ---------------------------------------------------------------------------
 
 update-available: "<dark_red>[{addon}] <red>An update is available: <underlined>{version}</underlined> ({date})"
+
+# ---------------------------------------------------------------------------
+# Shown to every player refused while the server has no authentication: XLogin
+# is a plugin since XCore 2.0, and its 1.x addon jar is no longer loaded.
+# ---------------------------------------------------------------------------
+
+auth-unavailable: "<red>Authentication is unavailable on this server right now.\n<gray>Please try again in a moment."
 
 # ---------------------------------------------------------------------------
 # Deliveries: things handed over on join because they could not be given at

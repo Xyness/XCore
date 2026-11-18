@@ -21,6 +21,10 @@ import java.util.concurrent.atomic.LongAdder;
  * issued through the guarded data source is counted. {@code /xcore profile} prints the worst
  * offenders.</p>
  *
+ * <p>Plugins built on {@link fr.xyness.XCore.Extension.XPlugin} go through the same registry: their
+ * listeners belong to them as far as the server is concerned, so Spark names them correctly, and
+ * they are still timed here under their own name, next to the addons.</p>
+ *
  * <h2>Cost when off</h2>
  * One volatile read per event. Sampling is only switched on by {@code profiling: true} in
  * {@code config.yml} or by {@code /xcore profile on}, so an ordinary server pays nothing.

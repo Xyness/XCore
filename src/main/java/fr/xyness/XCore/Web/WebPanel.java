@@ -62,6 +62,9 @@ public class WebPanel {
     /** Registered web modules from other plugins. */
     private final List<WebModule> modules = Collections.synchronizedList(new ArrayList<>());
 
+    /** The routes each module created, so that taking a module down takes them down too. */
+    private final java.util.Map<WebModule, List<String>> moduleContexts = new java.util.concurrent.ConcurrentHashMap<>();
+
     /** Path to the static web files directory. */
     private final Path webRoot;
 
@@ -381,8 +384,7 @@ public class WebPanel {
         // files. The core only holds the shared vocabulary, so it wins on the rare overlap.
         synchronized (modules) {
             for (WebModule module : modules) {
-                File addonFolder = new File(main.getDataFolder(),
-                        "addons" + File.separator + module.getName() + File.separator + "lang");
+                File addonFolder = new File(moduleFolder(module.getName()), "lang");
                 File addonFile = new File(addonFolder, "web_" + wanted + ".yml");
                 if (!addonFile.isFile()) addonFile = new File(addonFolder, "web_en.yml");
                 if (addonFile.isFile()) readStringsInto(json, addonFile, module.getName());
@@ -390,6 +392,24 @@ public class WebPanel {
         }
 
         stringsJson = json.toString();
+    }
+
+    /**
+     * The folder of the addon or plugin a module belongs to, where its {@code config.yml} and its
+     * {@code lang/web_*.yml} are.
+     *
+     * <p>Asked of the extension rather than built from the name: a plugin built on XCore keeps its
+     * files in {@code plugins/<name>/}, and the path this used to assume,
+     * {@code plugins/XCore/addons/<name>/}, is only right for an addon. A module that belongs to
+     * neither — the core's own — falls back to it and finds nothing, as before.</p>
+     *
+     * @param name The module name, which is the extension's name.
+     * @return The folder.
+     */
+    private File moduleFolder(String name) {
+        return main.extensions().find(name)
+                .map(fr.xyness.XCore.Extension.XExtension::dataFolder)
+                .orElseGet(() -> new File(main.getDataFolder(), "addons" + File.separator + name));
     }
 
     /**
@@ -599,14 +619,134 @@ public class WebPanel {
             logger.sendWarning("Cannot register web module '" + module.getName() + "': server not started.");
             return;
         }
-        modules.add(module);
+        // Same name already here: the previous instance of a plugin that was disabled and started
+        // again without its module being taken down. Its routes go first — creating them a second
+        // time throws, and the plugin's start failed on it.
+        if (unregisterModule(module.getName())) {
+            logger.sendDebug("Web module '" + module.getName() + "' replaced by a new instance.");
+        }
         String basePath = "/api/" + module.getName().toLowerCase();
-        module.registerRoutes(server, basePath);
+        java.util.List<String> paths = new java.util.concurrent.CopyOnWriteArrayList<>();
+        RecordingServer routes = new RecordingServer(server, paths);
+        moduleContexts.put(module, paths);
+        modules.add(module);
+        module.registerRoutes(routes, basePath);
         // Every addon has a config.yml, so every module gets the editor without asking for it.
-        server.createContext(basePath + "/config/raw", ex -> handleAddonConfig(ex, module.getName()));
+        routes.createContext(basePath + "/config/raw", ex -> handleAddonConfig(ex, module.getName()));
         // The module may carry its own dashboard strings; fold them in now that it is known.
         reloadStrings();
         logger.sendInfo("Registered web module: <aqua>" + module.getName() + "</aqua>.");
+    }
+
+    /**
+     * Takes a module down: out of the sidebar, and every route it created removed.
+     *
+     * @param name The module name, compared ignoring case.
+     * @return {@code true} when a module of that name was registered.
+     */
+    public boolean unregisterModule(String name) {
+        WebModule found = null;
+        synchronized (modules) {
+            for (WebModule module : modules) {
+                if (module.getName().equalsIgnoreCase(name)) { found = module; break; }
+            }
+        }
+        if (found == null) return false;
+        removeModule(found);
+        return true;
+    }
+
+    /**
+     * Takes down every module defined by the given class loader.
+     *
+     * <p>Called when a plugin built on XCore is disabled: its pages left the sidebar with it, but
+     * its routes kept answering from a plugin that had stopped.</p>
+     *
+     * @param loader The class loader of the plugin going away.
+     * @return The names of the modules removed.
+     */
+    public List<String> unregisterModulesOf(ClassLoader loader) {
+        List<WebModule> owned = new ArrayList<>();
+        synchronized (modules) {
+            for (WebModule module : modules) {
+                if (module.getClass().getClassLoader() == loader) owned.add(module);
+            }
+        }
+        List<String> names = new ArrayList<>();
+        for (WebModule module : owned) {
+            removeModule(module);
+            names.add(module.getName());
+        }
+        return names;
+    }
+
+    private void removeModule(WebModule module) {
+        modules.remove(module);
+        List<String> paths = moduleContexts.remove(module);
+        if (paths != null && server != null) {
+            for (String path : paths) {
+                try {
+                    server.removeContext(path);
+                } catch (IllegalArgumentException alreadyGone) {
+                    // Removed by the module itself.
+                }
+            }
+        }
+        reloadStrings();
+        logger.sendDebug("Unregistered web module: " + module.getName() + ".");
+    }
+
+    /**
+     * The server as a module sees it: every call goes to the real one, and the paths of the
+     * contexts it creates are written down, so that taking the module away takes its routes too.
+     * The JDK server has no way to list its contexts.
+     */
+    private static final class RecordingServer extends HttpServer {
+
+        private final HttpServer delegate;
+        private final List<String> paths;
+
+        private RecordingServer(HttpServer delegate, List<String> paths) {
+            this.delegate = delegate;
+            this.paths = paths;
+        }
+
+        @Override
+        public void bind(InetSocketAddress address, int backlog) throws IOException {
+            delegate.bind(address, backlog);
+        }
+
+        @Override public void start() { delegate.start(); }
+        @Override public void setExecutor(java.util.concurrent.Executor executor) { delegate.setExecutor(executor); }
+        @Override public java.util.concurrent.Executor getExecutor() { return delegate.getExecutor(); }
+        @Override public void stop(int delay) { delegate.stop(delay); }
+        @Override public InetSocketAddress getAddress() { return delegate.getAddress(); }
+
+        @Override
+        public com.sun.net.httpserver.HttpContext createContext(String path, com.sun.net.httpserver.HttpHandler handler) {
+            com.sun.net.httpserver.HttpContext context = delegate.createContext(path, handler);
+            paths.add(path);
+            return context;
+        }
+
+        @Override
+        public com.sun.net.httpserver.HttpContext createContext(String path) {
+            com.sun.net.httpserver.HttpContext context = delegate.createContext(path);
+            paths.add(path);
+            return context;
+        }
+
+        @Override
+        public void removeContext(String path) {
+            delegate.removeContext(path);
+            paths.remove(path);
+        }
+
+        @Override
+        public void removeContext(com.sun.net.httpserver.HttpContext context) {
+            delegate.removeContext(context);
+            paths.remove(context.getPath());
+        }
     }
 
     /**
@@ -1036,11 +1176,12 @@ public class WebPanel {
             metrics.addProperty("memory_used", runtime.totalMemory() - runtime.freeMemory());
             metrics.addProperty("memory_max", runtime.maxMemory());
 
-            var addons = main.getAddonManager().getAddons();
-            long enabled = addons.keySet().stream()
-                    .filter(name -> main.getAddonManager().getState(name) == fr.xyness.XCore.Addon.AddonState.ENABLED)
+            // Addons and plugins built on XCore alike: the dashboard counts what runs on the core.
+            List<fr.xyness.XCore.Extension.XExtension> extensions = main.extensions().all();
+            long enabled = extensions.stream()
+                    .filter(extension -> extension.state() == fr.xyness.XCore.Addon.AddonState.ENABLED)
                     .count();
-            metrics.addProperty("addons_total", addons.size());
+            metrics.addProperty("addons_total", extensions.size());
             metrics.addProperty("addons_enabled", enabled);
 
             metrics.addProperty("sync_running", main.getSyncManager() != null && main.getSyncManager().isRunning());
@@ -1453,7 +1594,7 @@ public class WebPanel {
         if (!rateLimit(exchange)) return;
         if (!authenticate(exchange)) return;
 
-        File file = new File(main.getDataFolder(), "addons" + File.separator + addonName + File.separator + "config.yml");
+        File file = new File(moduleFolder(addonName), "config.yml");
         if (!file.isFile()) {
             sendJson(exchange, 404, "{\"error\":\"No config.yml for " + addonName + "\"}");
             return;
@@ -1502,7 +1643,7 @@ public class WebPanel {
         }
 
         // Reloading touches addon state, so it belongs on the server thread rather than here.
-        main.schedulerAdapter().runGlobalTask(() -> main.getAddonManager().reloadAddon(addonName));
+        main.schedulerAdapter().runGlobalTask(() -> main.extensions().reload(addonName));
 
         JsonObject result = new JsonObject();
         result.addProperty("success", true);

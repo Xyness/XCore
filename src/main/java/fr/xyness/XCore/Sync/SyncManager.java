@@ -143,6 +143,31 @@ public class SyncManager {
     }
 
     /**
+     * Removes the channels whose listener was defined by the given class loader.
+     *
+     * <p>Called when a plugin built on XCore is disabled. Its channels used to stay behind: the
+     * messages kept arriving at code that had stopped, and the same plugin started again could not
+     * register its channel a second time. A listener written as a lambda or a method reference
+     * belongs to the class loader of the class it was written in, which is the plugin's.</p>
+     *
+     * @param loader The class loader of the plugin going away.
+     * @return The names of the channels removed.
+     */
+    public java.util.List<String> unregisterChannelsOf(ClassLoader loader) {
+        java.util.List<String> removed = new java.util.ArrayList<>();
+        if (loader == null) return removed;
+        for (SyncChannel channel : channels.values()) {
+            SyncListener listener = channel.listener();
+            if (listener != null && listener.getClass().getClassLoader() == loader
+                    && channels.remove(channel.name(), channel)) {
+                removed.add(channel.name());
+                logDebug.log("Sync channel '" + channel.name() + "' unregistered.");
+            }
+        }
+        return removed;
+    }
+
+    /**
      * Publishes a message to a named channel. The message is sent to all other servers.
      *
      * @param channelName The target channel name.

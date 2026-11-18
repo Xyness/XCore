@@ -48,6 +48,34 @@ public class AddonDescriptor {
         this.jarFile = jarFile;
     }
 
+    /**
+     * Creates a descriptor from values already known: what a plugin built on
+     * {@link fr.xyness.XCore.Extension.XPlugin} gets, from its {@code paper-plugin.yml} as the server
+     * read it.
+     *
+     * @param name        The name.
+     * @param version     The version.
+     * @param author      The author.
+     * @param main        The main class.
+     * @param description The description, may be {@code null}.
+     * @param depend      Required dependencies, may be {@code null}.
+     * @param softDepend  Optional dependencies, may be {@code null}.
+     * @param updateUrl   Where the update checker reads {@code version.yml}, may be {@code null}.
+     * @param jarFile     The jar it was loaded from.
+     */
+    public AddonDescriptor(String name, String version, String author, String main, String description,
+                           List<String> depend, List<String> softDepend, String updateUrl, File jarFile) {
+        this.name = name;
+        this.version = version == null ? "1.0.0" : version;
+        this.author = author == null || author.isBlank() ? "Unknown" : author;
+        this.main = main;
+        this.description = description == null ? "" : description;
+        this.depend = depend == null ? Collections.emptyList() : Collections.unmodifiableList(depend);
+        this.softDepend = softDepend == null ? Collections.emptyList() : Collections.unmodifiableList(softDepend);
+        this.updateUrl = updateUrl == null ? "" : updateUrl;
+        this.jarFile = jarFile;
+    }
+
     private static String requireKey(YamlConfiguration yaml, String key) {
         String value = yaml.getString(key);
         if (value == null || value.isBlank()) {
