@@ -785,6 +785,8 @@ public class XCore extends JavaPlugin {
             logger.sendInfo("Prefetching data for " + onlineUuids.size() + " online player(s).");
             playerCache.getPlayers(onlineUuids).thenAccept(map ->
                 logger.sendInfo("Prefetched " + map.size() + " player(s) into cache."));
+            // They joined before this start, so no join read their balances.
+            if (coinsManager != null) onlineUuids.forEach(coinsManager::hold);
         }
 
         // ---- Tick-thread alarm ----

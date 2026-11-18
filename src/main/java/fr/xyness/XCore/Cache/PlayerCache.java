@@ -4,20 +4,22 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import fr.xyness.XCore.Models.PlayerTempData;
 
@@ -183,69 +185,20 @@ public class PlayerCache<P> {
                 .buildAsync(new AsyncCacheLoader<UUID, Optional<P>>() {
                     @Override
                     public CompletableFuture<? extends Optional<P>> asyncLoad(UUID key, Executor exec) {
-                        Optional<P> fromRedis = getPlayerFromRedis(REDIS_PREFIX_UUID + key);
-                        if (fromRedis != null) return CompletableFuture.completedFuture(fromRedis);
-                        dbReads.increment();
-                        return findByUuidAsync.apply(key.toString()).thenApply(opt -> {
-                            opt.ifPresent(PlayerCache.this::putToRedis);
-                            return opt;
-                        });
+                        return loadOne(() -> getPlayerFromRedis(REDIS_PREFIX_UUID + key),
+                                () -> findByUuidAsync.apply(key.toString()), exec);
                     }
 
                     @Override
                     public CompletableFuture<? extends Map<? extends UUID, ? extends Optional<P>>> asyncLoadAll(
                             Set<? extends UUID> keys, Executor exec) {
-                        Map<UUID, Optional<P>> result = new HashMap<>();
-                        java.util.List<String> dbMisses = new java.util.ArrayList<>();
-
                         // One MGET rather than one GET per key: prefetching the online players used
-                        // to cost one Redis round trip per player, run back to back.
-                        java.util.List<UUID> keyList = new java.util.ArrayList<>(keys);
-                        java.util.List<String> payloads = mgetPlayers(keyList);
-                        for (int i = 0; i < keyList.size(); i++) {
-                            UUID key = keyList.get(i);
-                            String json = (payloads == null || i >= payloads.size()) ? null : payloads.get(i);
-                            P value = null;
-                            if (json != null) {
-                                try { value = deserializer.apply(json); }
-                                catch (Exception e) { logDebug.log("Bad L2 payload for " + key + " : " + e.getMessage()); }
-                            }
-                            if (value != null) {
-                                result.put(key, Optional.of(value));
-                            } else {
-                                dbMisses.add(key.toString());
-                            }
-                        }
-
-                        if (dbMisses.isEmpty()) {
-                            return CompletableFuture.completedFuture(result);
-                        }
-
-                        if (findByUuidsAsync == null) {
-                            // Fallback to individual lookups
-                            CompletableFuture<?>[] futures = new CompletableFuture[dbMisses.size()];
-                            for (int i = 0; i < dbMisses.size(); i++) {
-                                String uuidStr = dbMisses.get(i);
-                                UUID uuid = UUID.fromString(uuidStr);
-                                dbReads.increment();
-                                futures[i] = findByUuidAsync.apply(uuidStr).thenAccept(opt -> {
-                                    opt.ifPresent(PlayerCache.this::putToRedis);
-                                    result.put(uuid, opt);
-                                });
-                            }
-                            return CompletableFuture.allOf(futures).thenApply(v -> result);
-                        }
-
-                        dbReads.add(dbMisses.size());
-                        return findByUuidsAsync.apply(dbMisses).thenApply(dbResult -> {
-                            for (String uuidStr : dbMisses) {
-                                UUID uuid = UUID.fromString(uuidStr);
-                                Optional<P> fromDb = dbResult.getOrDefault(uuidStr, Optional.empty());
-                                fromDb.ifPresent(PlayerCache.this::putToRedis);
-                                result.put(uuid, fromDb);
-                            }
-                            return result;
-                        });
+                        // to cost one Redis round trip per player, run back to back. It leaves the
+                        // calling thread like the single lookups do: getAll() runs this loader there.
+                        List<UUID> keyList = new ArrayList<>(keys);
+                        if (jedisPool == null) return loadMissing(keyList, null);
+                        return CompletableFuture.supplyAsync(() -> mgetPlayers(keyList), exec)
+                                .thenCompose(payloads -> loadMissing(keyList, payloads));
                     }
                 });
 
@@ -255,13 +208,7 @@ public class PlayerCache<P> {
                 .buildAsync(new AsyncCacheLoader<String, Optional<P>>() {
                     @Override
                     public CompletableFuture<? extends Optional<P>> asyncLoad(String key, Executor exec) {
-                        Optional<P> fromRedis = getPlayerByNameFromRedis(key);
-                        if (fromRedis != null) return CompletableFuture.completedFuture(fromRedis);
-                        dbReads.increment();
-                        return findByNameAsync.apply(key).thenApply(opt -> {
-                            opt.ifPresent(PlayerCache.this::putToRedis);
-                            return opt;
-                        });
+                        return loadOne(() -> getPlayerByNameFromRedis(key), () -> findByNameAsync.apply(key), exec);
                     }
                 });
 
@@ -372,6 +319,99 @@ public class PlayerCache<P> {
         if (jedisPool == null) return;
         try (Jedis jedis = jedisPool.getResource()) { jedis.del(REDIS_PREFIX_NAME + name.toLowerCase()); }
         catch (Exception e) { logError.log("Redis delete error : " + e.getMessage()); }
+    }
+
+    // -- Loading (L2, then L3) --
+
+    /**
+     * Looks a player up in Redis, then in the database, without making the caller wait.
+     *
+     * <p>Caffeine calls a loader on the thread that asked for the key — a command, a menu, a
+     * placeholder: the server thread, more often than not — and from inside its own bookkeeping for
+     * that key. The Redis reads used to happen right there, before the future was even handed back:
+     * two round trips for a lookup by name, the tick waiting on both, and on Redis itself whenever its
+     * pool had no free connection. They now go to the pool, as the database read after them always
+     * has. An L1 hit never reaches the loader and is still answered on the spot.</p>
+     *
+     * @param fromRedis Reads L2: the player, or {@code null} when Redis does not have them.
+     * @param fromDb    Starts the database read.
+     * @param exec      The cache's executor.
+     * @return A future completing with the player, or empty when the database has no such player.
+     */
+    private CompletableFuture<Optional<P>> loadOne(Supplier<Optional<P>> fromRedis,
+                                                  Supplier<CompletableFuture<Optional<P>>> fromDb,
+                                                  Executor exec) {
+        if (jedisPool == null) return readThrough(fromDb);
+        return CompletableFuture.supplyAsync(fromRedis, exec)
+                .thenCompose(found -> found != null ? CompletableFuture.completedFuture(found) : readThrough(fromDb));
+    }
+
+    /** The database step of a lookup: counted, and written back to L2 when the player exists. */
+    private CompletableFuture<Optional<P>> readThrough(Supplier<CompletableFuture<Optional<P>>> fromDb) {
+        dbReads.increment();
+        return fromDb.get().thenApply(opt -> {
+            opt.ifPresent(this::putToRedis);
+            return opt;
+        });
+    }
+
+    /**
+     * Finishes a batch lookup: decodes what Redis returned and reads everyone else from the database.
+     *
+     * @param keys     The players asked for.
+     * @param payloads The MGET answer, in the order of {@code keys}; {@code null} without Redis or when
+     *                 it failed.
+     * @return A future completing with an entry for every key, empty for a player found nowhere.
+     */
+    private CompletableFuture<Map<UUID, Optional<P>>> loadMissing(List<UUID> keys, List<String> payloads) {
+        // Concurrent: without the batch query, one lookup per player fills it from as many threads.
+        Map<UUID, Optional<P>> result = new ConcurrentHashMap<>();
+        List<String> dbMisses = new ArrayList<>();
+
+        for (int i = 0; i < keys.size(); i++) {
+            UUID key = keys.get(i);
+            String json = (payloads == null || i >= payloads.size()) ? null : payloads.get(i);
+            P value = null;
+            if (json != null) {
+                try { value = deserializer.apply(json); }
+                catch (Exception e) { logDebug.log("Bad L2 payload for " + key + " : " + e.getMessage()); }
+            }
+            if (value != null) {
+                result.put(key, Optional.of(value));
+            } else {
+                dbMisses.add(key.toString());
+            }
+        }
+
+        if (dbMisses.isEmpty()) {
+            return CompletableFuture.completedFuture(result);
+        }
+
+        if (findByUuidsAsync == null) {
+            // Fallback to individual lookups
+            CompletableFuture<?>[] futures = new CompletableFuture[dbMisses.size()];
+            for (int i = 0; i < dbMisses.size(); i++) {
+                String uuidStr = dbMisses.get(i);
+                UUID uuid = UUID.fromString(uuidStr);
+                dbReads.increment();
+                futures[i] = findByUuidAsync.apply(uuidStr).thenAccept(opt -> {
+                    opt.ifPresent(this::putToRedis);
+                    result.put(uuid, opt);
+                });
+            }
+            return CompletableFuture.allOf(futures).thenApply(v -> result);
+        }
+
+        dbReads.add(dbMisses.size());
+        return findByUuidsAsync.apply(dbMisses).thenApply(dbResult -> {
+            for (String uuidStr : dbMisses) {
+                UUID uuid = UUID.fromString(uuidStr);
+                Optional<P> fromDb = dbResult.getOrDefault(uuidStr, Optional.empty());
+                fromDb.ifPresent(this::putToRedis);
+                result.put(uuid, fromDb);
+            }
+            return result;
+        });
     }
 
     // -- Cache operations --
@@ -733,6 +773,9 @@ public class PlayerCache<P> {
     public long getL1Size() { return uuidToPlayers.synchronous().estimatedSize(); }
 
     // -- Player getters --
+    // The *Sync getters read L1 and nothing else. The others never block: an L1 hit comes back as a
+    // future already completed, so a callback chained on it runs at once on the calling thread; on a
+    // miss the future completes on a pool thread, once Redis or the database has answered.
 
     public CompletableFuture<Optional<P>> getPlayer(UUID playerId) { return uuidToPlayers.get(playerId); }
     public CompletableFuture<Map<UUID, Optional<P>>> getPlayers(List<UUID> playerIds) { return uuidToPlayers.getAll(playerIds); }

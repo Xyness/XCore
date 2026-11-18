@@ -80,8 +80,11 @@ public class CoinsManager {
      */
     private static final int LOCK_STRIPES = 64;
 
-    /** Short-lived fallback for balances read straight from the database on an L1 miss. */
-    private static final long DB_FALLBACK_TTL_MS = 30_000L;
+    /** How long a balance seen here is taken as current: past it, the database is asked again. */
+    private static final long FRESH_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+
+    /** How long a player waits before their balances are read in the background again. */
+    private static final java.time.Duration READ_SPACING = java.time.Duration.ofSeconds(5);
 
     private final XCore plugin;
     private final Map<String, Currency> currencies = new LinkedHashMap<>();
@@ -89,16 +92,53 @@ public class CoinsManager {
     private final Object[] locks = new Object[LOCK_STRIPES];
 
     /**
-     * Balances read straight from the database on a cache miss.
+     * A balance as this server last saw it: read from the database, or left by an operation made here.
+     *
+     * @param value The balance.
+     * @param at    When, on the {@link System#nanoTime()} clock. A read counts from the moment it was
+     *              sent, so it never replaces a value an operation wrote while it was on its way.
+     */
+    private record Known(double value, long at) {
+        boolean fresh(long now) {
+            return now - at < FRESH_NANOS;
+        }
+    }
+
+    /**
+     * The balances of the players connected to this server, by player then currency: read when they
+     * join, followed by every operation made here, dropped when they leave.
+     *
+     * <p>Their balances are asked for on the server thread all the time — a menu deciding what its
+     * viewer can afford, a scoreboard, Vault's {@code getBalance}. The player cache alone could not
+     * promise an answer: its copy of a player expires when nothing reads it, and goes whenever
+     * another server writes the row, and the next read went to the database on the thread that
+     * asked.</p>
+     */
+    private final Map<UUID, Map<String, Known>> online = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The balances of everyone else this server has read or changed lately, by {@code uuid:currency}.
      *
      * <p>Bounded and self-expiring. It used to be a plain map with the age checked on read and
      * nothing ever removing an entry: one line per (player, currency) ever queried, kept for the
-     * lifetime of the server — a slow leak that only showed after days of uptime.</p>
+     * lifetime of the server — a slow leak that only showed after days of uptime. An entry outlives
+     * its freshness on purpose: a server thread asking again is answered with it while it is read
+     * anew in the background, instead of with nothing.</p>
      */
-    private final com.github.benmanes.caffeine.cache.Cache<String, Double> dbFallback =
+    private final com.github.benmanes.caffeine.cache.Cache<String, Known> remembered =
             com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
                     .maximumSize(20_000)
-                    .expireAfterWrite(java.time.Duration.ofMillis(DB_FALLBACK_TTL_MS))
+                    .expireAfterWrite(java.time.Duration.ofMinutes(5))
+                    .build();
+
+    /**
+     * The players whose balances were sent for in the background moments ago. A server thread asks on
+     * every frame of a menu or a scoreboard: one read is enough, and a database that cannot answer
+     * must not be asked twenty times a second.
+     */
+    private final com.github.benmanes.caffeine.cache.Cache<UUID, Boolean> reading =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .expireAfterWrite(READ_SPACING)
                     .build();
 
     /** Transactions waiting to be written, flushed as one batch. */
@@ -515,50 +555,178 @@ public class CoinsManager {
     // ****************************
 
     /**
-     * Reads a balance without going to the database.
+     * A balance as the player cache holds it, in the player's row.
      *
-     * <p>Returns {@code null} when the player is not in the L1 cache <b>and</b> has no fresh
-     * database fallback — the caller must then decide whether to pay for a database read. This
-     * distinction matters: reporting the starting balance for an unknown player (which is what
-     * this method used to do) makes {@code has()} approve purchases nobody can afford.</p>
-     *
-     * @param playerId   The player's server UUID.
-     * @param currencyId The currency.
-     * @return The balance, or {@code null} when it is genuinely unknown.
+     * @return The balance, or {@code null} when the cache does not have the player or the column.
      */
-    private Double peekBalance(UUID playerId, String currencyId) {
+    private Double cachedBalance(UUID playerId, String currencyId) {
         Optional<PlayerData> opt = api().getPlayer(playerId);
-        if (opt.isPresent()) {
-            Double value = opt.get().getTargetData(col(currencyId), Double.class);
-            if (value != null) return value;
-        }
-        return dbFallback.getIfPresent(playerId + ":" + currencyId);
-    }
-
-    /** Stores a database-sourced balance in the short-lived fallback cache. */
-    private void rememberBalance(UUID playerId, String currencyId, double value) {
-        dbFallback.put(playerId + ":" + currencyId, value);
+        return opt.isPresent() ? opt.get().getTargetData(col(currencyId), Double.class) : null;
     }
 
     /**
-     * Reads a single balance column straight from the database.
+     * A balance as this server last saw it, whatever its age.
+     *
+     * @return The more recent of the connected player's copy and the remembered one, or {@code null}
+     *         when this server has seen neither.
+     */
+    private Known known(UUID playerId, String currencyId) {
+        Map<String, Known> wallet = online.get(playerId);
+        Known held = wallet == null ? null : wallet.get(currencyId);
+        Known seen = remembered.getIfPresent(playerId + ":" + currencyId);
+        if (held == null) return seen;
+        return seen == null ? held : newer(held, seen);
+    }
+
+    /**
+     * Takes note of a balance seen at a given moment.
+     *
+     * <p>A value already there and more recent is kept: a read sent before an operation finished
+     * cannot bring the old balance back after it.</p>
+     *
+     * @param at When the value was true, on the {@link System#nanoTime()} clock: when the read was
+     *           sent, or when the operation that left it finished.
+     */
+    private void learn(UUID playerId, String currencyId, double value, long at) {
+        Known seen = new Known(value, at);
+        Map<String, Known> wallet = online.get(playerId);
+        if (wallet != null) {
+            wallet.merge(currencyId, seen, CoinsManager::newer);
+            // Still held: done. Released meanwhile, and what release() copied may predate this.
+            if (online.get(playerId) == wallet) return;
+        }
+        remembered.asMap().merge(playerId + ":" + currencyId, seen, CoinsManager::newer);
+    }
+
+    /** The more recent of two sightings; the one just given when they are as old as each other. */
+    private static Known newer(Known current, Known given) {
+        return given.at() >= current.at() ? given : current;
+    }
+
+    /** Notes a balance an operation of this server has just left in the database. */
+    private void rememberBalance(UUID playerId, String currencyId, double value) {
+        learn(playerId, currencyId, value, System.nanoTime());
+    }
+
+    /**
+     * Reads a single balance column straight from the database, on the calling thread.
      *
      * @return The stored value, or {@code null} when the row or the column has none.
      */
     private Double readColumnFromDb(UUID playerId, String column) {
         if (!SAFE_COLUMN.matcher(column).matches()) return null;
-        try (Connection conn = api().getDataSource().getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT " + column + " FROM players WHERE server_uuid = ?")) {
+        try (Connection conn = api().getDataSource().getConnection()) {
+            return readColumn(conn, playerId, column);
+        } catch (SQLException e) {
+            logger().sendWarning("Failed to read balance column '" + column + "': " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Reads one balance column of one player on a connection the caller holds.
+     *
+     * @return The stored value, or {@code null} when the row or the column has none.
+     * @throws SQLException When the database refuses the read.
+     */
+    private static Double readColumn(Connection conn, UUID playerId, String column) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT " + column + " FROM players WHERE server_uuid = ?")) {
             ps.setString(1, playerId.toString());
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
                 double value = rs.getDouble(1);
                 return rs.wasNull() ? null : value;
             }
-        } catch (SQLException e) {
-            logger().sendWarning("Failed to read balance column '" + column + "': " + e.getMessage());
-            return null;
+        }
+    }
+
+    /**
+     * Reads every balance of a player on the database pool, for the next caller to find in memory.
+     *
+     * <p>A player without a row, or a column without a value, reads as the starting balance, as
+     * {@link #getBalance(UUID, String)} always answered for them. A column the database refuses to
+     * read is left as it was: the next attempt comes a few seconds later at the earliest.</p>
+     *
+     * @param playerId The player's server UUID.
+     */
+    private void readBalances(UUID playerId) {
+        if (currencies.isEmpty()) return;
+        reading.put(playerId, Boolean.TRUE);
+        long sent = System.nanoTime();
+        // Everything below runs on the pool, the copy of the currencies included: this is called from
+        // the join handler, and a reload rewriting them meanwhile must not cut that handler short.
+        CompletableFuture.runAsync(() -> {
+            try (Connection conn = api().getDataSource().getConnection()) {
+                for (Currency currency : new ArrayList<>(currencies.values())) {
+                    String column = col(currency.getId());
+                    if (!SAFE_COLUMN.matcher(column).matches()) continue;
+                    try {
+                        Double value = readColumn(conn, playerId, column);
+                        learn(playerId, currency.getId(), value != null ? value : currency.getStartingBalance(), sent);
+                    } catch (SQLException e) {
+                        logger().sendWarning("Failed to read balance column '" + column + "': " + e.getMessage());
+                    }
+                }
+            } catch (SQLException e) {
+                logger().sendWarning("Failed to read the balances of " + playerId + ": " + e.getMessage());
+            }
+        }, plugin.getDbExecutor());
+    }
+
+    /** {@link #readBalances(UUID)}, unless they were already sent for moments ago. */
+    private void readBalancesSoon(UUID playerId) {
+        if (reading.asMap().putIfAbsent(playerId, Boolean.TRUE) != null) return;
+        readBalances(playerId);
+    }
+
+    /**
+     * Keeps a player's balances in memory for as long as they are connected. Called at join.
+     *
+     * <p>From here on a balance asked for on a server thread is answered from memory: the read sent
+     * now fills it, and every operation of this server keeps it current. Until the read is back, a
+     * known player is answered from their cached row, loaded before they joined.</p>
+     *
+     * @param playerId The player's server UUID.
+     */
+    public void hold(UUID playerId) {
+        online.computeIfAbsent(playerId, id -> new java.util.concurrent.ConcurrentHashMap<>());
+        readBalances(playerId);
+    }
+
+    /**
+     * Reads a connected player's balances again, now.
+     *
+     * <p>For a new player, whose row is written while their join goes on: a read sent at join can
+     * arrive before the row does.</p>
+     *
+     * @param playerId The player's server UUID.
+     */
+    public void reread(UUID playerId) {
+        if (online.containsKey(playerId)) readBalances(playerId);
+    }
+
+    /**
+     * Stops holding a player's balances. Called at quit.
+     *
+     * <p>What was held is remembered a few minutes more, like any other balance seen here: a plugin
+     * saving the player on its own quit listener, after this one, still finds it.</p>
+     *
+     * @param playerId The player's server UUID.
+     */
+    public void release(UUID playerId) {
+        Map<String, Known> wallet = online.remove(playerId);
+        if (wallet == null) return;
+        wallet.forEach((currencyId, seen) ->
+                remembered.asMap().merge(playerId + ":" + currencyId, seen, CoinsManager::newer));
+    }
+
+    /** Whether the calling thread is one of the server's: the main thread, the global or a region thread on Folia. */
+    private static boolean onTickThread() {
+        try {
+            return Bukkit.isPrimaryThread();
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -575,59 +743,81 @@ public class CoinsManager {
     }
 
     /**
-     * Returns a player's balance.
-     *
-     * <p>The L1 cache answers whenever it can; otherwise the value is read from the database and
-     * memoised briefly. An offline or evicted player therefore reports their <b>real</b> balance,
-     * not the currency's starting balance.</p>
-     *
-     * @param playerId   The player's server UUID.
-     * @param currencyId The currency.
-     * @return The balance, or the currency's starting balance when the player has no row at all.
-     */
-    /**
      * A balance, right now.
      *
-     * <h2>This one can touch the database on the calling thread</h2>
-     * It is the shape Vault demands — {@code Economy#getBalance} returns a number, not a future —
+     * <p>It is the shape Vault demands — {@code Economy#getBalance} returns a number, not a future —
      * so it cannot be made asynchronous without breaking every plugin that reads a balance through
-     * Vault. On a cache hit it is a map lookup. On a miss it reads one column, and remembers the
-     * answer for thirty seconds so a burst of calls costs one query.
+     * Vault. The answer comes from, in order: the player's row in the player cache; what this server
+     * last saw of the balance — always there for a connected player (see {@link #hold(UUID)}), kept a
+     * few minutes for anybody else; and only then the database.</p>
      *
-     * <p>The alternative was worse: the earlier version returned {@code starting-balance} on a miss,
-     * which invented money for anybody whose row was not cached. If you see {@code GuardedDataSource}
-     * naming this method in debug mode, that is why — and {@link #getBalanceAsync(UUID, String)} is
-     * the one to call from your own code.</p>
+     * <h2>On a server thread it never reaches the database</h2>
+     * The main thread, and on Folia the global and region threads. A balance seen more than thirty
+     * seconds ago is answered as it was and read again in the background. A balance this server has
+     * not seen at all is answered {@code 0}, so {@link #has(UUID, String, double)} refuses rather
+     * than approves, and read in the background for the next call. This method used to read the
+     * column on the spot instead, and a menu checking what its viewer could afford held the tick
+     * for as long as the database took. Any other thread still waits for the read, as before.
+     *
+     * <p>Whatever this answers decides nothing. {@link #withdraw(UUID, String, double)} takes the
+     * money with a statement the database refuses when the funds are not in the row: a balance a
+     * moment old can make a button read "affordable", it cannot let a payment through. The earlier
+     * version returned {@code starting-balance} on a miss, which invented money for anybody whose
+     * row was not cached; {@code 0} invents none.</p>
      *
      * @param playerId   The player's server UUID.
      * @param currencyId The currency.
-     * @return The balance, or the currency's starting balance when the player is unknown.
+     * @return The balance; the currency's starting balance when the player has no row; {@code 0} on
+     *         a server thread when this server knows nothing of it yet.
      */
     public double getBalance(UUID playerId, String currencyId) {
         Currency currency = currencies.get(currencyId);
         if (currency == null) return 0;
 
-        Double cached = peekBalance(playerId, currencyId);
+        Double cached = cachedBalance(playerId, currencyId);
         if (cached != null) return cached;
+
+        long now = System.nanoTime();
+        Known known = known(playerId, currencyId);
+        if (known != null && known.fresh(now)) return known.value();
+
+        if (onTickThread()) {
+            readBalancesSoon(playerId);
+            return known != null ? known.value() : 0;
+        }
 
         Double fromDb = readColumnFromDb(playerId, col(currencyId));
         if (fromDb == null) return currency.getStartingBalance();
-        rememberBalance(playerId, currencyId, fromDb);
+        learn(playerId, currencyId, fromDb, now);
         return fromDb;
     }
 
+    /**
+     * A balance, as a future.
+     *
+     * <p>Completes at once when the player's cached row holds it. Otherwise the column is read on the
+     * database pool — never on the thread that completed the lookup, which for a player in the cache
+     * is the caller's own, often the server's.</p>
+     *
+     * @param playerId   The player's server UUID.
+     * @param currencyId The currency.
+     * @return A future completing with the balance, or the starting balance when the player has no row.
+     */
     public CompletableFuture<Double> getBalanceAsync(UUID playerId, String currencyId) {
         Currency currency = currencies.get(currencyId);
         if (currency == null) return CompletableFuture.completedFuture(0.0);
-        return api().getPlayerAsync(playerId).thenApply(opt -> {
+        return api().getPlayerAsync(playerId).thenCompose(opt -> {
             if (opt.isPresent()) {
                 Double value = opt.get().getTargetData(col(currencyId), Double.class);
-                if (value != null) return value;
+                if (value != null) return CompletableFuture.completedFuture(value);
             }
-            Double fromDb = readColumnFromDb(playerId, col(currencyId));
-            if (fromDb == null) return currency.getStartingBalance();
-            rememberBalance(playerId, currencyId, fromDb);
-            return fromDb;
+            long sent = System.nanoTime();
+            return CompletableFuture.supplyAsync(() -> {
+                Double fromDb = readColumnFromDb(playerId, col(currencyId));
+                if (fromDb == null) return currency.getStartingBalance();
+                learn(playerId, currencyId, fromDb, sent);
+                return fromDb;
+            }, plugin.getDbExecutor());
         });
     }
 
@@ -713,7 +903,18 @@ public class CoinsManager {
                         rows = ps.executeUpdate();
                     }
                     if (rows == 0) {
-                        // Either the funds guard rejected it, or the player has no row yet.
+                        // Either the funds guard rejected it, or the player has no row yet. Refused,
+                        // the balance shown here was more than the row holds — a moment old, or
+                        // changed by another server: the copies are put right from the row, so the
+                        // next "can afford" says no as well instead of offering the same failure.
+                        if (requireFunds) {
+                            try {
+                                Double actual = readColumn(conn, playerId, column);
+                                if (actual != null) refreshCachedBalance(playerId, currencyId, actual);
+                            } catch (SQLException ignored) {
+                                // The refusal stands either way; the next read puts the copies right.
+                            }
+                        }
                         return null;
                     }
 
@@ -814,8 +1015,12 @@ public class CoinsManager {
                 if (cancelled) {
                     return CompletableFuture.completedFuture(false);
                 }
-                return api().updatePlayerDataAsync(playerId, col(currencyId), currency.round(newAmount))
-                    .thenApply(v -> wasCapped);
+                double rounded = currency.round(newAmount);
+                return api().updatePlayerDataAsync(playerId, col(currencyId), rounded)
+                    .thenApply(v -> {
+                        rememberBalance(playerId, currencyId, rounded);
+                        return wasCapped;
+                    });
             });
         });
     }
@@ -867,6 +1072,14 @@ public class CoinsManager {
         });
     }
 
+    /**
+     * Whether a player has at least this much, as far as this server knows.
+     *
+     * <p>For what to show — a price in red, a button that says "cannot afford" — and for refusing
+     * early. Never for taking the money: on a server thread an unknown balance reads as {@code 0},
+     * and any balance can be a moment old (see {@link #getBalance(UUID, String)}). The answer that
+     * counts is {@link #withdraw(UUID, String, double)}'s.</p>
+     */
     public boolean has(UUID playerId, String currencyId, double amount) {
         return getBalance(playerId, currencyId) >= amount;
     }
@@ -937,9 +1150,12 @@ public class CoinsManager {
 
     /**
      * Drops every cached copy of player data after a bulk write: L1 here, L2 (Redis),
-     * and L1 on the other servers via the {@code xcore} sync channel.
+     * and L1 on the other servers via the {@code xcore} sync channel. The balances this server
+     * keeps itself go too, and those of the connected players are read again.
      */
     private void invalidateAllPlayerCaches() {
+        remembered.invalidateAll();
+        online.keySet().forEach(this::readBalances);
         plugin.playerCache().clearRedis();
         plugin.clearAndWarmPlayerCache();
         if (plugin.getSyncManager() != null && plugin.getSyncManager().isRunning()) {
@@ -1047,6 +1263,14 @@ public class CoinsManager {
         this.columnSuffix = perServer ? "_" + serverName : "";
         loadCurrencies();
         loadExchangeRates();
+
+        // The currencies, or the columns behind them, may not be the same any more: what was seen
+        // of them goes, and the connected players' balances are read again.
+        remembered.invalidateAll();
+        online.forEach((playerId, wallet) -> {
+            wallet.clear();
+            readBalances(playerId);
+        });
     }
 
     // *************************

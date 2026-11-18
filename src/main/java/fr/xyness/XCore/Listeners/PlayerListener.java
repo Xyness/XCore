@@ -23,6 +23,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
 import fr.xyness.XCore.XCore;
+import fr.xyness.XCore.Economy.CoinsManager;
 import fr.xyness.XCore.Events.PlayerDataLoadEvent;
 import fr.xyness.XCore.Identity.UuidChanges;
 import fr.xyness.XCore.Models.PlayerData;
@@ -390,6 +391,10 @@ public class PlayerListener implements Listener {
             // Cache the new player in both UUID and name caches
             core.playerCache().addOrUpdateToCache(playerData);
 
+            // A player can join before this row exists, and the balances read at join found none.
+            CoinsManager coins = core.getCoinsManager();
+            if (coins != null) coins.reread(playerId);
+
             core.logger().sendDebug("New player created: " + playerName + " (" + playerId + ").");
 
             // Fire the event
@@ -432,6 +437,11 @@ public class PlayerListener implements Listener {
         core.playerCache().getTempPlayerData(uuid).put(SESSION_START, System.currentTimeMillis());
         if (core.network() != null) core.network().announceJoin(player);
 
+        // Menus, placeholders and Vault ask for balances on this thread: from now until the player
+        // leaves, they are answered from memory.
+        CoinsManager coins = core.getCoinsManager();
+        if (coins != null) coins.hold(uuid);
+
         // A second's delay so a brand new player has their row by then. Through the cache path,
         // otherwise the copy in memory keeps the previous date all session.
         core.schedulerAdapter().runAsyncTaskLater(() -> {
@@ -458,6 +468,8 @@ public class PlayerListener implements Listener {
 
         if (core.network() != null) core.network().announceQuit(player);
         core.playerCache().removePlayerTempDataFromCache(uuid);
+        CoinsManager coins = core.getCoinsManager();
+        if (coins != null) coins.release(uuid);
 
         // Anything this player still had buffered goes out now rather than waiting for the timer:
         // they may reconnect on another server within the second.

@@ -428,7 +428,8 @@ public class EcoCommand {
                 return;
             }
 
-            // Check balance right before modifying to avoid race conditions
+            // Refuses early, without firing events for a payment that cannot happen. It is not what
+            // decides: the balance it reads can be a moment old.
             if (!coins().has(player.getUniqueId(), resolved, amount)) {
                 sender.sendMessage(lang().getComponent("eco-insufficient-funds",
                     "balance", coins().format(resolved, coins().getBalance(player.getUniqueId(), resolved))));
@@ -442,30 +443,38 @@ public class EcoCommand {
                 coins().fireBalanceChangeEvent(player.getUniqueId(), resolved, oldSenderBal, oldSenderBal - amount, BalanceChangeEvent.ChangeType.PAY).thenCompose(senderCancelled -> {
                     if (senderCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-                    return coins().removeBalance(player.getUniqueId(), resolved, amount)
-                        .thenCompose(v ->
-                            // Fire event for receiver (add)
-                            coins().getBalanceAsync(targetData.getUuid(), resolved).thenCompose(oldTargetBal ->
+                    // This decides: the database refuses the withdrawal when the funds are not in the
+                    // row. removeBalance() emptied a balance that fell short and the target was paid
+                    // the full amount all the same.
+                    return coins().withdraw(player.getUniqueId(), resolved, amount).thenCompose(taken -> {
+                        if (!taken) {
+                            sender.sendMessage(lang().getComponent("eco-insufficient-funds",
+                                "balance", coins().format(resolved, coins().getBalance(player.getUniqueId(), resolved))));
+                            return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+                        }
+                        // Fire event for receiver (add)
+                        return coins().getBalanceAsync(targetData.getUuid(), resolved).thenCompose(oldTargetBal ->
                                 coins().fireBalanceChangeEvent(targetData.getUuid(), resolved, oldTargetBal, oldTargetBal + amount, BalanceChangeEvent.ChangeType.PAY).thenCompose(targetCancelled -> {
                                     if (targetCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
                                     return coins().addBalance(targetData.getUuid(), resolved, amount);
-                                })))
-                        .thenRun(() -> {
-                            String formatted = coins().format(resolved, amount);
-                            sender.sendMessage(lang().getComponent("eco-pay-sent",
-                                "amount", formatted, "target", targetData.getName(), "currency", resolved));
+                                }))
+                            .thenRun(() -> {
+                                String formatted = coins().format(resolved, amount);
+                                sender.sendMessage(lang().getComponent("eco-pay-sent",
+                                    "amount", formatted, "target", targetData.getName(), "currency", resolved));
 
-                            Player target = Bukkit.getPlayer(targetData.getUuid());
-                            if (target != null && target.isOnline()) {
-                                target.sendMessage(lang().getComponent("eco-pay-received",
-                                    "amount", formatted, "sender", player.getName(), "currency", resolved));
-                            }
+                                Player target = Bukkit.getPlayer(targetData.getUuid());
+                                if (target != null && target.isOnline()) {
+                                    target.sendMessage(lang().getComponent("eco-pay-received",
+                                        "amount", formatted, "sender", player.getName(), "currency", resolved));
+                                }
 
-                            // Log transactions
-                            coins().logTransaction(player.getUniqueId(), player.getName(), resolved, -amount, "PAY", targetData.getName(), "Paid " + formatted + " to " + targetData.getName());
-                            coins().logTransaction(targetData.getUuid(), targetData.getName(), resolved, amount, "PAY", player.getName(), "Received " + formatted + " from " + player.getName());
-                        });
+                                // Log transactions
+                                coins().logTransaction(player.getUniqueId(), player.getName(), resolved, -amount, "PAY", targetData.getName(), "Paid " + formatted + " to " + targetData.getName());
+                                coins().logTransaction(targetData.getUuid(), targetData.getName(), resolved, amount, "PAY", player.getName(), "Received " + formatted + " from " + player.getName());
+                            });
+                    });
                 })
             ).exceptionally(ex -> {
                 plugin.logger().sendWarning("Pay command failed for " + player.getName() + ": " + ex.getMessage());
@@ -691,6 +700,7 @@ public class EcoCommand {
             return;
         }
 
+        // Refuses early; the withdrawal below is what decides.
         if (!coins().has(player.getUniqueId(), resolvedFrom, amount)) {
             sender.sendMessage(lang().getComponent("eco-insufficient-funds",
                 "balance", coins().format(resolvedFrom, coins().getBalance(player.getUniqueId(), resolvedFrom))));
@@ -702,25 +712,33 @@ public class EcoCommand {
             coins().fireBalanceChangeEvent(player.getUniqueId(), resolvedFrom, oldFromBal, oldFromBal - amount, BalanceChangeEvent.ChangeType.EXCHANGE).thenCompose(fromCancelled -> {
                 if (fromCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-                return coins().removeBalance(player.getUniqueId(), resolvedFrom, amount)
-                    .thenCompose(v -> coins().getBalanceAsync(player.getUniqueId(), resolvedTo))
-                    .thenCompose(oldToBal ->
-                        coins().fireBalanceChangeEvent(player.getUniqueId(), resolvedTo, oldToBal, oldToBal + destinationAmount, BalanceChangeEvent.ChangeType.EXCHANGE).thenCompose(toCancelled -> {
-                            if (toCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+                // Refused by the database when the funds are not there: nothing is credited then. The
+                // clamping removeBalance() took what was left and still credited the full exchange.
+                return coins().withdraw(player.getUniqueId(), resolvedFrom, amount).thenCompose(taken -> {
+                    if (!taken) {
+                        sender.sendMessage(lang().getComponent("eco-insufficient-funds",
+                            "balance", coins().format(resolvedFrom, coins().getBalance(player.getUniqueId(), resolvedFrom))));
+                        return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
+                    }
+                    return coins().getBalanceAsync(player.getUniqueId(), resolvedTo)
+                        .thenCompose(oldToBal ->
+                            coins().fireBalanceChangeEvent(player.getUniqueId(), resolvedTo, oldToBal, oldToBal + destinationAmount, BalanceChangeEvent.ChangeType.EXCHANGE).thenCompose(toCancelled -> {
+                                if (toCancelled) return java.util.concurrent.CompletableFuture.completedFuture((Void) null);
 
-                            return coins().addBalance(player.getUniqueId(), resolvedTo, destinationAmount);
-                        }))
-                    .thenRun(() -> {
-                        String formattedFrom = coins().format(resolvedFrom, amount);
-                        String formattedTo = coins().format(resolvedTo, destinationAmount);
-                        sender.sendMessage(lang().getComponent("eco-exchange-success",
-                            "from_amount", formattedFrom, "from_currency", resolvedFrom,
-                            "to_amount", formattedTo, "to_currency", resolvedTo));
+                                return coins().addBalance(player.getUniqueId(), resolvedTo, destinationAmount);
+                            }))
+                        .thenRun(() -> {
+                            String formattedFrom = coins().format(resolvedFrom, amount);
+                            String formattedTo = coins().format(resolvedTo, destinationAmount);
+                            sender.sendMessage(lang().getComponent("eco-exchange-success",
+                                "from_amount", formattedFrom, "from_currency", resolvedFrom,
+                                "to_amount", formattedTo, "to_currency", resolvedTo));
 
-                        // Log transactions
-                        coins().logTransaction(player.getUniqueId(), player.getName(), resolvedFrom, -amount, "EXCHANGE", null, "Exchanged " + formattedFrom + " to " + formattedTo);
-                        coins().logTransaction(player.getUniqueId(), player.getName(), resolvedTo, destinationAmount, "EXCHANGE", null, "Received " + formattedTo + " from exchange of " + formattedFrom);
-                    });
+                            // Log transactions
+                            coins().logTransaction(player.getUniqueId(), player.getName(), resolvedFrom, -amount, "EXCHANGE", null, "Exchanged " + formattedFrom + " to " + formattedTo);
+                            coins().logTransaction(player.getUniqueId(), player.getName(), resolvedTo, destinationAmount, "EXCHANGE", null, "Received " + formattedTo + " from exchange of " + formattedFrom);
+                        });
+                });
             })
         ).exceptionally(ex -> {
             plugin.logger().sendWarning("Exchange command failed for " + player.getName() + ": " + ex.getMessage());
