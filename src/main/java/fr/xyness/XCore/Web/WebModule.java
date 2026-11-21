@@ -44,4 +44,35 @@ public interface WebModule {
      * @param basePath The base path assigned to this module (e.g., "/api/xbans").
      */
     void registerRoutes(HttpServer server, String basePath);
+
+    /**
+     * What reading the module's routes needs beyond {@code xcore.dashboard.<module>}, for those no
+     * page describes: the ones that answer with a player's data — a profile, the addresses, the
+     * alts — which the dashboard's player profile reads from every module. Each names the
+     * permission the matching command asks for in game.
+     *
+     * <p>Read again whenever the panel rebuilds its rules, like {@link #getPages()}. A module that
+     * declares nothing keeps every route open to whoever may open its pages, as before.</p>
+     *
+     * @return The declarations; none by default.
+     */
+    default List<WebRoute> getRoutePermissions() {
+        return List.of();
+    }
+
+    /**
+     * What saving the module's {@code config.yml} from the dashboard needs, besides
+     * {@code xcore.dashboard.config.save}: the permission of the plugin's own reload command,
+     * usually its administrator's. Several nodes mean any one of them. A configuration page that
+     * names its own ({@link WebPageSpec#savePermission}) is needed as well.
+     *
+     * <p>A module that names none, here or on a page, can only have its configuration saved by an
+     * operator. A configuration can make a plugin run console commands or turn its protections
+     * off: saving one is trusted like the console, and no dashboard permission alone grants it.</p>
+     *
+     * @return The permission, or its alternatives; none by default.
+     */
+    default List<String> getConfigSavePermission() {
+        return List.of();
+    }
 }

@@ -120,12 +120,16 @@ dashboard-modules: " <yellow>▸ <white>Modules : <hover:show_text:'{list}'><gra
 dashboard-modules-none: "<gray>Aucun module enregistré"
 dashboard-login: " <yellow>▸ <white>Connexion : <click:open_url:'{url}'><hover:show_text:'<green>Clique pour ouvrir le dashboard, déjà connecté'><green>[ouvrir le dashboard]</green></hover></click>"
 dashboard-login-ttl: "   <yellow>· <white>Le lien te connecte pendant <gray>{hours}h<white>. Garde-le pour toi."
-dashboard-login-forever: "   <yellow>· <white>Le lien reste valide jusqu'à révocation. Garde-le pour toi."
+dashboard-login-away: "   <yellow>· <white>Il se ferme quand tu as quitté ce serveur depuis <gray>{away}<white> : ton rang est vérifié ici."
 dashboard-login-revoke: "   <yellow>· <white>Envoyé au mauvais endroit ? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Clique pour exécuter'><gray>/xcore dashboard revoke</gray></hover></click>"
 dashboard-login-console: " <yellow>▸ <white>Lance <gray>/xcore dashboard<white> en jeu pour obtenir un lien de connexion. La console n'a pas de navigateur pour l'ouvrir."
 dashboard-login-denied: " <yellow>▸ <white>La connexion demande la permission <gray>{permission}<white>. Un administrateur peut te l'accorder."
 dashboard-revoked: "<green>{count} session(s) du dashboard fermée(s). Les anciens liens ne fonctionnent plus."
 dashboard-revoked-none: "<red>Tu n'avais aucune session ouverte sur le dashboard."
+dashboard-revoke-other: " <yellow>› <click:suggest_command:'/xcore dashboard revoke '><hover:show_text:'<gray>Clique pour pré-remplir'><white>/xcore dashboard revoke <joueur></hover></click> <gray>— Fermer les sessions d'un joueur sur le dashboard"
+dashboard-revoke-console: " <yellow>▸ <white>La console n'ouvre aucune session. Pour fermer celles d'un joueur : <gray>/xcore dashboard revoke <joueur>"
+dashboard-revoked-player: "<green>{count} session(s) de <white>{player}<green> fermée(s) sur le dashboard. Ses liens ne fonctionnent plus."
+dashboard-revoked-player-none: "<red>Aucune session ouverte sur le dashboard pour <white>{player}<red>."
 
 # ---------------------------------------------------------------------------
 # /xcore reload
@@ -169,6 +173,8 @@ player-data-entry: " <yellow>› <white>{key} : <gray>{value}"
 player-only: "<red>Cette commande est réservée aux joueurs."
 eco-invalid-currency: "<red>Monnaie {currency} inconnue. Disponibles : {currencies}"
 eco-insufficient-funds: "<red>Fonds insuffisants. Tu as {balance}."
+# Moins que ce que la monnaie compte : les montants sont ramenés à ses décimales, et un montant qui tombe à 0 est refusé.
+eco-amount-too-small: "<red>Montant trop petit pour {currency} : le minimum est <yellow>{minimum}<red>."
 error: "<red>Une erreur est survenue. Réessaie."
 eco-balance-capped: "<yellow>Le solde a été plafonné à {max} pour {currency}."
 
@@ -181,11 +187,17 @@ eco-balance-end: ""
 eco-pay-sent: "<green>Tu as envoyé <yellow>{amount} <gray>({currency}) <green>à {target}."
 eco-pay-received: "<green>Tu as reçu <yellow>{amount} <gray>({currency}) <green>de {sender}."
 eco-pay-self: "<red>Tu ne peux pas te payer toi-même."
+# L'argent a été pris, le destinataire n'a pas pu être crédité (refusé par un plugin, ou par la base) : il revient.
+eco-pay-not-credited: "<red>{target} n'a pas pu recevoir le paiement : <yellow>{amount} <gray>({currency}) <red>est revenu sur ton solde."
+# Même le remboursement a échoué : la console dit exactement quoi rétablir.
+eco-refund-failed: "<red>L'opération n'a pas abouti, et <yellow>{amount} <gray>({currency}) <red>n'a pas encore pu t'être rendu. Un membre de l'équipe peut le rétablir : la console a les détails."
 
 eco-set-success: "<green>Solde <gray>({currency}) <green>de {name} défini à <yellow>{amount}<green>."
 eco-add-success: "<green>Ajout de <yellow>{amount} <gray>({currency}) <green>à {name}. Nouveau : <yellow>{balance}<green>."
 eco-remove-success: "<green>Retrait de <yellow>{amount} <gray>({currency}) <green>à {name}. Nouveau : <yellow>{balance}<green>."
 eco-reset-success: "<green>Solde <gray>({currency}) <green>de {name} réinitialisé à <yellow>{amount}<green>."
+# Un plugin a annulé la modification de solde de /eco set, add ou remove.
+eco-change-cancelled: "<red>La modification du solde <gray>({currency}) <red>de {name} a été refusée : rien n'a changé."
 
 eco-resetall-warning: "<red>Ceci réinitialisera TOUS les joueurs (connectés et hors ligne) pour : {currency}. C'est irréversible."
 eco-resetall-confirm-usage: "<red>Tape <gray>/eco resetall {currency} confirm <red>pour confirmer."
@@ -195,6 +207,8 @@ eco-resetall-success: "<green>{count} <green>solde(s) réinitialisé(s) pour {cu
 eco-exchange-success: "<green>Tu as échangé <yellow>{from_amount} <gray>({from_currency}) <green>contre <yellow>{to_amount} <gray>({to_currency})<green>."
 eco-exchange-no-rate: "<red>Aucun taux de change disponible pour cette paire de monnaies."
 eco-exchange-disabled: "<red>L'échange de monnaies est actuellement désactivé."
+eco-exchange-too-small: "<red>Trop peu pour un échange : il faut au moins <yellow>{minimum} <gray>({currency})<red>."
+eco-exchange-not-credited: "<red>L'échange n'a pas abouti : <yellow>{amount} <gray>({currency}) <red>est revenu sur ton solde."
 
 eco-history-title: "<aqua>Historique de {name} <gray>(Page {page}/{max_page})"
 eco-history-entry: "  <gray>{date} <gray>| <green>{type} <gray>| <yellow>{amount} <gray>{currency} <gray>| <white>{target}"

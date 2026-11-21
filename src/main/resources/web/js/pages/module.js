@@ -7,7 +7,8 @@
 // addon appears in this file.
 
 import { h, icon, swap, balanceTiles } from "../lib/dom.js";
-import { get, post, withQuery, nodeList } from "../lib/api.js";
+import { get, post, withQuery } from "../lib/api.js";
+import { requirements } from "../lib/access.js";
 import { t, num, fixed, bytes, fieldLabel } from "../lib/i18n.js";
 import { markOf, kindLabel, pageIcon, pageName, pageHref, pageTitle } from "../lib/modules.js";
 import { listing, rowsOf, pick } from "../ui/listing.js";
@@ -180,12 +181,13 @@ export function specPage(mod, page) {
 }
 
 /**
- * Whether the reader may only read a configuration page: the panel marks it so when saving needs a
- * permission they lack, and names that permission.
+ * Whether the reader may only read a configuration page: the panel marks it so when saving needs
+ * what they lack — the permissions it names, or being an operator, for a plugin that names none.
  */
 function readOnlyOf(page) {
   if (!page || page.readOnly !== true) return null;
-  return { needs: Array.isArray(page.needs) ? page.needs.filter((node) => typeof node === "string") : [] };
+  const all = requirements(page.needsAll);
+  return { needs: all.length ? all : requirements(page.needs), operator: page.operator === true };
 }
 
 function configPage(mod, page) {
@@ -469,24 +471,37 @@ function tablePage(mod, page) {
 }
 
 /**
- * A sentence with a permission node in it, the node set as code — as the login screen sets the
- * command. The translation places it with {permission}.
+ * A sentence with permission nodes in it, each set as code — as the login screen sets the
+ * command — joined the way they are needed: "a and b", each "x or y". The translation places them
+ * with {permission}; a sentence for several takes the key's "-all" form.
+ *
+ * @param {string} key The translation.
+ * @param {Array} needs The requirements (see requirements()), or one list of alternatives.
  */
-function withNode(key, nodes) {
-  const text = t(key);
+function withNode(key, needs) {
+  const list = requirements(needs);
+  const text = t(list.length > 1 ? `${key}-all` : key);
+  const nodes = [];
+  list.forEach((anyOf, i) => {
+    if (i > 0) nodes.push(t("permission-and"));
+    anyOf.forEach((node, j) => {
+      if (j > 0) nodes.push(t("permission-or"));
+      nodes.push(h("code", { text: node }));
+    });
+  });
   const at = text.indexOf("{permission}");
-  const code = h("code", { text: nodeList(nodes) });
-  if (at < 0) return h("p", null, text, " ", code);
-  return h("p", null, text.slice(0, at), code, text.slice(at + "{permission}".length));
+  if (at < 0) return h("p", null, text, " ", ...nodes);
+  return h("p", null, text.slice(0, at), ...nodes, text.slice(at + "{permission}".length));
 }
 
 /**
- * A page this session may not open — a module, the players or the configuration editor. Said
- * calmly, with the permission that would open it, so the reader can ask for it by name.
+ * A page this session may not open — a module, the players, the configuration editor, a page
+ * showing addresses. Said calmly, with the permission that would open it, so the reader can ask
+ * for it by name.
  *
  * @param {object} options
  * @param {object|null} [options.mod]  The module, when the page is one of a module's.
- * @param {string[]} [options.needs]   The permission that opens it, or its alternatives.
+ * @param {Array} [options.needs]      What opens it: the requirements, or one list of alternatives.
  */
 export function noAccessPage({ mod = null, needs = [] } = {}) {
   let eyebrow = h("p", { class: "eyebrow label", text: t("xcore") });
@@ -506,7 +521,7 @@ export function noAccessPage({ mod = null, needs = [] } = {}) {
         { class: "state state-locked" },
         h("span", { class: "state-icon" }, icon("lock")),
         h("p", { text: t("no-access-hint") }),
-        needs.length ? withNode("no-access-needs", needs) : null,
+        requirements(needs).length ? withNode("no-access-needs", needs) : null,
         h("p", { class: "state-note", text: t("no-access-later") })
       ),
       h("div", { class: "state-actions" }, h("a", { class: "btn btn-secondary glass glass-set", href: "#/" }, icon("arrow-left"), t("overview")))

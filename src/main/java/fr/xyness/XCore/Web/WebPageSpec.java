@@ -25,12 +25,15 @@ import com.google.gson.JsonObject;
  *
  * <h2>Permissions</h2>
  * Whoever reads the dashboard does so with their own in-game permissions. A module's pages open
- * with {@code xcore.dashboard.<module>}; each thing a page lets the reader change — a row action,
- * the creation form, the page-wide button, saving a configuration page — names the permission the
- * matching command asks for in game ({@link Action#permission}, {@link #formPermission},
- * {@link #bulkPermission}, {@link #savePermission}). One that names none needs
- * {@code xcore.dashboard.<module>.manage}. The panel checks them on every request, and leaves out
- * of what it sends a reader the buttons that reader could not use.
+ * with {@code xcore.dashboard.<module>}; a page that shows what not every member of staff may see
+ * — addresses, accounts — names the permission reading it needs ({@link #readPermission}). Each
+ * thing a page lets the reader change — a row action, the creation form, the page-wide button —
+ * names the permission the matching command asks for in game ({@link Action#permission},
+ * {@link #formPermission}, {@link #bulkPermission}); one that names none needs
+ * {@code xcore.dashboard.<module>.manage}. Saving a configuration page needs
+ * {@code xcore.dashboard.config.save} and what {@link #savePermission} names, and nothing short
+ * of an operator when it names nothing. The panel checks them on every request, and leaves out of
+ * what it sends a reader the pages and buttons that reader could not use.
  *
  * <h2>Example</h2>
  * <pre>
@@ -309,6 +312,7 @@ public final class WebPageSpec {
     private String bulkConfirmKey;
     private final List<String> bulkPermission = new ArrayList<>();
     private final List<String> savePermission = new ArrayList<>();
+    private final List<String> readPermission = new ArrayList<>();
     private String searchPlaceholderKey;
     private final List<Filter> filters = new ArrayList<>();
     private int pageSize;
@@ -474,13 +478,32 @@ public final class WebPageSpec {
      * one of them.
      *
      * <p>Reading the file needs {@code xcore.dashboard.config} besides the module's own
-     * permission; saving it needs this too, or {@code xcore.dashboard.<module>.manage} when the
-     * page names nothing.</p>
+     * permission; saving it needs {@code xcore.dashboard.config.save} and this as well. A module
+     * that names nothing — here or in {@link WebModule#getConfigSavePermission()} — can only have
+     * its file saved by an operator: a configuration can make a plugin run console commands, and
+     * saving one is trusted like the console.</p>
      *
      * @param nodes The permission, or its alternatives.
      */
     public WebPageSpec savePermission(String... nodes) {
         addNodes(savePermission, nodes);
+        return this;
+    }
+
+    /**
+     * Names the permission reading the page needs, besides {@code xcore.dashboard.<module>}: the
+     * one the matching command asks for in game, for a page that shows what not every member of
+     * staff may see — the addresses players connect from, their accounts. Several nodes mean any
+     * one of them.
+     *
+     * <p>It covers every endpoint the page reads — its own, its charts' and its heat map's —
+     * whatever the method. A reader who lacks it does not get the page at all, its buttons
+     * included; a link to it says which permission it needs.</p>
+     *
+     * @param nodes The permission, or its alternatives.
+     */
+    public WebPageSpec readPermission(String... nodes) {
+        addNodes(readPermission, nodes);
         return this;
     }
 
@@ -685,6 +708,7 @@ public final class WebPageSpec {
         }
 
         if (type == Type.CONFIG && !savePermission.isEmpty()) o.add("savePermission", strings(savePermission));
+        if (!readPermission.isEmpty()) o.add("readPermission", strings(readPermission));
 
         if (searchPlaceholderKey != null) o.addProperty("searchKey", searchPlaceholderKey);
         if (pageSize > 0) o.addProperty("pageSize", pageSize);
@@ -792,5 +816,32 @@ public final class WebPageSpec {
     /** @return On a configuration page, what saving it needs; empty anywhere else, or when nothing was declared. */
     List<String> savePermissions() {
         return type == Type.CONFIG ? List.copyOf(savePermission) : List.of();
+    }
+
+    /** @return What reading the page needs besides its module's permission; empty when it declared nothing. */
+    List<String> readPermissions() {
+        return List.copyOf(readPermission);
+    }
+
+    /**
+     * Every endpoint the page reads: its own, and each chart's and its heat map's when they have
+     * one of their own. An empty one means the page's own, and a configuration page reads none.
+     *
+     * @return The endpoints, without repeats.
+     */
+    List<String> readEndpoints() {
+        List<String> out = new ArrayList<>();
+        if (endpoint != null && !endpoint.isBlank()) out.add(endpoint);
+        for (JsonObject chart : charts) {
+            String own = chart.has("endpoint") ? chart.get("endpoint").getAsString() : "";
+            if (!own.isBlank() && !out.contains(own)) out.add(own);
+        }
+        if (heatmapEndpoint != null && !heatmapEndpoint.isBlank() && !out.contains(heatmapEndpoint)) out.add(heatmapEndpoint);
+        return out;
+    }
+
+    /** @return The endpoint the page is built from, empty for a configuration page. */
+    String endpoint() {
+        return endpoint == null ? "" : endpoint;
     }
 }

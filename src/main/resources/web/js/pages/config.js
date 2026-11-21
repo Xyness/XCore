@@ -8,8 +8,13 @@
 // a phone's keyboard — keeps working; under it, a copy of the text is drawn in colour. YAML has no
 // tabs, so Tab indents by two spaces; Escape, then Tab, leaves the editor as usual.
 //
-// A reader who may open the file but not save it — saving reloads the plugin, and asks for the
-// permission its reload command asks for in game — gets it read-only, with that permission named.
+// Saving is trusted like the console — a configuration can make a plugin run commands or turn its
+// protections off — and the editor says so. A reader who may open the file but not save it — saving
+// asks for xcore.dashboard.config.save and the permission the plugin's reload command asks for in
+// game, or for an operator when the plugin names none — gets it read-only, with what it needs named.
+//
+// Passwords, keys and webhook addresses never reach the browser: the panel sends them as <hidden>,
+// and keeps what is stored wherever the placeholder comes back unchanged.
 
 import { h, icon, swap } from "../lib/dom.js";
 import { get, post, moduleBase } from "../lib/api.js";
@@ -19,6 +24,9 @@ import { errorState } from "../ui/table.js";
 import { withNode } from "./module.js";
 
 const INDENT = "  ";
+
+/** What the panel shows in place of a secret, exactly as it writes it. */
+const HIDDEN = '"<hidden>"';
 
 /** Splits one line of YAML into coloured runs. Good enough to read by, never to parse by. */
 function paintLine(line) {
@@ -48,7 +56,8 @@ function paintLine(line) {
     const lead = rest.slice(0, rest.indexOf(value));
     const trail = rest.slice(rest.indexOf(value) + value.length);
     let kind = "plain";
-    if (/^(["']).*\1$/.test(value)) kind = "string";
+    if (value === HIDDEN) kind = "hidden";
+    else if (/^(["']).*\1$/.test(value)) kind = "string";
     else if (/^(true|false|yes|no|on|off|null|~)$/i.test(value)) kind = "bool";
     else if (/^[-+]?(\d[\d_]*)(\.\d+)?([eE][-+]?\d+)?$/.test(value)) kind = "number";
     else if (/^[|>][-+]?$/.test(value)) kind = "punct";
@@ -76,9 +85,14 @@ function paint(view, text) {
   view.replaceChildren(fragment);
 }
 
+/** A line under the editor's heading: an icon, and a sentence. */
+const note = (iconName, content, extra = {}) =>
+  h("div", { class: "config-note", ...extra }, icon(iconName), typeof content === "string" ? h("p", { text: content }) : content);
+
 /**
  * @param {string} name The module whose config.yml it edits.
- * @param {{needs: string[]}|null} [readOnly] Set when the reader may not save: what saving needs.
+ * @param {{needs: string[][], operator: boolean}|null} [readOnly] Set when the reader may not
+ *   save: what saving needs, and whether nothing short of an operator may.
  */
 export function configEditor(name, readOnly = null) {
   const base = `${moduleBase(name)}/config/raw`;
@@ -108,11 +122,15 @@ export function configEditor(name, readOnly = null) {
     : h("button", { class: "btn btn-secondary glass glass-set", type: "button" }, icon("rotate-ccw"), h("span", { text: t("revert-reload-from-disk") }));
 
   const editor = h("div", { class: "code", data: { readonly: locked || null } }, gutter, h("div", { class: "code-area" }, view, input));
-  const hint = locked
-    ? h("div", { class: "config-hint config-locked", id: "config-hint" }, icon("lock"), withNode("config-read-only", readOnly.needs))
-    : h("p", { class: "config-hint", id: "config-hint", text: t("config-editor-hint", { addon: name }) });
+  let hint;
+  if (!locked) hint = h("p", { class: "config-hint", id: "config-hint", text: t("config-editor-hint", { addon: name }) });
+  else if (readOnly.operator) hint = note("lock", t("config-read-only-operator"), { id: "config-hint" });
+  else hint = note("lock", withNode("config-read-only", readOnly.needs), { id: "config-hint" });
+  // Shown once the file is read, when it hid something.
+  const hidden = note("key-round", t("config-hidden-values"), { hidden: true });
+  const notes = h("div", { class: "config-notes" }, hint, note("shield", t("config-trusted")), hidden);
   const parts = [
-    hint,
+    notes,
     editor,
     h(
       "div",
@@ -242,17 +260,20 @@ export function configEditor(name, readOnly = null) {
       markError(0);
       toast(t("config-saved-and-reloaded", { addon: name }), "success");
     } catch (error) {
-      const message = error.message || t("save-failed");
+      const body = error && error.body;
+      // A placeholder left where no stored value can be kept: the panel names the key and the line.
+      const refused = body && typeof body.hiddenKey === "string" && Number.isInteger(body.line);
+      const message = refused ? t("config-hidden-refused", { key: body.hiddenKey, line: body.line }) : error.message || t("save-failed");
       status.setAttribute("data-error", "");
       swap(status, icon("circle-alert"), h("span", { text: message }));
-      const line = /line (\d+)/i.exec(message);
-      if (line) {
-        markError(Number(line[1]));
+      const found = refused ? String(body.line) : (/line (\d+)/i.exec(message) || [])[1];
+      if (found) {
+        markError(Number(found));
         swap(
           status,
           icon("circle-alert"),
           h("span", { text: message }),
-          h("button", { class: "btn btn-xs btn-quiet", type: "button", onclick: () => goToLine(Number(line[1])) }, t("go-to-line", { line: line[1] }))
+          h("button", { class: "btn btn-xs btn-quiet", type: "button", onclick: () => goToLine(Number(found)) }, t("go-to-line", { line: found }))
         );
       }
       toast(t("save-failed-see-message-below-the-editor"), "error");
@@ -276,6 +297,7 @@ export function configEditor(name, readOnly = null) {
     try {
       const data = await get(base);
       saved = (data && typeof data.yaml === "string" ? data.yaml : "");
+      hidden.hidden = !(data && Number(data.hidden) > 0);
       input.value = saved;
       status.removeAttribute("data-error");
       status.textContent = "";

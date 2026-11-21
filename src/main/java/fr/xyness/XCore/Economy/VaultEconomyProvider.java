@@ -64,26 +64,35 @@ public class VaultEconomyProvider implements Economy {
         if (amount < 0) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Cannot withdraw negative amount.");
         }
+        if (!Double.isFinite(amount)) {
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Invalid amount.");
+        }
+        // What is taken is the amount at the currency's precision, rounded down, and that is what the
+        // answer says: 0.015 takes 0.01, never 0.02. Less than the currency can count is refused.
+        double taken = coins.amountOf(vaultId(), amount);
+        if (amount > 0 && taken <= 0) {
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Amount below the currency's precision.");
+        }
         // Vault's contract is synchronous: a plugin hands over goods based on what this returns.
         // The withdrawal is therefore awaited (bounded) and its real outcome reported, rather than
         // checking has() and firing an update that may quietly take nothing.
-        java.util.concurrent.CompletableFuture<Boolean> withdrawal = coins.withdraw(player.getUniqueId(), amount);
+        java.util.concurrent.CompletableFuture<Boolean> withdrawal = coins.withdraw(player.getUniqueId(), taken);
         Boolean ok = await(withdrawal);
         if (ok == null) {
             // Still running past the bound. The caller is told it failed, so whatever lands after
             // all is given back: otherwise the money would be gone with nothing in return.
-            withdrawal.thenAccept(taken -> {
-                if (!Boolean.TRUE.equals(taken)) return;
-                coins.deposit(player.getUniqueId(), amount);
-                org.bukkit.Bukkit.getLogger().warning("[XCore] Vault : retrait tardif de " + amount
-                        + " pour " + player.getUniqueId() + " annulé (déjà répondu en échec).");
+            withdrawal.thenAccept(done -> {
+                if (!Boolean.TRUE.equals(done) || taken <= 0) return;
+                coins.deposit(player.getUniqueId(), taken);
+                org.bukkit.Bukkit.getLogger().warning("[XCore] Vault: a late withdrawal of " + taken
+                        + " for " + player.getUniqueId() + " was given back (already answered as failed).");
             });
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Economy timed out.");
         }
         if (!ok) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Insufficient funds.");
         }
-        return new EconomyResponse(amount, getBalance(player), ResponseType.SUCCESS, null);
+        return new EconomyResponse(taken, getBalance(player), ResponseType.SUCCESS, null);
     }
 
     @Override
@@ -96,20 +105,33 @@ public class VaultEconomyProvider implements Economy {
         if (amount < 0) {
             return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Cannot deposit negative amount.");
         }
-        java.util.concurrent.CompletableFuture<Double> deposit = coins.deposit(player.getUniqueId(), amount);
+        if (!Double.isFinite(amount)) {
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Invalid amount.");
+        }
+        // Credited at the currency's precision, rounded down — the same amount a withdrawal of it
+        // takes, so that a plugin moving money from one player to another through Vault never pays
+        // out more than it collected.
+        double given = coins.amountOf(vaultId(), amount);
+        if (amount > 0 && given <= 0) {
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Amount below the currency's precision.");
+        }
+        java.util.concurrent.CompletableFuture<Double> deposit = coins.deposit(player.getUniqueId(), given);
         Double newBalance = await(deposit);
         if (newBalance == null) {
             // Same as above: a deposit answered as failed must not land afterwards, or a caller that
             // retries or refunds on failure would pay twice.
             deposit.thenAccept(balance -> {
-                if (balance == null) return;
-                coins.withdraw(player.getUniqueId(), amount);
-                org.bukkit.Bukkit.getLogger().warning("[XCore] Vault : dépôt tardif de " + amount
-                        + " pour " + player.getUniqueId() + " repris (déjà répondu en échec).");
+                if (balance == null || given <= 0) return;
+                coins.withdraw(player.getUniqueId(), given);
+                org.bukkit.Bukkit.getLogger().warning("[XCore] Vault: a late deposit of " + given
+                        + " for " + player.getUniqueId() + " was taken back (already answered as failed).");
             });
-            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, "Economy timed out.");
+            // Answered already: refused — no balance row for this player — or failed, which the
+            // console says. Only an operation still running is a time-out.
+            String why = deposit.isDone() ? "Deposit could not be applied." : "Economy timed out.";
+            return new EconomyResponse(0, getBalance(player), ResponseType.FAILURE, why);
         }
-        return new EconomyResponse(amount, newBalance, ResponseType.SUCCESS, null);
+        return new EconomyResponse(given, newBalance, ResponseType.SUCCESS, null);
     }
 
     @Override

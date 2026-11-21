@@ -1317,7 +1317,7 @@ a.card:focus-visible {
 
 /* A permission node, named so the reader can ask for it. */
 .state code,
-.config-locked code {
+.config-note code {
   padding: 0.0625rem 0.375rem;
   border-radius: 0.375rem;
   background: var(--glass-wash);

@@ -787,18 +787,37 @@
   color: var(--text-2);
 }
 
-/* Read only: the file is shown, saving is not offered. */
-.config-locked {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
+/* What goes with the file: read only, trusted like the console, secrets hidden. */
+.config-notes {
+  display: grid;
+  gap: 0.5rem;
 }
 
-.config-locked > .icon {
+.config-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  max-width: 52rem;
+  color: var(--text-2);
+}
+
+.config-note[hidden] {
+  display: none;
+}
+
+.config-note > .icon {
   flex: none;
   width: 1rem;
   height: 1rem;
+  /* On the first line of the sentence, however many it runs to. */
+  margin-top: 0.1875rem;
   color: var(--text-3);
+}
+
+/* The first line says what the reader may do; the ones under it are smaller. */
+.config-hint + .config-note,
+.config-note + .config-note {
+  font-size: 0.875rem;
 }
 
 .code {
@@ -922,6 +941,13 @@
 .tok-comment {
   color: var(--text-3);
   font-style: italic;
+}
+
+/* A secret the panel kept back: there, but not to be read. */
+.tok-hidden {
+  color: var(--text-3);
+  background: var(--glass-wash);
+  border-radius: 0.25rem;
 }
 
 .config-bar {

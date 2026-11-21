@@ -16,7 +16,7 @@ import { h, reducedMotion } from "./lib/dom.js";
 import { get, token, whenUnauthorized, whenForbidden, ApiError } from "./lib/api.js";
 import { setStrings, t, setMinecraft } from "./lib/i18n.js";
 import { loadModules, forgetModules, setModules, allModules, findModule, findPage, markOf, pageTitle } from "./lib/modules.js";
-import { setAccess, canSeePlayers, lockedModule, isLockedPage, modulePermission } from "./lib/access.js";
+import { setAccess, canSeePlayers, lockedModule, isLockedPage, lockedPageNeeds, modulePermission } from "./lib/access.js";
 import { startMetrics } from "./lib/metrics.js";
 import { mountShell } from "./ui/shell.js";
 import { refreshItemNames } from "./ui/table.js";
@@ -67,9 +67,11 @@ async function viewFor(route) {
     if (route.name === "module") return { ...moduleHome(mod), module: mod.name, mark, href: `#/m/${encodeURIComponent(mod.name)}` };
     const page = findPage(mod, route.path);
     if (!page) {
-      // The one page of a module the reader can open that may still be closed to them is the
-      // configuration editor.
-      return isLockedPage(mod.name, route.path) ? noAccessPage({ mod, needs: [CONFIG_PERMISSION] }) : missingPage(mod);
+      // A page of a module the reader can open may still be closed to them: the configuration
+      // editor, or a page showing addresses and accounts. The panel says what it needs.
+      if (!isLockedPage(mod.name, route.path)) return missingPage(mod);
+      const needs = lockedPageNeeds(mod.name, route.path);
+      return noAccessPage({ mod, needs: needs.length ? needs : [CONFIG_PERMISSION] });
     }
     const href = `#/m/${encodeURIComponent(mod.name)}/${encodeURIComponent(page.path)}`;
     if (page.spec) return { ...specPage(mod, page), title: pageTitle(mod, page), module: mod.name, mark, href };
@@ -161,7 +163,7 @@ function routeSignature() {
     const mod = findModule(route.module);
     if (!mod) return `locked:${Boolean(lockedModule(route.module))}`;
     if (route.name === "module") return JSON.stringify(mod);
-    return JSON.stringify([findPage(mod, route.path), isLockedPage(mod.name, route.path)]);
+    return JSON.stringify([findPage(mod, route.path), isLockedPage(mod.name, route.path), lockedPageNeeds(mod.name, route.path)]);
   }
   return navSignature();
 }

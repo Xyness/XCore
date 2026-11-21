@@ -2,7 +2,8 @@
 //
 // The profile is assembled from every module: each one that answers /api/<module>/player/<name>
 // adds what it knows — sanctions, listings, logins — as a card of its own. A module that knows
-// nothing about the player, or has no such route, simply adds nothing.
+// nothing about the player, or has no such route, simply adds nothing; one whose profile needs a
+// permission the reader lacks is not asked at all.
 
 import { h, icon, swap, copyText } from "../lib/dom.js";
 import { get, withQuery, moduleBase } from "../lib/api.js";
@@ -289,7 +290,9 @@ export function profilePage(name) {
       .catch(() => swap(ids, h("p", { class: "page-sub", text: t("failed-to-load-data") })));
 
   const loadModules = () => {
-    const mods = allModules();
+    // A module whose profile the reader may not read — addresses, accounts — is not asked: the
+    // panel would only refuse it.
+    const mods = allModules().filter((mod) => mod.profile !== false);
     let pending = mods.length;
     let found = 0;
     const settle = () => {

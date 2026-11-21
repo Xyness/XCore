@@ -111,14 +111,23 @@ public class DeliveryService {
      *
      * @param owner    Who it is for.
      * @param currency The currency id.
-     * @param amount   How much.
+     * @param amount   How much. Stored at the currency's precision, rounded down, as it will be paid;
+     *                 less than the currency can count is refused.
      * @param reason   A short line the player will see.
      * @param source   The addon sending it.
      * @return A future completing with {@code true} when the delivery was stored.
      */
     public CompletableFuture<Boolean> sendMoney(UUID owner, String currency, double amount, String reason, String source) {
-        if (amount <= 0) return CompletableFuture.completedFuture(false);
-        return insert(owner, Delivery.Kind.MONEY, null, currency, amount, reason, source);
+        if (!(amount > 0)) return CompletableFuture.completedFuture(false);
+        double owed = amount;
+        // A currency unknown here — the economy off, or a currency of another server — is stored as
+        // given, and brought to precision when it is paid.
+        var coins = main.getCoinsManager();
+        if (coins != null && coins.getCurrency(currency) != null) {
+            owed = coins.amountOf(currency, amount);
+            if (owed <= 0) return CompletableFuture.completedFuture(false);
+        }
+        return insert(owner, Delivery.Kind.MONEY, null, currency, owed, reason, source);
     }
 
     private CompletableFuture<Boolean> insert(UUID owner, Delivery.Kind kind, String item,
@@ -319,9 +328,22 @@ public class DeliveryService {
      * @return A future completing with {@code true} when this call paid the delivery.
      */
     private CompletableFuture<Boolean> payOut(UUID owner, Delivery delivery) {
+        var coins = main.getCoinsManager();
+        // Less than its currency can count — queued before amounts were brought to precision: a
+        // deposit refuses it, and reopened every time it would stay pending for good, taking one of
+        // the deliveries handed over at each join. Closed, with nothing to pay.
+        if (coins.getCurrency(delivery.currency()) != null && coins.amountOf(delivery.currency(), delivery.amount()) <= 0) {
+            return setClaimed(delivery.id(), 0, 1).thenApply(closed -> {
+                if (closed) {
+                    main.logger().sendWarning("Delivery " + delivery.id() + " of " + owner + " (" + delivery.amount() + " "
+                            + delivery.currency() + ") is less than the currency counts: closed, nothing to pay.");
+                }
+                return false;
+            });
+        }
         return setClaimed(delivery.id(), 0, 1).thenCompose(closed -> {
             if (!closed) return CompletableFuture.completedFuture(false);   // already taken elsewhere
-            return main.getCoinsManager()
+            return coins
                     .deposit(owner, delivery.currency(), delivery.amount())
                     .exceptionally(error -> null)
                     .thenCompose(balance -> {

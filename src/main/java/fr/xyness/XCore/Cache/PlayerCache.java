@@ -74,7 +74,25 @@ public class PlayerCache<P> {
     private static final int MAX_RETRIES = 2;
     private static final long RATE_LIMIT_BASE_DELAY_MS = 250;
 
+    /** Requests to Mojang running at once for the asynchronous lookups, at most. */
+    private static final int MOJANG_THREADS = 4;
+
+    /** Asynchronous lookups waiting for one of those threads, at most; past it they fail at once. */
+    private static final int MOJANG_QUEUE = 512;
+
     private final Executor executor;
+
+    /**
+     * Where the asynchronous Mojang lookups run: a few threads of their own.
+     *
+     * <p>A request to Mojang can wait for a permit, then for its connect and read timeouts, then
+     * again for each retry after a 429. Run on the work pool, a burst of new players held its threads
+     * for as long, and what the pool is for — cache callbacks, the UUID-change handlers and their
+     * timers — waited behind them. Run on a login's own thread, it kept that login past the time it
+     * was meant to wait. Here it holds nothing but these threads, and a lookup that finds them all
+     * busy and the queue full fails at once instead of piling up.</p>
+     */
+    private final java.util.concurrent.ThreadPoolExecutor mojangExecutor;
     private final JedisPool jedisPool;
     private final int redisTTL;
     private final AsyncLoadingCache<UUID, Optional<P>> uuidToPlayers;
@@ -147,6 +165,19 @@ public class PlayerCache<P> {
         this.logWarning = builder.logWarning != null ? builder.logWarning : msg -> {};
         this.logError = builder.logError != null ? builder.logError : msg -> {};
 
+        int mojangThreads = Math.max(1, Math.min(MOJANG_THREADS, builder.maxApiConcurrency));
+        this.mojangExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                mojangThreads, mojangThreads, 30L, TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(MOJANG_QUEUE),
+                r -> { Thread t = new Thread(r, "XCore-Mojang"); t.setDaemon(true); return t; },
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+        this.mojangExecutor.allowCoreThreadTimeOut(true);
+
+        // A lookup that could not be made — Mojang down or slow, the circuit open, no permit in time
+        // — throws (MojangUnavailable) instead of answering "none": nothing is cached for it, here or
+        // in Redis, and the next lookup asks again. "none" stays what Mojang itself answers for a name
+        // no account has. Taken for each other, a failure was remembered for an hour, network-wide,
+        // as "this name has no Mojang account".
         this.mojangUUIDCache = Caffeine.newBuilder()
                 .expireAfterWrite(1, TimeUnit.HOURS).maximumSize(builder.mojangCacheSize)
                 .build(playerName -> {
@@ -587,17 +618,95 @@ public class PlayerCache<P> {
 
     /**
      * Fetches the Mojang UUID from the local Mojang UUID cache (which itself
-     * checks Redis L2 and the Mojang API as needed).
+     * checks Redis L2 and the Mojang API as needed), on the calling thread.
+     *
+     * <p>Mojang ignores case: this is the account that owns the name in whatever spelling, not
+     * necessarily one that ever used this spelling. It says who owns a name, never that a
+     * connection is that owner.</p>
      *
      * @param playerName The player name.
      * @return The Mojang UUID string, or {@code "none"} if unavailable.
      */
     public String fetchMojangUUID(String playerName) {
         // Lower-cased so "Xyness" and "xyness" share one entry, as they already do in Redis.
-        String val = mojangUUIDCache.get(playerName.toLowerCase());
+        String val;
+        try {
+            val = mojangUUIDCache.get(playerName.toLowerCase());
+        } catch (MojangUnavailable unavailable) {
+            mojangCacheMisses.increment();
+            return NONE;
+        }
         if (val.equals(NONE)) { mojangCacheMisses.increment(); return NONE; }
         mojangCacheHits.increment();
         return val;
+    }
+
+    /**
+     * Fetches the Mojang UUID owning a name without making the caller wait: answered at once when it
+     * is cached, otherwise on the Mojang threads (see {@link #mojangExecutor}).
+     *
+     * <p>Unlike {@link #fetchMojangUUID(String)}, a lookup that could not be made is not answered
+     * {@code "none"}: the future fails, so a caller can tell "this name has no Mojang account" from
+     * "Mojang could not be asked".</p>
+     *
+     * @param playerName The player name.
+     * @return A future completing with the Mojang UUID, or {@code "none"} when Mojang knows no
+     *         account under that name; failing when Mojang could not be asked.
+     */
+    public CompletableFuture<String> fetchMojangUUIDAsync(String playerName) {
+        String key = playerName.toLowerCase();
+        String cached = mojangUUIDCache.getIfPresent(key);
+        if (cached != null) {
+            if (cached.equals(NONE)) mojangCacheMisses.increment(); else mojangCacheHits.increment();
+            return CompletableFuture.completedFuture(cached);
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                String val = mojangUUIDCache.get(key);
+                if (val.equals(NONE)) mojangCacheMisses.increment(); else mojangCacheHits.increment();
+                return val;
+            }, mojangExecutor);
+        } catch (java.util.concurrent.RejectedExecutionException full) {
+            return CompletableFuture.failedFuture(new MojangUnavailable("too many Mojang lookups waiting"));
+        }
+    }
+
+    /**
+     * Fetches a skin texture without making the caller wait: answered at once when it is cached,
+     * otherwise on the Mojang threads. Never fails.
+     *
+     * @param mojangUUID      The Mojang UUID.
+     * @param currentFallback What to answer when there is no skin to be had.
+     * @return A future completing with the skin URL, or the fallback.
+     */
+    public CompletableFuture<String> fetchSkinTextureAsync(String mojangUUID, String currentFallback) {
+        if (mojangUUID == null || mojangUUID.isBlank() || NONE.equalsIgnoreCase(mojangUUID)) {
+            return CompletableFuture.completedFuture(currentFallback);
+        }
+        String cached = skinCache.getIfPresent(mojangUUID);
+        if (cached != null) {
+            if (cached.equals(NONE)) { skinCacheMisses.increment(); return CompletableFuture.completedFuture(currentFallback); }
+            skinCacheHits.increment();
+            return CompletableFuture.completedFuture(cached);
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> fetchSkinTexture(mojangUUID, currentFallback), mojangExecutor)
+                    .exceptionally(error -> currentFallback);
+        } catch (java.util.concurrent.RejectedExecutionException full) {
+            return CompletableFuture.completedFuture(currentFallback);
+        }
+    }
+
+    /**
+     * Mojang could not be asked about a name: down, slow, refusing, the circuit breaker open, or no
+     * request permit in time. Thrown by the lookup so that Caffeine caches nothing for it.
+     */
+    public static final class MojangUnavailable extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        MojangUnavailable(String reason) {
+            super(reason, null, false, false);
+        }
     }
 
     /**
@@ -614,10 +723,21 @@ public class PlayerCache<P> {
         return val;
     }
 
+    /** What a Mojang account name can be made of: anything else has no account, and is not asked about. */
+    private static final java.util.regex.Pattern MOJANG_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_]{1,16}");
+
+    /**
+     * Asks Mojang for the account owning a name.
+     *
+     * @return The dashed Mojang UUID, or {@code null} when no account has that name.
+     * @throws MojangUnavailable When Mojang could not be asked: nothing is to be cached then.
+     */
     private String getUUIDFromMojang(String playerName) {
+        // A Bedrock name with its Floodgate prefix, for one: Mojang answers 400 for it.
+        if (!MOJANG_NAME.matcher(playerName).matches()) return null;
         if (!circuitBreaker.allowRequest()) {
             logDebug.log("Circuit breaker OPEN, skipping Mojang UUID lookup for " + playerName + ".");
-            return null;
+            throw new MojangUnavailable("the Mojang API is not being asked for a while (circuit breaker open)");
         }
         apiCalls.increment();
         return callMojangUUIDWithRetry(playerName, 0);
@@ -625,8 +745,13 @@ public class PlayerCache<P> {
 
     private String callMojangUUIDWithRetry(String playerName, int attempt) {
         try {
-            if (!apiSemaphore.tryAcquire(5, TimeUnit.SECONDS)) return null;
-        } catch (InterruptedException e) { Thread.currentThread().interrupt(); return null; }
+            if (!apiSemaphore.tryAcquire(5, TimeUnit.SECONDS)) {
+                throw new MojangUnavailable("no Mojang request permit within 5s");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MojangUnavailable("interrupted while waiting for a Mojang request permit");
+        }
         boolean released = false;
         HttpURLConnection connection = null;
         try {
@@ -640,7 +765,8 @@ public class PlayerCache<P> {
                     logDebug.log("UUID retrieved from Mojang API for " + playerName + ".");
                     return addDashesToUUID(responseJson.get("id").getAsString());
                 }
-            } else if (code == 204 || code == 404) {
+            } else if (code == 204 || code == 404 || code == 400) {
+                // 400: a name no account can have. An answer like the two others, not a failure.
                 circuitBreaker.recordSuccess();
                 return null;
             } else if (code == 429 && attempt < MAX_RETRIES) {
@@ -649,15 +775,27 @@ public class PlayerCache<P> {
                 long delay = RATE_LIMIT_BASE_DELAY_MS * (1L << attempt);
                 logWarning.log("Mojang API rate limited for " + playerName + ", retrying in " + delay + "ms (attempt " + (attempt + 1) + "/" + MAX_RETRIES + ").");
                 apiSemaphore.release(); released = true;
-                try { Thread.sleep(delay); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); return null; }
+                try { Thread.sleep(delay); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new MojangUnavailable("interrupted while waiting to ask Mojang again");
+                }
                 return callMojangUUIDWithRetry(playerName, attempt + 1);
             } else {
                 apiFailures.increment(); circuitBreaker.recordFailure();
                 logError.log("Mojang UUID API returned " + code + " for " + playerName + ".");
-                return null;
+                throw new MojangUnavailable("the Mojang API answered " + code);
             }
-        } catch (IOException ioe) { apiFailures.increment(); circuitBreaker.recordFailure(); logError.log("Network error for " + playerName + " : " + ioe.getMessage()); return null;
-        } catch (Exception e) { apiFailures.increment(); circuitBreaker.recordFailure(); logError.log("Unexpected error for " + playerName + " : " + e.getMessage()); return null;
+        } catch (MojangUnavailable unavailable) {
+            // Counted where it was thrown, the retry's included.
+            throw unavailable;
+        } catch (IOException ioe) {
+            apiFailures.increment(); circuitBreaker.recordFailure();
+            logError.log("Network error for " + playerName + " : " + ioe.getMessage());
+            throw new MojangUnavailable("network error: " + ioe.getMessage());
+        } catch (Exception e) {
+            apiFailures.increment(); circuitBreaker.recordFailure();
+            logError.log("Unexpected error for " + playerName + " : " + e.getMessage());
+            throw new MojangUnavailable("unexpected error: " + e.getMessage());
         } finally { if (connection != null) connection.disconnect(); if (!released) apiSemaphore.release(); }
     }
 
@@ -745,6 +883,8 @@ public class PlayerCache<P> {
      * </p>
      */
     public void shutdown() {
+        // Nothing waits for a lookup at shutdown: a request on its way is abandoned with its thread.
+        mojangExecutor.shutdownNow();
         uuidToPlayers.synchronous().invalidateAll();
         nameToPlayers.synchronous().invalidateAll();
         mojangUUIDCache.invalidateAll();

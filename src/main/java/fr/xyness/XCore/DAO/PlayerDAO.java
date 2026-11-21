@@ -185,25 +185,83 @@ public class PlayerDAO extends AbstractDAO {
 	 * hash of the name in one mode and Mojang's own value in the other, so it cannot be used to
 	 * recognise a returning player across that switch.</p>
 	 *
+	 * <p>Several rows can carry the same one: it is looked up by name, and Mojang ignores case, so
+	 * {@code Steve} and {@code steve} on an offline server were both given the Mojang UUID of the
+	 * account owning "Steve". None of them is answered then — the first one the database returned
+	 * used to be, whichever player it belonged to.</p>
+	 *
 	 * @param mojangUuid The Mojang UUID, dashed.
-	 * @return A future containing the player, or empty when no row carries that Mojang UUID.
+	 * @return A future containing the player, or empty when no row, or more than one, carries that
+	 *         Mojang UUID.
 	 */
     public CompletableFuture<Optional<PlayerData>> findByMojangUuidAsync(String mojangUuid) {
+        return findAllByMojangUuidAsync(mojangUuid, 2).thenApply(rows -> {
+            if (rows.size() == 1) return Optional.of(rows.get(0));
+            if (rows.size() > 1) {
+                main.logger().sendWarning("[DAO] Several players carry the Mojang UUID " + mojangUuid
+                        + ": none of them is answered for it.");
+            }
+            return Optional.<PlayerData>empty();
+        }).exceptionally(error -> Optional.empty());   // said in the console where it failed
+    }
+
+	/**
+	 * Finds every player carrying a Mojang UUID, up to a limit.
+	 *
+	 * @param mojangUuid The Mojang UUID, dashed.
+	 * @param limit      How many rows to read at most.
+	 * @return A future containing the rows, empty for an unknown or missing Mojang UUID; empty too
+	 *         when the database refused the query (said in the console).
+	 */
+    public CompletableFuture<List<PlayerData>> findAllByMojangUuidAsync(String mojangUuid, int limit) {
         return supplyAsync(() -> {
+            List<PlayerData> rows = new ArrayList<>();
             if (mojangUuid == null || mojangUuid.isBlank() || "none".equalsIgnoreCase(mojangUuid)) {
-                return Optional.empty();
+                return rows;
             }
             try (Connection c = getConnection();
-                 PreparedStatement ps = c.prepareStatement("SELECT * FROM players WHERE mojang_uuid = ?")) {
+                 PreparedStatement ps = c.prepareStatement("SELECT * FROM players WHERE mojang_uuid = ? LIMIT ?")) {
                 ps.setString(1, mojangUuid);
+                ps.setInt(2, Math.max(1, limit));
                 try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) return Optional.empty();
-                    return Optional.of(map(rs));
+                    String[] extraColumns = extraColumnNames(rs);
+                    while (rs.next()) rows.add(map(rs, extraColumns));
                 }
             } catch (SQLException e) {
-                main.logger().sendError("[DAO] Failed to get player by mojang uuid '" + mojangUuid + "' : " + e.getMessage());
+                main.logger().sendError("[DAO] Failed to get players by mojang uuid '" + mojangUuid + "' : " + e.getMessage());
+                throw e;
             }
-            return Optional.empty();
+            return rows;
+        });
+    }
+
+	/**
+	 * Finds every player whose name matches in any case, up to a limit.
+	 *
+	 * <p>For the callers that have to tell the exact spelling from the others themselves:
+	 * {@link #findByNameAsync(String)} answers whichever variant the database returns first.</p>
+	 *
+	 * @param name  The player name.
+	 * @param limit How many rows to read at most.
+	 * @return A future containing the rows, every spelling of the name; failing when the database
+	 *         refused the query.
+	 */
+    public CompletableFuture<List<PlayerData>> findAllByNameAsync(String name, int limit) {
+        return supplyAsync(() -> {
+            List<PlayerData> rows = new ArrayList<>();
+            try (Connection c = getConnection();
+                 PreparedStatement ps = c.prepareStatement(selectByName + " LIMIT ?")) {
+                ps.setString(1, selectByNameLowercased ? name.toLowerCase() : name);
+                ps.setInt(2, Math.max(1, limit));
+                try (ResultSet rs = ps.executeQuery()) {
+                    String[] extraColumns = extraColumnNames(rs);
+                    while (rs.next()) rows.add(map(rs, extraColumns));
+                }
+            } catch (SQLException e) {
+                main.logger().sendError("[DAO] Failed to get players by name '" + name + "' : " + e.getMessage());
+                throw e;
+            }
+            return rows;
         });
     }
 

@@ -33,8 +33,12 @@ server-name: "default"
 # look brand new. With this on, their existing row is moved onto the new UUID instead of a second
 # one being created: balances, per-addon columns, pending deliveries and history follow them, and
 # so does the data of every plugin that registered for it, before the player's login goes on.
-# Matching is by Mojang UUID first, and by name — spelled exactly — only for accounts that have no
-# Mojang UUID at all.
+# A row is taken over through its Mojang UUID when the connection proves to be that account (a
+# version-4 UUID: online mode, a proxy forwarding Mojang UUIDs, XLogin's REAL mode) or carries the
+# exact name; through the name alone, spelled exactly, when the row has no other Mojang account.
+# Never for the same name in other capitals, and never between two Mojang accounts: a Mojang name
+# changes hands. The login waits 10 seconds at most for this; past that nothing is moved for it,
+# and the player's data follows them at their next login.
 migrate-uuid-changes: true
 
 # MySQL / PostgreSQL settings (ignored for sqlite)
@@ -101,8 +105,16 @@ web-dashboard:
   # on the same machine, set "127.0.0.1": the dashboard is then only reachable through the proxy
   # and its HTTPS, never directly. Read at startup: restart the server to change it.
   bind-address: "0.0.0.0"
-  # How long a link from /xcore dashboard stays valid, in hours. 0 = until the token is revoked.
+  # How long a link from /xcore dashboard stays valid, in hours: 168 (a week) at most. A link that
+  # never ends is not allowed any more: 0, or more than 168, counts as 168 and the console says so.
   session-ttl-hours: 24
+  # How long a session goes on the permissions last read from the game while its owner is not on
+  # this server, in hours. They are read again every minute while the owner plays here; once this
+  # long has passed without them, the session closes and the owner gets a new link in game with
+  # /xcore dashboard. A rank taken away while they are away applies within this time at most.
+  # 0 = only while they are on this server. /xcore dashboard revoke <player> closes a player's
+  # sessions at once.
+  offline-trust-hours: 2
   # Whether the /api/metrics endpoint is publicly accessible (no auth required)
   metrics-public: true
   # Allowed browser origin for the API. Keep "*" only if the dashboard is not

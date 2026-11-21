@@ -119,12 +119,16 @@ dashboard-modules: " <yellow>▸ <white>Modules: <hover:show_text:'{list}'><gray
 dashboard-modules-none: "<gray>No module registered"
 dashboard-login: " <yellow>▸ <white>Log in: <click:open_url:'{url}'><hover:show_text:'<green>Click to open the dashboard, already logged in'><green>[open the dashboard]</green></hover></click>"
 dashboard-login-ttl: "   <yellow>· <white>The link logs you in for <gray>{hours}h<white>. Keep it to yourself."
-dashboard-login-forever: "   <yellow>· <white>The link stays valid until you revoke it. Keep it to yourself."
+dashboard-login-away: "   <yellow>· <white>It closes once you have been away from this server for <gray>{away}<white>: your rank is checked here."
 dashboard-login-revoke: "   <yellow>· <white>Sent it to the wrong place? <click:run_command:'/xcore dashboard revoke'><hover:show_text:'<gray>Click to run'><gray>/xcore dashboard revoke</gray></hover></click>"
 dashboard-login-console: " <yellow>▸ <white>Run <gray>/xcore dashboard<white> in game to get a login link. The console has no browser to open it with."
 dashboard-login-denied: " <yellow>▸ <white>Logging in needs the permission <gray>{permission}<white>. An administrator can grant it."
 dashboard-revoked: "<green>Closed {count} dashboard session(s). The old links no longer work."
 dashboard-revoked-none: "<red>You had no open dashboard session."
+dashboard-revoke-other: " <yellow>› <click:suggest_command:'/xcore dashboard revoke '><hover:show_text:'<gray>Click to fill in'><white>/xcore dashboard revoke <player></hover></click> <gray>— Close the dashboard sessions of a player"
+dashboard-revoke-console: " <yellow>▸ <white>The console opens no session. To close those of a player: <gray>/xcore dashboard revoke <player>"
+dashboard-revoked-player: "<green>Closed {count} dashboard session(s) of <white>{player}<green>. Their links no longer work."
+dashboard-revoked-player-none: "<red>No open dashboard session for <white>{player}<red>."
 
 # ---------------------------------------------------------------------------
 # /xcore reload
@@ -168,6 +172,8 @@ player-data-entry: " <yellow>› <white>{key}: <gray>{value}"
 player-only: "<red>This command can only be used by players."
 eco-invalid-currency: "<red>Unknown currency {currency}. Available: {currencies}"
 eco-insufficient-funds: "<red>Insufficient funds. You have {balance}."
+# Less than the currency counts: amounts are brought down to its decimals, and one that comes to 0 is refused.
+eco-amount-too-small: "<red>Amount too small for {currency}: the minimum is <yellow>{minimum}<red>."
 error: "<red>An error occurred. Please try again."
 eco-balance-capped: "<yellow>Balance was capped at {max} for {currency}."
 
@@ -180,11 +186,17 @@ eco-balance-end: ""
 eco-pay-sent: "<green>Sent <yellow>{amount} <gray>({currency}) <green>to {target}."
 eco-pay-received: "<green>Received <yellow>{amount} <gray>({currency}) <green>from {sender}."
 eco-pay-self: "<red>You cannot pay yourself."
+# The money was taken, the target could not be credited (a plugin refused it, or the database did): it comes back.
+eco-pay-not-credited: "<red>{target} could not receive the payment: <yellow>{amount} <gray>({currency}) <red>went back to your balance."
+# Even giving it back failed: the console says exactly what to restore.
+eco-refund-failed: "<red>The operation did not go through, and <yellow>{amount} <gray>({currency}) <red>could not be given back yet. A staff member can restore it: the console has the details."
 
 eco-set-success: "<green>Set {name}'s <gray>({currency}) <green>balance to <yellow>{amount}<green>."
 eco-add-success: "<green>Added <yellow>{amount} <gray>({currency}) <green>to {name}. New: <yellow>{balance}<green>."
 eco-remove-success: "<green>Removed <yellow>{amount} <gray>({currency}) <green>from {name}. New: <yellow>{balance}<green>."
 eco-reset-success: "<green>Reset {name}'s <gray>({currency}) <green>balance to <yellow>{amount}<green>."
+# A plugin cancelled the balance change of /eco set, add or remove.
+eco-change-cancelled: "<red>The change to {name}'s <gray>({currency}) <red>balance was refused: nothing was changed."
 
 eco-resetall-warning: "<red>This will reset EVERY player (online and offline) for: {currency}. This cannot be undone."
 eco-resetall-confirm-usage: "<red>Type <gray>/eco resetall {currency} confirm <red>to proceed."
@@ -194,6 +206,8 @@ eco-resetall-success: "<green>Reset {count} <green>player balance(s) for {curren
 eco-exchange-success: "<green>Exchanged <yellow>{from_amount} <gray>({from_currency}) <green>for <yellow>{to_amount} <gray>({to_currency})<green>."
 eco-exchange-no-rate: "<red>No exchange rate available for this currency pair."
 eco-exchange-disabled: "<red>Currency exchange is currently disabled."
+eco-exchange-too-small: "<red>Too little to exchange: it takes at least <yellow>{minimum} <gray>({currency})<red>."
+eco-exchange-not-credited: "<red>The exchange did not go through: <yellow>{amount} <gray>({currency}) <red>went back to your balance."
 
 eco-history-title: "<aqua>{name}'s history <gray>(Page {page}/{max_page})"
 eco-history-entry: "  <gray>{date} <gray>| <green>{type} <gray>| <yellow>{amount} <gray>{currency} <gray>| <white>{target}"

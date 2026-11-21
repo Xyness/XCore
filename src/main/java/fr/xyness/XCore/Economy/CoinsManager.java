@@ -356,42 +356,20 @@ public class CoinsManager {
      * each — three statements per player, per payout. This is one {@code UPDATE}, one read-back, and
      * the caches refreshed from it.</p>
      *
+     * <p>The amount is brought down to the currency's precision first, like every other amount
+     * ({@link #amountOf(String, double)}); one that comes to less than the currency can count
+     * credits nobody. Each balance is then settled as a single deposit's is ({@link #settle}).</p>
+     *
      * @param playerIds  Who to credit.
      * @param currencyId The currency.
      * @param amount     The amount to add to each balance.
      * @return A future completing with the resulting balance of each player that was updated.
      */
     public CompletableFuture<Map<UUID, Double>> depositAll(Collection<UUID> playerIds, String currencyId, double amount) {
-        return bulkApply(playerIds, currencyId, "COALESCE(" + col(currencyId) + ", 0) + ?", amount, false);
-    }
-
-    /**
-     * Multiplies the balance of a set of players in a single statement, for interest.
-     *
-     * @param playerIds  Who to credit.
-     * @param currencyId The currency.
-     * @param rate       The interest rate ({@code 0.01} adds one percent).
-     * @return A future completing with the resulting balance of each player that was updated.
-     */
-    public CompletableFuture<Map<UUID, Double>> applyInterest(Collection<UUID> playerIds, String currencyId, double rate) {
-        return bulkApply(playerIds, currencyId, "COALESCE(" + col(currencyId) + ", 0) * ?", 1.0 + rate, true);
-    }
-
-    /**
-     * Shared body of the bulk operations: one UPDATE, one read-back, caches refreshed.
-     *
-     * @param playerIds     Who to update.
-     * @param currencyId    The currency.
-     * @param expression    The SQL expression assigned to the column, taking one {@code ?}.
-     * @param parameter     The value bound to that placeholder.
-     * @param positiveOnly  Whether to skip players whose balance is zero or negative.
-     * @return A future completing with the resulting balance of each updated player.
-     */
-    private CompletableFuture<Map<UUID, Double>> bulkApply(Collection<UUID> playerIds, String currencyId,
-                                                           String expression, double parameter, boolean positiveOnly) {
-        Currency currency = currencies.get(currencyId);
         Map<UUID, Double> empty = Map.of();
-        if (currency == null || playerIds == null || playerIds.isEmpty()) {
+        Currency currency = currencies.get(currencyId);
+        double given = amountOf(currencyId, amount);
+        if (currency == null || given <= 0 || playerIds == null || playerIds.isEmpty()) {
             return CompletableFuture.completedFuture(empty);
         }
         String column = col(currencyId);
@@ -403,37 +381,165 @@ public class CoinsManager {
 
         return CompletableFuture.supplyAsync(() -> {
             Map<UUID, Double> results = new HashMap<>();
+            Map<UUID, Double> surpluses = new HashMap<>();
             String placeholders = String.join(",", java.util.Collections.nCopies(targets.size(), "?"));
-            String guard = positiveOnly ? " AND COALESCE(" + column + ", 0) > 0" : "";
             try (Connection conn = api().getDataSource().getConnection()) {
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE players SET " + column + " = " + expression
-                        + " WHERE server_uuid IN (" + placeholders + ")" + guard)) {
-                    ps.setDouble(1, parameter);
+                        "UPDATE players SET " + column + " = COALESCE(" + column + ", 0) + ?"
+                        + " WHERE server_uuid IN (" + placeholders + ")")) {
+                    ps.setDouble(1, given);
                     for (int i = 0; i < targets.size(); i++) ps.setString(i + 2, targets.get(i).toString());
                     ps.executeUpdate();
                 }
+                // Read back whole before settling anything: SQLite does not take a write on a table
+                // while a read of it is still open on the same connection.
+                Map<UUID, Double> applied = new HashMap<>();
                 try (PreparedStatement ps = conn.prepareStatement(
                         "SELECT server_uuid, COALESCE(" + column + ", 0) FROM players"
                         + " WHERE server_uuid IN (" + placeholders + ")")) {
                     for (int i = 0; i < targets.size(); i++) ps.setString(i + 1, targets.get(i).toString());
                     try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            UUID id = UUID.fromString(rs.getString(1));
-                            double value = currency.round(rs.getDouble(2));
-                            double max = currency.getMaxBalance();
-                            if (max > 0 && value > max) value = max;
-                            results.put(id, value);
-                        }
+                        while (rs.next()) applied.put(UUID.fromString(rs.getString(1)), rs.getDouble(2));
                     }
+                }
+                for (Map.Entry<UUID, Double> entry : applied.entrySet()) {
+                    Settled settled = settle(conn, currency, column, entry.getKey(), entry.getValue());
+                    results.put(entry.getKey(), settled.balance());
+                    if (settled.surplus() > 0) surpluses.put(entry.getKey(), settled.surplus());
                 }
             } catch (SQLException e) {
                 logger().sendError("Bulk balance operation failed: " + e.getMessage());
                 return empty;
             }
             results.forEach((id, value) -> refreshCachedBalance(id, currencyId, value));
+            surpluses.forEach((id, surplus) -> offerSurplus(id, currencyId, surplus));
             return results;
         }, plugin.getDbExecutor());
+    }
+
+    /**
+     * What an interest payment did for one player.
+     *
+     * @param amount  What it added to the balance (taken from it, for a negative rate).
+     * @param balance The balance it left.
+     */
+    public record Credit(double amount, double balance) {}
+
+    /**
+     * Pays interest to a set of players.
+     *
+     * @param playerIds  Who to credit.
+     * @param currencyId The currency.
+     * @param rate       The interest rate ({@code 0.01} adds one percent).
+     * @return A future completing with the resulting balance of each player that was paid.
+     * @see #creditInterest(Collection, String, double)
+     */
+    public CompletableFuture<Map<UUID, Double>> applyInterest(Collection<UUID> playerIds, String currencyId, double rate) {
+        return creditInterest(playerIds, currencyId, rate).thenApply(credits -> {
+            Map<UUID, Double> balances = new HashMap<>();
+            credits.forEach((id, credit) -> balances.put(id, credit.balance()));
+            return balances;
+        });
+    }
+
+    /**
+     * Pays interest to a set of players, and says what each one received.
+     *
+     * <p>The interest of each player is an amount like any other: worked out from their balance,
+     * brought down to the currency's precision, and added. It used to be a multiplication made by
+     * the database, whose result was left off precision there while the caches were shown it
+     * rounded to the nearest. Each balance is written only if it is still the one the interest was
+     * worked out from: a player whose balance changed meanwhile is paid at the next interval.</p>
+     *
+     * @param playerIds  Who to credit.
+     * @param currencyId The currency.
+     * @param rate       The interest rate ({@code 0.01} adds one percent; a negative rate takes).
+     * @return A future completing with what each player paid was credited and left with.
+     */
+    public CompletableFuture<Map<UUID, Credit>> creditInterest(Collection<UUID> playerIds, String currencyId, double rate) {
+        Map<UUID, Credit> empty = Map.of();
+        Currency currency = currencies.get(currencyId);
+        if (currency == null || playerIds == null || playerIds.isEmpty() || !Double.isFinite(rate) || rate == 0) {
+            return CompletableFuture.completedFuture(empty);
+        }
+        String column = col(currencyId);
+        if (!SAFE_COLUMN.matcher(column).matches()) {
+            logger().sendError("Refusing bulk balance operation: unsafe column name '" + column + "'.");
+            return CompletableFuture.completedFuture(empty);
+        }
+        List<UUID> targets = new ArrayList<>(playerIds);
+
+        return CompletableFuture.supplyAsync(() -> {
+            Map<UUID, Credit> credits = new HashMap<>();
+            Map<UUID, Double> surpluses = new HashMap<>();
+            String placeholders = String.join(",", java.util.Collections.nCopies(targets.size(), "?"));
+            try (Connection conn = api().getDataSource().getConnection()) {
+                Map<UUID, Double> before = new LinkedHashMap<>();
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT server_uuid, " + column + " FROM players WHERE server_uuid IN (" + placeholders + ")")) {
+                    for (int i = 0; i < targets.size(); i++) ps.setString(i + 1, targets.get(i).toString());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            double value = rs.getDouble(2);
+                            // Interest on what is there, none on an empty or negative balance.
+                            if (rs.wasNull() || !(value > 0)) continue;
+                            before.put(UUID.fromString(rs.getString(1)), value);
+                        }
+                    }
+                }
+                double max = cap(currency);
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE players SET " + column + " = ? WHERE server_uuid = ? AND " + column + " = ?")) {
+                    for (Map.Entry<UUID, Double> entry : before.entrySet()) {
+                        double stored = entry.getValue();
+                        // A balance stored off precision earns on what counts of it.
+                        double held = currency.floor(stored);
+                        double owed = held * rate;
+                        // Down for what is credited; down in size for what a negative rate takes.
+                        double amount = owed >= 0 ? currency.floor(owed) : -Math.min(held, currency.floor(-owed));
+                        if (amount == 0) continue;
+                        // Settled as a deposit is: over the cap, the balance stops at it and what is
+                        // above is offered on, not kept as well.
+                        double after = currency.floor(held + amount);
+                        double surplus = 0;
+                        if (max > 0 && after > max) {
+                            surplus = currency.floor(after - max);
+                            after = max;
+                        }
+                        ps.setDouble(1, after);
+                        ps.setString(2, entry.getKey().toString());
+                        ps.setDouble(3, stored);
+                        if (ps.executeUpdate() == 0) continue;
+                        credits.put(entry.getKey(), new Credit(currency.floor(after - held), after));
+                        if (surplus > 0) surpluses.put(entry.getKey(), surplus);
+                    }
+                }
+            } catch (SQLException e) {
+                logger().sendError("Interest payment failed: " + e.getMessage());
+                return credits;
+            }
+            credits.forEach((id, credit) -> refreshCachedBalance(id, currencyId, credit.balance()));
+            surpluses.forEach((id, surplus) -> offerSurplus(id, currencyId, surplus));
+            return credits;
+        }, plugin.getDbExecutor());
+    }
+
+    /**
+     * Offers what did not fit under the cap to whoever registered to catch it, before it is trimmed.
+     *
+     * @param playerId   The player.
+     * @param currencyId The currency.
+     * @param surplus    The part that did not fit, strictly positive.
+     */
+    private void offerSurplus(UUID playerId, String currencyId, double surplus) {
+        OverflowHandler handler = overflowHandler;
+        if (handler == null) return;
+        try {
+            handler.absorb(playerId, currencyId, surplus);
+        } catch (Throwable throwable) {
+            logger().sendWarning("The part of a balance over the cap was not taken in for " + playerId
+                    + " : " + throwable.getClass().getSimpleName());
+        }
     }
 
     /**
@@ -831,13 +937,17 @@ public class CoinsManager {
         });
     }
 
+    /**
+     * Sets a balance, capped and brought down to the currency's precision: never stored above the
+     * amount given ({@link Currency#floor(double)}).
+     */
     public CompletableFuture<Void> setBalance(UUID playerId, String currencyId, double amount) {
         Currency currency = currencies.get(currencyId);
         if (currency == null) return CompletableFuture.completedFuture(null);
         double target = currency.getMaxBalance() > 0
             ? Math.min(amount, currency.getMaxBalance())
             : amount;
-        double rounded = currency.round(target);
+        double rounded = currency.floor(target);
         // Chained, not waited on: blocking here holds a pool thread while another pool task runs.
         return api().updatePlayerDataAsync(playerId, col(currencyId), rounded)
                 .thenRun(() -> rememberBalance(playerId, currencyId, rounded));
@@ -848,6 +958,52 @@ public class CoinsManager {
         return locks[Math.floorMod(playerId.hashCode(), LOCK_STRIPES)];
     }
 
+    /** A balance put back to precision: what it now stands at, and what the cap trimmed off it. */
+    private record Settled(double balance, double surplus) {}
+
+    /** The cap of a currency at its own precision; {@code 0} for none. */
+    private static double cap(Currency currency) {
+        return currency.getMaxBalance() > 0 ? currency.floor(currency.getMaxBalance()) : 0;
+    }
+
+    /**
+     * Puts a balance just changed back to the currency's precision, and under its cap.
+     *
+     * <p>Down to the precision ({@link Currency#floor(double)}), so that settling a balance never
+     * adds to it. The write is conditional on the value just read: a change another server made to
+     * the row in between is never overwritten — the operation that made it settles the row after
+     * it. An unconditional write here put back a balance from before that change.</p>
+     *
+     * @param conn     The connection the change was made on.
+     * @param currency The currency.
+     * @param column   Its column, already checked.
+     * @param playerId The player.
+     * @param applied  The balance as read back after the change.
+     * @return The balance as it stands, and what the cap took off when this call trimmed it.
+     * @throws SQLException When the database refuses the write or the read.
+     */
+    private Settled settle(Connection conn, Currency currency, String column, UUID playerId, double applied)
+            throws SQLException {
+        double balance = currency.floor(applied);
+        double surplus = 0;
+        double max = cap(currency);
+        if (max > 0 && balance > max) {
+            surplus = currency.floor(balance - max);
+            balance = max;
+        }
+        if (Double.compare(balance, applied) == 0) return new Settled(balance, 0);
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE players SET " + column + " = ? WHERE server_uuid = ? AND " + column + " = ?")) {
+            ps.setDouble(1, balance);
+            ps.setString(2, playerId.toString());
+            ps.setDouble(3, applied);
+            if (ps.executeUpdate() > 0) return new Settled(balance, surplus);
+        }
+        // Changed in between: what stands now, which the change that made it settles itself.
+        Double now = readColumn(conn, playerId, column);
+        return new Settled(now != null ? currency.floor(now) : balance, 0);
+    }
+
     /**
      * Applies a signed delta to a balance atomically.
      *
@@ -856,13 +1012,14 @@ public class CoinsManager {
      * silently drops the other's change. A withdrawal additionally guards on {@code col >= amount},
      * which is what makes "insufficient funds" a real answer instead of a silent clamp to zero.</p>
      *
-     * <p>After the update the value is read back, rounded and capped, and pushed into the caches.
-     * Any part of a deposit that does not fit under {@code max-balance} is offered to the
-     * {@link OverflowHandler} before being trimmed.</p>
+     * <p>After the update the value is read back, brought back to precision and capped (see
+     * {@link #settle}), and pushed into the caches. Any part of a deposit that does not fit under
+     * {@code max-balance} is offered to the {@link OverflowHandler} before being trimmed.</p>
      *
      * @param playerId     The player's server UUID.
      * @param currencyId   The currency.
-     * @param delta        The signed amount to apply.
+     * @param delta        The signed amount to apply, already at the currency's precision
+     *                     ({@link #amountOf(String, double)}).
      * @param requireFunds {@code true} to refuse the operation when the balance would go negative.
      * @return A future completing with the new balance, or {@code null} when the operation was
      *         refused (insufficient funds) or could not be applied.
@@ -928,21 +1085,13 @@ public class CoinsManager {
                         }
                     }
 
-                    // Normalise: round to the currency precision, then cap.
-                    normalised = currency.round(applied);
-                    double max = currency.getMaxBalance();
-                    if (max > 0 && normalised > max) {
-                        surplus = normalised - max;
-                        normalised = max;
-                    }
-                    if (normalised != applied) {
-                        try (PreparedStatement ps = conn.prepareStatement(
-                                "UPDATE players SET " + column + " = ? WHERE server_uuid = ?")) {
-                            ps.setDouble(1, normalised);
-                            ps.setString(2, playerId.toString());
-                            ps.executeUpdate();
-                        }
-                    }
+                    // Back to the currency's precision, and under its cap. The delta was already at
+                    // precision, so this only takes off what a double adds in its last bits — or,
+                    // for a balance stored off precision before, the part that never counted.
+                    // Rounded to the nearest, as it was, that part became money.
+                    Settled settled = settle(conn, currency, column, playerId, applied);
+                    normalised = settled.balance();
+                    surplus = settled.surplus();
                 } catch (SQLException e) {
                     logger().sendError("Balance update failed for " + playerId + ": " + e.getMessage());
                     return null;
@@ -952,20 +1101,33 @@ public class CoinsManager {
 
                 // The surplus is offered to whoever registered to catch it (XTools' bank) before
                 // being trimmed. Never at the cost of the payment itself.
-                if (surplus > 0) {
-                    OverflowHandler handler = overflowHandler;
-                    if (handler != null) {
-                        try {
-                            handler.absorb(playerId, currencyId, surplus);
-                        } catch (Throwable throwable) {
-                            logger().sendWarning("Débordement de solde non absorbé pour " + playerId
-                                    + " : " + throwable.getClass().getSimpleName());
-                        }
-                    }
-                }
+                if (surplus > 0) offerSurplus(playerId, currencyId, surplus);
                 return normalised;
             }
         }, plugin.getDbExecutor());
+    }
+
+    /**
+     * An amount as this currency can move it: brought down to its precision.
+     *
+     * <h2>Why down, and why before</h2>
+     * Amounts used to be applied as given, and the balance on each side rounded to the nearest
+     * afterwards. A payment of {@code 0.015} left the payer at {@code 9.985}, rounded up to
+     * {@code 9.99}, and the payee at {@code 0.015}, rounded up to {@code 0.02}: a cent made with every
+     * payment, and with a currency without decimals, {@code /eco pay alt 0.5} cost nothing and gave
+     * one. Every amount is now brought down to the precision before anything is applied, the same
+     * amount is what both sides of a transfer see, and nothing is rounded to the nearest any more.
+     * Down, so that no operation credits more than it was asked to, nor takes more.
+     *
+     * @param currencyId The currency.
+     * @param amount     The amount asked for.
+     * @return The amount at the currency's precision, rounded down; {@code 0} when it is less than
+     *         the currency can count, not a positive number, or the currency is unknown.
+     */
+    public double amountOf(String currencyId, double amount) {
+        Currency currency = currencies.get(currencyId);
+        if (currency == null || !(amount > 0) || !Double.isFinite(amount)) return 0;
+        return Math.max(0, currency.floor(amount));
     }
 
     /**
@@ -975,21 +1137,33 @@ public class CoinsManager {
      * the outcome — handing over an item, confirming a purchase — because it is the only variant
      * that can tell you the money was actually collected.</p>
      *
-     * @return A future completing with {@code true} when the full amount was withdrawn.
+     * <p>What is taken is the amount brought down to the currency's precision
+     * ({@link #amountOf(String, double)}): {@code 0.015} takes {@code 0.01}. An amount that comes to
+     * less than the currency can count is refused, never taken as nothing.</p>
+     *
+     * @return A future completing with {@code true} when the amount was withdrawn.
      */
     public CompletableFuture<Boolean> withdraw(UUID playerId, String currencyId, double amount) {
         if (amount <= 0) return CompletableFuture.completedFuture(true);
-        return applyDelta(playerId, currencyId, -amount, true).thenApply(Objects::nonNull);
+        double taken = amountOf(currencyId, amount);
+        if (taken <= 0) return CompletableFuture.completedFuture(false);
+        return applyDelta(playerId, currencyId, -taken, true).thenApply(Objects::nonNull);
     }
 
     /**
      * Adds an amount to a player's balance atomically.
      *
+     * <p>What is credited is the amount brought down to the currency's precision
+     * ({@link #amountOf(String, double)}); an amount that comes to less than the currency can count is
+     * refused.</p>
+     *
      * @return A future completing with the new balance, or {@code null} if it could not be applied.
      */
     public CompletableFuture<Double> deposit(UUID playerId, String currencyId, double amount) {
         if (amount <= 0) return getBalanceAsync(playerId, currencyId);
-        return applyDelta(playerId, currencyId, amount, false);
+        double given = amountOf(currencyId, amount);
+        if (given <= 0) return CompletableFuture.completedFuture(null);
+        return applyDelta(playerId, currencyId, given, false);
     }
 
     /**
@@ -1009,13 +1183,14 @@ public class CoinsManager {
                 capped = true;
             }
 
-            double newAmount = finalAmount;
+            // Down to the precision, never to the nearest, and the event told what is stored.
+            double newAmount = currency.floor(finalAmount);
             boolean wasCapped = capped;
             return fireBalanceChangeEvent(playerId, currencyId, oldBalance, newAmount, type).thenCompose(cancelled -> {
                 if (cancelled) {
                     return CompletableFuture.completedFuture(false);
                 }
-                double rounded = currency.round(newAmount);
+                double rounded = newAmount;
                 return api().updatePlayerDataAsync(playerId, col(currencyId), rounded)
                     .thenApply(v -> {
                         rememberBalance(playerId, currencyId, rounded);
@@ -1063,6 +1238,9 @@ public class CoinsManager {
      * {@link #withdraw(UUID, String, double)} and honour its result.</p>
      */
     public CompletableFuture<Void> removeBalance(UUID playerId, String currencyId, double amount) {
+        // Less than the currency counts: nothing to take. The withdrawal refuses such an amount, and
+        // taken for a shortfall, that refusal would empty the balance below.
+        if (amountOf(currencyId, amount) <= 0) return CompletableFuture.completedFuture(null);
         return withdraw(playerId, currencyId, amount).thenCompose(ok -> {
             if (ok) return CompletableFuture.<Void>completedFuture(null);
             return getBalanceAsync(playerId, currencyId).thenCompose(current ->
@@ -1135,7 +1313,7 @@ public class CoinsManager {
                  PreparedStatement ps = conn.prepareStatement(sql.toString())) {
                 for (int i = 0; i < targets.size(); i++) {
                     Currency currency = targets.get(i);
-                    ps.setDouble(i + 1, currency.round(currency.getStartingBalance()));
+                    ps.setDouble(i + 1, currency.floor(currency.getStartingBalance()));
                 }
                 return ps.executeUpdate();
             } catch (SQLException e) {

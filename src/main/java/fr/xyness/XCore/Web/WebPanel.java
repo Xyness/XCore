@@ -176,21 +176,48 @@ public class WebPanel {
      * One dashboard session.
      *
      * @param owner    Name of the player it was issued to, for {@code /xcore dashboard}.
-     * @param ownerId  UUID of that player, so their sessions can be revoked together; empty for a
-     *                 session tied to no player.
-     * @param expiresAt Epoch millis after which the session is refused, or 0 for no expiry.
+     * @param ownerId  UUID of that player, so their sessions can be revoked together.
+     * @param expiresAt Epoch millis after which the session is refused.
      * @param locale   The client language of the player it was issued to, e.g. {@code fr_fr}, or
      *                 empty. Captured when the link is created, because the dashboard outlives the
      *                 session that opened it and the player may well be offline while reading it.
      * @param access   What its owner may open and do, as last read from the game.
+     * @param readAt   Epoch millis of that reading. Past {@code web-dashboard.offline-trust-hours}
+     *                 the session closes: a reading that old says little about a rank today.
      */
-    private record Session(String owner, String ownerId, long expiresAt, String locale, Access access) {
+    private record Session(String owner, String ownerId, long expiresAt, String locale, Access access, long readAt) {
 
-        /** The same session, with its owner's permissions read again. */
-        Session with(Access next) {
-            return new Session(owner, ownerId, expiresAt, locale, next);
+        /** The same session, with its owner's permissions just read again. */
+        Session with(Access next, long at) {
+            return new Session(owner, ownerId, expiresAt, locale, next, at);
         }
     }
+
+    /** The longest a link from {@code /xcore dashboard} lasts, in hours: a week. */
+    public static final long MAX_SESSION_HOURS = 168;
+
+    /** How long a link lasts, in hours, from {@code web-dashboard.session-ttl-hours} held to the maximum. */
+    private volatile long sessionHours = 24;
+
+    /**
+     * How long a session goes on its owner's last reading, from
+     * {@code web-dashboard.offline-trust-hours}. Their permissions are read every minute while they
+     * play here, so this only ever runs down while they are away.
+     */
+    private volatile long offlineTrustMillis = 2 * 3_600_000L;
+
+    /**
+     * What {@code offline-trust-hours: 0} stands for: only while the owner is on this server. Three
+     * minutes, so the reading done every minute keeps a connected owner's session open even when a
+     * round runs late.
+     */
+    private static final long ONLINE_ONLY_MILLIS = 3 * 60_000L;
+
+    /** How often the readings alone, when nothing else changed, are written to {@code web-sessions.json}. */
+    private static final long READINGS_SAVE_MILLIS = 10 * 60_000L;
+
+    /** When the readings were last written. */
+    private volatile long readingsSavedAt;
 
     // **************************************************************************
     // *                            Permissions                                 *
@@ -202,8 +229,16 @@ public class WebPanel {
     /** The players list and every player's profile. */
     public static final String PLAYERS_PERMISSION = "xcore.dashboard.players";
 
-    /** The configuration editor — the most sensitive page there is: it can change every setting of every module it shows. */
+    /** Reading the configuration editor of the modules the reader may open. */
     public static final String CONFIG_PERMISSION = "xcore.dashboard.config";
+
+    /**
+     * Saving a configuration, on top of the permission the module names for it. A configuration can
+     * make a plugin run any console command or turn its protections off: saving one is trusted like
+     * the console, so it has a node of its own, which {@code xcore.dashboard.<module>.manage} does
+     * not stand in for.
+     */
+    public static final String CONFIG_SAVE_PERMISSION = "xcore.dashboard.config.save";
 
     /**
      * The permission that opens a module's pages: {@code xcore.dashboard.<name>}, the name in lower
@@ -240,7 +275,7 @@ public class WebPanel {
      * <p>They are read while the owner is connected — when the link is made, when they join, and
      * every minute while they play — because that is the only time a server can ask for them. In
      * between the dashboard goes by the last reading, which is what lets a moderator use it from a
-     * phone, away from the game.</p>
+     * phone, away from the game — for {@code web-dashboard.offline-trust-hours} at most.</p>
      *
      * @param nodes Each permission that was read, and whether the owner held it.
      * @param op    Whether the owner was an operator. It answers for a permission that did not exist
@@ -248,9 +283,6 @@ public class WebPanel {
      *              a permission nobody set: yes for an operator, no for anyone else.
      */
     private record Access(java.util.Map<String, Boolean> nodes, boolean op) {
-
-        /** A session tied to no player: there is nothing to read, and nothing is refused. */
-        static final Access FULL = new Access(java.util.Map.of(), true);
 
         /** @return Whether the owner holds the node, given in lower case. */
         boolean has(String node) {
@@ -260,23 +292,25 @@ public class WebPanel {
     }
 
     /**
-     * What the modules' pages declared: the permission each endpoint they post to needs, and what
-     * saving each module's configuration needs.
+     * What the modules declared: the permission each endpoint their pages post to needs, what
+     * reading their pages and routes needs, and what saving each module's configuration needs.
      *
      * <p>Rebuilt whenever a module comes or goes, and each time the module list is served, so it
      * follows a module whose pages change while it runs.</p>
      *
-     * @param endpoints Endpoint path, without its query string, to what it needs: a list of
-     *                  requirements, each met by any one of its nodes, all of them to be met.
-     * @param saves     Module key to what saving its configuration needs, when a page declared it.
+     * @param endpoints Endpoint path, without its query string, to what posting there needs: a list
+     *                  of requirements, each met by any one of its nodes, all of them to be met.
+     * @param reads     Path, {@code *} standing for one segment, to what reading it needs.
+     * @param saves     Module key to what saving its configuration needs, when it declared it.
      * @param nodes     Every permission a session's reading covers.
      */
     private record Rules(java.util.Map<String, List<List<String>>> endpoints,
+                         java.util.Map<String, List<List<String>>> reads,
                          java.util.Map<String, List<List<String>>> saves,
                          java.util.Set<String> nodes) {
 
-        static final Rules CORE = new Rules(java.util.Map.of(), java.util.Map.of(),
-                java.util.Set.of(LOGIN_PERMISSION, PLAYERS_PERMISSION, CONFIG_PERMISSION));
+        static final Rules CORE = new Rules(java.util.Map.of(), java.util.Map.of(), java.util.Map.of(),
+                java.util.Set.of(LOGIN_PERMISSION, PLAYERS_PERMISSION, CONFIG_PERMISSION, CONFIG_SAVE_PERMISSION));
     }
 
     /** The current rules, replaced whole: an HTTP thread never sees one half rebuilt. */
@@ -353,8 +387,40 @@ public class WebPanel {
         this.webRoot = new File(dataFolder, "web").toPath();
         this.sessionFile = new File(dataFolder, "web-sessions.json");
         this.startTimeMillis = System.currentTimeMillis();
+        // Before the sessions: loading them drops those their settings no longer allow.
+        reloadSettings();
         loadSessions();
         reloadStrings();
+    }
+
+    /**
+     * Reads the session settings of {@code web-dashboard} again: how long a link lasts, and how
+     * long a session goes on its owner's last reading while they are not on this server. Called
+     * when the panel is made and by {@code /xcore reload}; a value out of range is said once, here.
+     */
+    public void reloadSettings() {
+        long hours = main.getConfig().getLong("web-dashboard.session-ttl-hours", 24);
+        if (hours <= 0 || hours > MAX_SESSION_HOURS) {
+            // 0 used to mean a link that never ends: it outlived every rank its owner lost, and
+            // the leak of a single link was forever.
+            logger.sendWarning("web-dashboard.session-ttl-hours is " + hours + ": a dashboard link lasts "
+                    + MAX_SESSION_HOURS + " hours at most, and lasts that long.");
+            hours = MAX_SESSION_HOURS;
+        }
+        sessionHours = hours;
+
+        double trust = main.getConfig().getDouble("web-dashboard.offline-trust-hours", 2);
+        if (trust > MAX_SESSION_HOURS) {
+            logger.sendWarning("web-dashboard.offline-trust-hours is " + trust + ": no link lasts more than "
+                    + MAX_SESSION_HOURS + " hours, which is what it amounts to.");
+            trust = MAX_SESSION_HOURS;
+        }
+        offlineTrustMillis = trust <= 0 ? ONLINE_ONLY_MILLIS : Math.max(ONLINE_ONLY_MILLIS, (long) (trust * 3_600_000L));
+    }
+
+    /** @return How long a link from {@code /xcore dashboard} lasts, in hours, as it is applied. */
+    public long sessionHours() {
+        return sessionHours;
     }
 
     // **************************************************************************
@@ -397,10 +463,10 @@ public class WebPanel {
         random.nextBytes(raw);
         String plain = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
 
-        long ttlHours = main.getConfig().getLong("web-dashboard.session-ttl-hours", 24);
-        long expiresAt = ttlHours > 0 ? System.currentTimeMillis() + ttlHours * 3_600_000L : 0L;
+        long now = System.currentTimeMillis();
+        long expiresAt = now + sessionHours * 3_600_000L;
 
-        sessions.put(hash(plain), new Session(playerName, playerId.toString(), expiresAt, locale, access));
+        sessions.put(hash(plain), new Session(playerName, playerId.toString(), expiresAt, locale, access, now));
         pruneSessions();
         saveSessions();
         return plain;
@@ -450,7 +516,8 @@ public class WebPanel {
 
     /**
      * Reads a connected player's dashboard permissions again and applies them to every session they
-     * own; the next request each of those sessions makes goes by them. A player who no longer holds
+     * own; the next request each of those sessions makes goes by them, and the reading starts the
+     * {@code offline-trust-hours} count again. A player who no longer holds
      * {@value #LOGIN_PERMISSION} has their sessions closed.
      *
      * <p>Runs on the player's thread: from the join event, or scheduled there by
@@ -471,6 +538,7 @@ public class WebPanel {
         if (!owns) return;
 
         Access access = accessOf(player);
+        long now = System.currentTimeMillis();
         boolean changed = false;
         if (!access.has(LOGIN_PERMISSION)) {
             changed = sessions.values().removeIf(session -> id.equals(session.ownerId()));
@@ -481,12 +549,18 @@ public class WebPanel {
         } else {
             for (var entry : sessions.entrySet()) {
                 Session session = entry.getValue();
-                if (!id.equals(session.ownerId()) || session.access().equals(access)) continue;
-                if (sessions.replace(entry.getKey(), session, session.with(access))) changed = true;
+                if (!id.equals(session.ownerId())) continue;
+                boolean different = !session.access().equals(access);
+                if (sessions.replace(entry.getKey(), session, session.with(access, now)) && different) changed = true;
             }
         }
-        // Written off the player's thread: on Paper that thread is the server's own.
-        if (changed) main.schedulerAdapter().runAsyncTask(this::saveSessions);
+        // The file follows the readings a few minutes behind at most, so a restart goes on from
+        // about where they were and never trusts one for longer than the setting allows. Written
+        // off the player's thread: on Paper that thread is the server's own.
+        if (changed || now - readingsSavedAt > READINGS_SAVE_MILLIS) {
+            readingsSavedAt = now;
+            main.schedulerAdapter().runAsyncTask(this::saveSessions);
+        }
     }
 
     /**
@@ -498,11 +572,47 @@ public class WebPanel {
      */
     public int revokeSessions(java.util.UUID playerId) {
         String id = playerId.toString();
-        int before = sessions.size();
-        sessions.values().removeIf(session -> id.equals(session.ownerId()));
-        int removed = before - sessions.size();
-        if (removed > 0) saveSessions();
-        return removed;
+        java.util.concurrent.atomic.AtomicInteger removed = new java.util.concurrent.atomic.AtomicInteger();
+        sessions.values().removeIf(session -> {
+            boolean match = id.equals(session.ownerId());
+            if (match) removed.incrementAndGet();
+            return match;
+        });
+        if (removed.get() > 0) saveSessions();
+        return removed.get();
+    }
+
+    /**
+     * Closes every session of the player who goes by a name: the name their sessions were issued
+     * under, compared ignoring case, and the player connected under it now — whose sessions may
+     * carry the name they had before. For an administrator, when a member of staff leaves the team
+     * or a link went astray, whoever it belongs to.
+     *
+     * @param playerName The name.
+     * @return How many sessions were closed.
+     */
+    public int revokeSessions(String playerName) {
+        if (playerName == null || playerName.isBlank()) return 0;
+        String name = playerName.trim();
+        org.bukkit.entity.Player online = Bukkit.getPlayerExact(name);
+        String id = online != null ? online.getUniqueId().toString() : null;
+        java.util.concurrent.atomic.AtomicInteger removed = new java.util.concurrent.atomic.AtomicInteger();
+        sessions.values().removeIf(session -> {
+            boolean match = session.owner().equalsIgnoreCase(name) || (id != null && id.equals(session.ownerId()));
+            if (match) removed.incrementAndGet();
+            return match;
+        });
+        if (removed.get() > 0) saveSessions();
+        return removed.get();
+    }
+
+    /** @return The names the open sessions were issued to, sorted, each once: what {@code /xcore dashboard revoke} completes. */
+    public List<String> sessionOwners() {
+        java.util.TreeSet<String> names = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (Session session : sessions.values()) {
+            if (session.owner() != null && !session.owner().isBlank()) names.add(session.owner());
+        }
+        return new ArrayList<>(names);
     }
 
     /** @return How many sessions are currently open. */
@@ -524,15 +634,40 @@ public class WebPanel {
         }
     }
 
-    /** Drops expired sessions so an old link cannot be replayed forever. */
+    /**
+     * Drops the sessions that may no longer be used, so an old link cannot be replayed: those past
+     * their expiry, and those whose owner's permissions were last read longer ago than
+     * {@code web-dashboard.offline-trust-hours} — an owner away from this server all that time, whose
+     * rank may well have changed since. They get a new link in game.
+     */
     private void pruneSessions() {
         long now = System.currentTimeMillis();
-        sessions.values().removeIf(session -> session.expiresAt() > 0 && session.expiresAt() < now);
+        long trust = offlineTrustMillis;
+        List<String> stale = new ArrayList<>();
+        sessions.values().removeIf(session -> {
+            if (session.expiresAt() < now) return true;
+            if (now - session.readAt() <= trust) return false;
+            stale.add(session.owner());
+            return true;
+        });
+        if (!stale.isEmpty()) {
+            logger.sendInfo("Dashboard session(s) of <aqua>" + String.join(", ", new java.util.TreeSet<>(stale))
+                    + "</aqua> closed: their permissions were last read in game more than " + offlineTrustLabel()
+                    + " ago (web-dashboard.offline-trust-hours). A new link comes with /xcore dashboard.");
+        }
+    }
+
+    /** @return How long a session goes on without its owner on this server, as a player reads it: {@code 2 h}, {@code 30 min}. */
+    public String offlineTrustLabel() {
+        long minutes = offlineTrustMillis / 60_000L;
+        return minutes % 60 == 0 ? (minutes / 60) + " h" : minutes + " min";
     }
 
     private void loadSessions() {
         if (!sessionFile.isFile()) return;
         int closed = 0;
+        int unbounded = 0;
+        long now = System.currentTimeMillis();
         try {
             JsonObject root = JsonParser.parseString(Files.readString(sessionFile.toPath(), StandardCharsets.UTF_8))
                     .getAsJsonObject();
@@ -544,12 +679,24 @@ public class WebPanel {
                     closed++;
                     continue;
                 }
+                long expiresAt = entry.has("expiresAt") ? entry.get("expiresAt").getAsLong() : 0L;
+                if (expiresAt <= 0) {
+                    // Opened while 0 meant "never": it ends like any link opened now.
+                    expiresAt = now + MAX_SESSION_HOURS * 3_600_000L;
+                    unbounded++;
+                }
+                // A session from before permissions were saved has just been read, from the
+                // operators' list. One saved with permissions but no date is as old as can be: it
+                // waits for its owner to join before it is used again.
+                boolean estimated = !(entry.has("access") && entry.get("access").isJsonObject());
+                long readAt = entry.has("readAt") ? entry.get("readAt").getAsLong() : estimated ? now : 0L;
                 sessions.put(key, new Session(
                         entry.has("owner") ? entry.get("owner").getAsString() : "?",
                         ownerId,
-                        entry.has("expiresAt") ? entry.get("expiresAt").getAsLong() : 0L,
+                        expiresAt,
                         entry.has("locale") ? entry.get("locale").getAsString() : "",
-                        access));
+                        access,
+                        readAt));
             }
             pruneSessions();
         } catch (Exception e) {
@@ -559,8 +706,12 @@ public class WebPanel {
             logger.sendInfo(closed + " dashboard session(s) opened before the dashboard followed permissions were closed:"
                     + " their owners are not operators. They get a new link with /xcore dashboard, once they hold "
                     + LOGIN_PERMISSION + ".");
-            saveSessions();
         }
+        if (unbounded > 0) {
+            logger.sendInfo(unbounded + " dashboard session(s) opened to last forever now end within "
+                    + MAX_SESSION_HOURS + " hours.");
+        }
+        if (closed > 0 || unbounded > 0) saveSessions();
     }
 
     /**
@@ -569,14 +720,15 @@ public class WebPanel {
      * <p>A session opened before the dashboard followed permissions carries none. Its owner was an
      * administrator then, which says nothing of what they may do now. An operator keeps theirs — an
      * operator holds every dashboard permission unless one was taken away, and the next reading will
-     * tell. Anyone else is asked for a new link, which reads their permissions as it is made.</p>
+     * tell. Anyone else is asked for a new link, which reads their permissions as it is made. A
+     * session tied to no player has nobody whose permissions could ever be read again: it closes.</p>
      *
      * @param entry   The saved session.
      * @param ownerId Its owner's UUID, empty for a session tied to no player.
      * @return What the session may do, or {@code null} when it has to close.
      */
     private Access savedAccess(JsonObject entry, String ownerId) {
-        if (ownerId.isBlank()) return Access.FULL;
+        if (ownerId.isBlank()) return null;
         java.util.UUID id;
         try {
             id = java.util.UUID.fromString(ownerId);
@@ -610,15 +762,15 @@ public class WebPanel {
                 entry.addProperty("expiresAt", session.expiresAt());
                 entry.addProperty("locale", session.locale() == null ? "" : session.locale());
                 // Kept with the session, so a restart does not leave a reader who is not in game
-                // with nothing until they next join.
-                if (!session.ownerId().isBlank()) {
-                    JsonObject access = new JsonObject();
-                    access.addProperty("op", session.access().op());
-                    JsonObject nodes = new JsonObject();
-                    session.access().nodes().forEach((node, held) -> nodes.addProperty(node, held));
-                    access.add("nodes", nodes);
-                    entry.add("access", access);
-                }
+                // with nothing until they next join — dated, so it is not trusted for longer
+                // across a restart than it would have been without one.
+                JsonObject access = new JsonObject();
+                access.addProperty("op", session.access().op());
+                JsonObject nodes = new JsonObject();
+                session.access().nodes().forEach((node, held) -> nodes.addProperty(node, held));
+                access.add("nodes", nodes);
+                entry.add("access", access);
+                entry.addProperty("readAt", session.readAt());
                 root.add(key, entry);
             });
             Files.writeString(sessionFile.toPath(), root.toString(), StandardCharsets.UTF_8);
@@ -772,6 +924,16 @@ public class WebPanel {
         });
         server.setExecutor(httpExecutor);
 
+        // Faces and item textures are fetched here, never on the four threads above: a full queue
+        // answers without the image rather than making anyone wait.
+        assetExecutor = new java.util.concurrent.ThreadPoolExecutor(2, 2, 30, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(16), r -> {
+                    Thread t = new Thread(r, "XCore-WebPanel-Assets");
+                    t.setDaemon(true);
+                    return t;
+                });
+        assetExecutor.allowCoreThreadTimeOut(true);
+
         // API endpoints
         server.createContext("/api/lang", this::handleLang);
         server.createContext("/api/sprite/", this::handleSprite);
@@ -875,8 +1037,15 @@ public class WebPanel {
             httpExecutor.shutdownNow();
             httpExecutor = null;
         }
+        if (assetExecutor != null) {
+            assetExecutor.shutdownNow();
+            assetExecutor = null;
+        }
+        assetFetches.clear();
         authAttempts.clear();
         requestHits.clear();
+        imageHits.clear();
+        imageFetches.clear();
     }
 
     /** Reads the live server state. Runs on the server thread, never on an HTTP one. */
@@ -1089,13 +1258,14 @@ public class WebPanel {
         into.add(List.copyOf(anyOf));
     }
 
-    /** Reads every module's pages again for the permissions they declare. */
+    /** Reads every module's pages and routes again for the permissions they declare. */
     private void rebuildRules() {
         java.util.Map<String, List<List<String>>> endpoints = new java.util.HashMap<>();
+        java.util.Map<String, List<List<String>>> reads = new java.util.HashMap<>();
         java.util.Map<String, List<List<String>>> saves = new java.util.HashMap<>();
         // In a stable order: /api/auth lists them as they come.
         java.util.Set<String> nodes = new java.util.LinkedHashSet<>(
-                List.of(LOGIN_PERMISSION, PLAYERS_PERMISSION, CONFIG_PERMISSION));
+                List.of(LOGIN_PERMISSION, PLAYERS_PERMISSION, CONFIG_PERMISSION, CONFIG_SAVE_PERMISSION));
         for (WebModule module : modulesSnapshot()) {
             nodes.add(modulePermission(module.getName()));
             nodes.add(managePermission(module.getName()));
@@ -1108,19 +1278,134 @@ public class WebPanel {
                     addRequirement(endpoints.computeIfAbsent(path, key -> new ArrayList<>()), anyOf);
                     nodes.addAll(anyOf);
                 });
+                List<String> read = spec.readPermissions();
+                if (!read.isEmpty()) {
+                    for (String endpoint : spec.readEndpoints()) {
+                        String path = endpointPath(endpoint);
+                        if (path == null) continue;
+                        addRequirement(reads.computeIfAbsent(trimmed(path), key -> new ArrayList<>()), read);
+                    }
+                    nodes.addAll(read);
+                }
                 List<String> save = spec.savePermissions();
                 if (!save.isEmpty()) {
                     addRequirement(saves.computeIfAbsent(moduleKey(module.getName()), key -> new ArrayList<>()), save);
                     nodes.addAll(save);
                 }
             }
+            for (WebRoute route : routesOf(module)) {
+                String path = endpointPath(route.path());
+                if (path == null) continue;
+                List<List<String>> needed = reads.computeIfAbsent(trimmed(path), key -> new ArrayList<>());
+                for (List<String> anyOf : route.requirements()) {
+                    addRequirement(needed, anyOf);
+                    nodes.addAll(anyOf);
+                }
+            }
+            List<String> save = configSaveOf(module);
+            if (!save.isEmpty()) {
+                addRequirement(saves.computeIfAbsent(moduleKey(module.getName()), key -> new ArrayList<>()), save);
+                nodes.addAll(save);
+            }
         }
-        java.util.Map<String, List<List<String>>> frozenEndpoints = new java.util.HashMap<>();
-        endpoints.forEach((path, needed) -> frozenEndpoints.put(path, List.copyOf(needed)));
-        java.util.Map<String, List<List<String>>> frozenSaves = new java.util.HashMap<>();
-        saves.forEach((key, needed) -> frozenSaves.put(key, List.copyOf(needed)));
-        rules = new Rules(java.util.Map.copyOf(frozenEndpoints), java.util.Map.copyOf(frozenSaves),
-                java.util.Collections.unmodifiableSet(nodes));
+        rules = new Rules(frozen(endpoints), frozen(reads), frozen(saves), java.util.Collections.unmodifiableSet(nodes));
+    }
+
+    /** A map of requirements, made unmodifiable all the way down. */
+    private static java.util.Map<String, List<List<String>>> frozen(java.util.Map<String, List<List<String>>> map) {
+        java.util.Map<String, List<List<String>>> out = new java.util.HashMap<>();
+        map.forEach((key, needed) -> {
+            if (!needed.isEmpty()) out.put(key, List.copyOf(needed));
+        });
+        return java.util.Map.copyOf(out);
+    }
+
+    /** A module's route declarations, or none when asking for them fails. */
+    private List<WebRoute> routesOf(WebModule module) {
+        try {
+            List<WebRoute> routes = module.getRoutePermissions();
+            return routes == null ? List.of() : routes;
+        } catch (Throwable e) {
+            logger.sendDebug("Web module '" + module.getName() + "' failed to list its route permissions: " + e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** What a module names for saving its configuration, cleaned like a page's declarations; none when asking fails. */
+    private List<String> configSaveOf(WebModule module) {
+        try {
+            List<String> declared = module.getConfigSavePermission();
+            if (declared == null) return List.of();
+            List<String> out = new ArrayList<>();
+            for (String node : declared) {
+                if (node == null) continue;
+                String clean = node.trim().toLowerCase(java.util.Locale.ROOT);
+                if (!clean.isEmpty() && !out.contains(clean)) out.add(clean);
+            }
+            return out;
+        } catch (Throwable e) {
+            logger.sendDebug("Web module '" + module.getName() + "' failed to name its save permission: " + e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** A path without the slashes it may end with: {@code /api/x/players/} reaches what {@code /api/x/players} does. */
+    private static String trimmed(String path) {
+        String out = path;
+        while (out.length() > 1 && out.endsWith("/")) out = out.substring(0, out.length() - 1);
+        return out;
+    }
+
+    /** Whether a request path is the one declared, a {@code *} standing for any one segment. */
+    private static boolean matches(String declared, String path) {
+        if (declared.indexOf('*') < 0) return declared.equals(path);
+        String[] want = declared.split("/", -1);
+        String[] got = path.split("/", -1);
+        if (want.length != got.length) return false;
+        for (int i = 0; i < want.length; i++) {
+            if (want[i].equals("*")) {
+                if (got[i].isEmpty()) return false;
+            } else if (!want[i].equals(got[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * What reading a path needs, from what the pages and the modules declared: the declarations it
+     * matches; or, when it matches none and the route that answers it serves declared paths, all of
+     * them at once — another spelling reaches the same handler, and must not ask for less than the
+     * spelling that was declared.
+     */
+    private static List<List<String>> readRequirements(Rules rules, Target target, String path) {
+        List<List<String>> needed = new ArrayList<>();
+        if (rules.reads().isEmpty()) return needed;
+        String clean = trimmed(path);
+        if (rules.endpoints().containsKey(path) || rules.endpoints().containsKey(clean)) {
+            // A path an action declared is held to what the action declared, whatever the method;
+            // a profile's "*" does not reach it. Only what reading its own route needs is added: a
+            // list whose handler also takes the action — the watchlist and watchlist/add.
+            List<List<String>> exact = rules.reads().get(clean);
+            if (exact != null) exact.forEach(anyOf -> addRequirement(needed, anyOf));
+            List<List<String>> route = target.context() == null ? null : rules.reads().get(trimmed(target.context()));
+            if (route != null) route.forEach(anyOf -> addRequirement(needed, anyOf));
+            return needed;
+        }
+        boolean matched = false;
+        for (var entry : rules.reads().entrySet()) {
+            if (matches(entry.getKey(), clean)) {
+                matched = true;
+                entry.getValue().forEach(anyOf -> addRequirement(needed, anyOf));
+            }
+        }
+        if (!matched && target.context() != null) {
+            String context = trimmed(target.context());
+            for (var entry : rules.reads().entrySet()) {
+                if (entry.getKey().startsWith(context)) entry.getValue().forEach(anyOf -> addRequirement(needed, anyOf));
+            }
+        }
+        return needed;
     }
 
     /**
@@ -1158,6 +1443,10 @@ public class WebPanel {
      *
      * <ul>
      *   <li>Always the module's own permission, {@code xcore.dashboard.<module>}.</li>
+     *   <li>At a path a page or the module declared a read permission for — the page's endpoint, a
+     *       player's profile — that permission, whatever the method: a handler that answers a GET
+     *       answers a POST the same way more often than not. A path an action declared is held to
+     *       the action instead.</li>
      *   <li>At an endpoint a page declared a permission for, that permission — whatever the
      *       method, so a handler that would also act on a GET is no open door.</li>
      *   <li>For any other change — a method other than GET or HEAD, or a request carrying a body —
@@ -1175,14 +1464,15 @@ public class WebPanel {
         Rules current = rules;
         List<List<String>> needed = new ArrayList<>();
         needed.add(List.of(modulePermission(target.module().getName())));
+        readRequirements(current, target, path).forEach(anyOf -> addRequirement(needed, anyOf));
         List<List<String>> declared = current.endpoints().get(path);
         if (declared == null && target.context() != null) declared = current.endpoints().get(target.context());
         if (declared != null) {
-            needed.addAll(declared);
+            declared.forEach(anyOf -> addRequirement(needed, anyOf));
             return needed;
         }
         if (change) {
-            needed.add(List.of(managePermission(target.module().getName())));
+            addRequirement(needed, List.of(managePermission(target.module().getName())));
             if (target.context() != null) {
                 String context = target.context();
                 current.endpoints().forEach((endpoint, requirements) -> {
@@ -1193,14 +1483,60 @@ public class WebPanel {
         return needed;
     }
 
-    /** What saving a module's configuration needs: what one of its pages declared, or its manage permission. */
-    private List<List<String>> saveRequirements(String moduleName) {
+    /**
+     * What saving a module's configuration needs.
+     *
+     * @param requirements The permissions, each met by any one of its nodes.
+     * @param operator     Whether only an operator may save it: the module named no permission for it.
+     */
+    private record SaveRule(List<List<String>> requirements, boolean operator) {}
+
+    /**
+     * What saving a module's configuration needs: the module's permission, both of the editor's —
+     * {@value #CONFIG_PERMISSION} and {@value #CONFIG_SAVE_PERMISSION} — and the one the module named
+     * for it. One that named nothing is saved by an operator or nobody: it used to fall back on
+     * {@code xcore.dashboard.<module>.manage}, which {@code xcore.dashboard.*} grants, and a
+     * configuration is trusted like the console.
+     */
+    private SaveRule saveRequirements(String moduleName) {
+        List<List<String>> needed = new ArrayList<>();
+        needed.add(List.of(modulePermission(moduleName)));
+        needed.add(List.of(CONFIG_PERMISSION));
+        needed.add(List.of(CONFIG_SAVE_PERMISSION));
         List<List<String>> declared = rules.saves().get(moduleKey(moduleName));
-        return declared != null ? declared : List.of(List.of(managePermission(moduleName)));
+        if (declared == null || declared.isEmpty()) return new SaveRule(needed, true);
+        declared.forEach(anyOf -> addRequirement(needed, anyOf));
+        return new SaveRule(needed, false);
+    }
+
+    /**
+     * Whether a session may save a module's configuration.
+     *
+     * @return {@code null} when it may; otherwise what it misses, as the dashboard shows it.
+     */
+    private JsonObject saveRefusal(Access access, String moduleName) {
+        SaveRule rule = saveRequirements(moduleName);
+        List<List<String>> missing = unmetAll(access, rule.requirements());
+        boolean operator = rule.operator() && !access.op();
+        if (missing.isEmpty() && !operator) return null;
+        JsonObject refusal = new JsonObject();
+        if (!missing.isEmpty()) {
+            refusal.add("needs", strings(missing.get(0)));
+            refusal.add("needsAll", requirementsJson(missing));
+        }
+        if (operator) refusal.addProperty("operator", true);
+        return refusal;
     }
 
     /** @return The first requirement the session does not meet, or {@code null} when it meets them all. */
     private static List<String> unmet(Access access, List<List<String>> requirements) {
+        List<List<String>> missing = unmetAll(access, requirements);
+        return missing.isEmpty() ? null : missing.get(0);
+    }
+
+    /** @return Every requirement the session does not meet, in order; empty when it meets them all. */
+    private static List<List<String>> unmetAll(Access access, List<List<String>> requirements) {
+        List<List<String>> missing = new ArrayList<>();
         for (List<String> anyOf : requirements) {
             if (anyOf.isEmpty()) continue;
             boolean met = false;
@@ -1210,9 +1546,16 @@ public class WebPanel {
                     break;
                 }
             }
-            if (!met) return anyOf;
+            if (!met) missing.add(anyOf);
         }
-        return null;
+        return missing;
+    }
+
+    /** Requirements as JSON: an array of arrays, each met by any one of its nodes. */
+    private static JsonArray requirementsJson(List<List<String>> requirements) {
+        JsonArray out = new JsonArray();
+        for (List<String> anyOf : requirements) out.add(strings(anyOf));
+        return out;
     }
 
     /**
@@ -1242,9 +1585,34 @@ public class WebPanel {
     }
 
     /**
+     * What a session misses to read an endpoint, by the rules the request itself will meet.
+     *
+     * @return The requirements it does not meet; empty when it may read it.
+     */
+    private List<List<String>> readMissing(Access access, String endpoint) {
+        String path = endpointPath(endpoint);
+        if (path == null) return List.of();
+        Target target = targetOf(path);
+        return target == null ? List.of() : unmetAll(access, requirementsOf(target, path, false));
+    }
+
+    /**
+     * What a session misses to open a page: the configuration editor's permission, or what reading
+     * each endpoint the page is built from needs.
+     *
+     * @return The requirements it does not meet; empty when it may open the page.
+     */
+    private List<List<String>> pageMissing(Access access, WebPage page) {
+        if (isConfigPage(page)) return access.has(CONFIG_PERMISSION) ? List.of() : List.of(List.of(CONFIG_PERMISSION));
+        if (page.spec() == null) return List.of();
+        return readMissing(access, page.spec().endpoint());
+    }
+
+    /**
      * A page's description as one reader may use it: the row actions, the form and the page-wide
-     * button they could not use are left out, so the page offers what it can do for them and
-     * nothing that would only be refused.
+     * button they could not use are left out, and so are the charts and the heat map reading an
+     * endpoint they may not read, so the page offers what it can do for them and nothing that
+     * would only be refused.
      */
     private JsonObject visibleSpec(WebPageSpec spec, Access access) {
         JsonObject json = spec.toJson();
@@ -1262,7 +1630,28 @@ public class WebPanel {
                 json.remove(part);
             }
         }
+        if (json.has("charts") && json.get("charts").isJsonArray()) {
+            JsonArray kept = new JsonArray();
+            for (var chart : json.getAsJsonArray("charts")) {
+                if (chart.isJsonObject() && readable(access, stringOf(chart.getAsJsonObject(), "endpoint"))) kept.add(chart);
+            }
+            json.remove("chart");
+            if (kept.size() == 0) json.remove("charts");
+            else {
+                json.add("charts", kept);
+                json.add("chart", kept.get(0));
+            }
+        }
+        if (json.has("heatmap") && json.get("heatmap").isJsonObject()
+                && !readable(access, stringOf(json.getAsJsonObject("heatmap"), "endpoint"))) {
+            json.remove("heatmap");
+        }
         return json;
+    }
+
+    /** Whether a chart's or a heat map's endpoint may be read; an empty one is the page's own. */
+    private boolean readable(Access access, String endpoint) {
+        return endpoint == null || endpoint.isBlank() || readMissing(access, endpoint).isEmpty();
     }
 
     private static String stringOf(JsonObject object, String key) {
@@ -1351,10 +1740,12 @@ public class WebPanel {
      * Handles {@code GET /api/modules} — the modules and pages the session may open, as JSON.
      *
      * <p>Each reader gets their own list. A module whose permission they lack is not in it at all;
-     * the configuration editor is left out without {@value #CONFIG_PERMISSION}, and marked
-     * {@code readOnly} when saving needs a permission they lack; a button whose endpoint would
-     * refuse them is taken off its page. {@code /api/auth} names what was left out, so a link to it
-     * can say "no access" rather than "not found".</p>
+     * a page whose reading needs a permission they lack is left out — the configuration editor
+     * without {@value #CONFIG_PERMISSION} — and the editor is marked {@code readOnly} when saving
+     * needs what they lack; a button whose endpoint would refuse them is taken off its page; a
+     * module whose player profile they may not read says {@code "profile": false}, so the profile
+     * page does not ask it. {@code /api/auth} names what was left out, so a link to it can say "no
+     * access" rather than "not found".</p>
      *
      * @param exchange The HTTP exchange.
      * @throws IOException If an I/O error occurs.
@@ -1377,10 +1768,10 @@ public class WebPanel {
             JsonObject obj = new JsonObject();
             obj.addProperty("name", module.getName());
             obj.addProperty("icon", module.getIcon());
+            if (!readMissing(access, profilePath(module)).isEmpty()) obj.addProperty("profile", false);
             JsonArray pages = new JsonArray();
             for (WebPage page : pagesOf(module)) {
-                boolean config = isConfigPage(page);
-                if (config && !access.has(CONFIG_PERMISSION)) continue;
+                if (!pageMissing(access, page).isEmpty()) continue;
                 JsonObject pageObj = new JsonObject();
                 pageObj.addProperty("name", page.name());
                 pageObj.addProperty("path", page.path());
@@ -1388,11 +1779,11 @@ public class WebPanel {
                 // The descriptor is what lets the browser build the page without knowing
                 // anything about this addon. Absent means "render it generically".
                 if (page.spec() != null) pageObj.add("spec", visibleSpec(page.spec(), access));
-                if (config) {
-                    List<String> missing = unmet(access, saveRequirements(module.getName()));
-                    if (missing != null) {
+                if (isConfigPage(page)) {
+                    JsonObject refusal = saveRefusal(access, module.getName());
+                    if (refusal != null) {
                         pageObj.addProperty("readOnly", true);
-                        pageObj.add("needs", strings(missing));
+                        for (String key : refusal.keySet()) pageObj.add(key, refusal.get(key));
                     }
                 }
                 pages.add(pageObj);
@@ -1402,6 +1793,14 @@ public class WebPanel {
         }
 
         sendJson(exchange, 200, arr.toString());
+    }
+
+    /**
+     * Where the player profile asks a module what it knows about a player: a name stands in, any
+     * name, since what reading needs does not depend on whose profile it is.
+     */
+    private static String profilePath(WebModule module) {
+        return "/api/" + module.getName().toLowerCase() + "/player/Steve";
     }
 
     /** A list of strings as a JSON array. */
@@ -1434,20 +1833,30 @@ public class WebPanel {
 
         JsonArray lockedModules = new JsonArray();
         JsonObject lockedPages = new JsonObject();
+        JsonObject lockedNeeds = new JsonObject();
         for (WebModule module : modulesSnapshot()) {
             if (!access.has(modulePermission(module.getName()))) {
                 lockedModules.add(module.getName());
                 continue;
             }
             JsonArray pages = new JsonArray();
+            JsonObject needs = new JsonObject();
             for (WebPage page : pagesOf(module)) {
-                if (isConfigPage(page) && !access.has(CONFIG_PERMISSION)) pages.add(page.path());
+                List<List<String>> missing = pageMissing(access, page);
+                if (missing.isEmpty()) continue;
+                pages.add(page.path());
+                needs.add(page.path(), requirementsJson(missing));
             }
-            if (pages.size() > 0) lockedPages.add(module.getName(), pages);
+            if (pages.size() > 0) {
+                lockedPages.add(module.getName(), pages);
+                lockedNeeds.add(module.getName(), needs);
+            }
         }
         JsonObject locked = new JsonObject();
         locked.add("modules", lockedModules);
         locked.add("pages", lockedPages);
+        // What each of those pages needs, every requirement it misses: "a and b", each "x or y".
+        locked.add("needs", lockedNeeds);
         me.add("locked", locked);
         return me;
     }
@@ -1462,8 +1871,177 @@ public class WebPanel {
     /** Item textures already fetched, kept so a mirror is asked once per material per boot. */
     private final java.util.Map<String, byte[]> spriteCache = new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** Materials no mirror could answer for, so a miss costs one round trip and not one per view. */
-    private final java.util.Set<String> spriteMisses = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /**
+     * How many names a cache of misses remembers. The names come from anonymous requests — an
+     * {@code <img>} carries no token — so the set they used to go into grew with every one ever
+     * asked for.
+     */
+    private static final int MISS_CACHE_SIZE = 1024;
+
+    /** Materials no mirror had a texture for, and until when they are not asked for again. */
+    private final java.util.Map<String, Long> spriteMisses = missCache();
+
+    /** Players the face source had nothing for, and until when they are not asked for again. */
+    private final java.util.Map<String, Long> headMisses = missCache();
+
+    /** A map of misses that forgets the oldest past {@link #MISS_CACHE_SIZE}. */
+    private static java.util.Map<String, Long> missCache() {
+        return java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<String, Long>(64, 0.75f, false) {
+            @Override
+            protected boolean removeEldestEntry(java.util.Map.Entry<String, Long> eldest) {
+                return size() > MISS_CACHE_SIZE;
+            }
+        });
+    }
+
+    /** Whether a name missed recently enough not to be asked for again. */
+    private static boolean missed(java.util.Map<String, Long> misses, String key) {
+        Long until = misses.get(key);
+        if (until == null) return false;
+        if (until > System.currentTimeMillis()) return true;
+        misses.remove(key);
+        return false;
+    }
+
+    /** Requests one address may make for faces and textures in a minute: a page shows a few dozen, which the browser then keeps. */
+    private static final int IMAGE_LIMIT = 300;
+
+    /** Of those, how many may send the server out for something it does not hold yet. */
+    private static final int IMAGE_FETCH_LIMIT = 60;
+
+    /** Per-IP timestamps of recent image requests. */
+    private final java.util.Map<String, java.util.Deque<Long>> imageHits = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Per-IP timestamps of recent image requests that started a fetch. */
+    private final java.util.Map<String, java.util.Deque<Long>> imageFetches = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Where faces and textures are fetched from the internet: two at a time, sixteen waiting at
+     * most, so no number of requests ties up more than that. They used to be fetched on the
+     * panel's own four HTTP threads, each waiting up to eight seconds on a slow source while the
+     * dashboard's pages queued behind it.
+     */
+    private java.util.concurrent.ThreadPoolExecutor assetExecutor;
+
+    /** How long a request waits for its image before being answered without it; the fetch goes on, for the next view. */
+    private static final long ASSET_WAIT_MS = 750;
+
+    /** Fetches under way, so a page asking ten times for one face starts one fetch. */
+    private final java.util.Map<String, java.util.concurrent.CompletableFuture<byte[]>> assetFetches =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Until when no texture is fetched at all: the mirror could not be reached, or asked to slow down. */
+    private volatile long spritesOfflineUntil;
+
+    /** How long a source that could not be reached, or asked to slow down, is left alone. */
+    private static final long SOURCE_BACKOFF_MS = 60_000L;
+
+    /**
+     * Counts an image request against its address.
+     *
+     * @return {@code true} when it may go on; a 429 has been sent otherwise.
+     */
+    private boolean imageLimit(HttpExchange exchange) throws IOException {
+        String ip = clientIp(exchange);
+        if (!allow(imageHits, ip, IMAGE_LIMIT)) {
+            exchange.getResponseHeaders().set("Retry-After", "60");
+            exchange.sendResponseHeaders(429, -1);
+            exchange.close();
+            return false;
+        }
+        record(imageHits, ip);
+        return true;
+    }
+
+    /** Whether the request's address may still send the server out for an image this minute; counts it when it may. */
+    private boolean mayFetch(HttpExchange exchange) {
+        String ip = clientIp(exchange);
+        if (!allow(imageFetches, ip, IMAGE_FETCH_LIMIT)) return false;
+        record(imageFetches, ip);
+        return true;
+    }
+
+    /**
+     * Fetches an image off the HTTP thread, sharing a fetch already under way for the same key,
+     * and waits for it {@value #ASSET_WAIT_MS} ms at most.
+     *
+     * @param key   What is fetched, for sharing.
+     * @param fetch The fetch; it fills the caches itself, so one that finishes after the wait still
+     *              serves the next request.
+     * @return The image, or {@code null} when it is not there yet, there is none, or the queue is full.
+     */
+    private byte[] awaitAsset(String key, java.util.function.Supplier<byte[]> fetch) {
+        java.util.concurrent.ThreadPoolExecutor executor = assetExecutor;
+        if (executor == null) return null;
+        java.util.concurrent.CompletableFuture<byte[]> created = new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.CompletableFuture<byte[]> pending = assetFetches.putIfAbsent(key, created);
+        if (pending == null) {
+            pending = created;
+            try {
+                executor.execute(() -> {
+                    try {
+                        created.complete(fetch.get());
+                    } catch (Throwable e) {
+                        created.complete(null);
+                    } finally {
+                        assetFetches.remove(key, created);
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException full) {
+                assetFetches.remove(key, created);
+                return null;
+            }
+        }
+        try {
+            return pending.get(ASSET_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException | java.util.concurrent.ExecutionException e) {
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    /**
+     * Answers an image request without the image: the dashboard draws its stand-in. Never cached,
+     * so the browser asks again on the next view — by then the fetch may have landed.
+     */
+    private static void sendNoImage(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(404, -1);
+        exchange.close();
+    }
+
+    /** A remote file as fetched: its status, -1 when the source could not be reached, and its bytes on a 200. */
+    private record Fetched(int status, byte[] data) {}
+
+    /** Reads a remote image. */
+    private Fetched fetchImage(String url) {
+        java.net.HttpURLConnection conn = null;
+        try {
+            conn = (java.net.HttpURLConnection) java.net.URI.create(url).toURL().openConnection();
+            conn.setConnectTimeout(4000);
+            conn.setReadTimeout(4000);
+            conn.setRequestProperty("User-Agent", "XCore-Dashboard");
+            int status = conn.getResponseCode();
+            if (status != 200) return new Fetched(status, null);
+            try (java.io.InputStream in = conn.getInputStream()) {
+                // A face or a texture is a few kilobytes; a source sending more is not sending one.
+                byte[] data = in.readNBytes(1 << 20);
+                return new Fetched(200, data.length > 0 ? data : null);
+            }
+        } catch (Exception e) {
+            logger.sendDebug("Could not fetch " + url + ": " + e.getMessage());
+            return new Fetched(-1, null);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** Whether a source's answer means it is struggling or unreachable rather than missing one file. */
+    private static boolean sourceTrouble(int status) {
+        return status == -1 || status == 429 || status >= 500;
+    }
 
     /**
      * Where item textures are fetched from. Items and blocks live apart on the vanilla mirror, so
@@ -1512,6 +2090,7 @@ public class WebPanel {
     private void handleSprite(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
+        if (!imageLimit(exchange)) return;
 
         String path = exchange.getRequestURI().getPath();
         String name = path.substring(path.lastIndexOf('/') + 1).toLowerCase(java.util.Locale.ROOT);
@@ -1524,16 +2103,15 @@ public class WebPanel {
             return;
         }
 
-        byte[] data = spriteCache.get(name);
-        if (data == null && !spriteMisses.contains(name)) {
-            data = fetchSprite(name);
-            if (data != null) spriteCache.put(name, data);
-            else spriteMisses.add(name);
+        String material = name;
+        byte[] data = spriteCache.get(material);
+        if (data == null && !missed(spriteMisses, material)
+                && System.currentTimeMillis() >= spritesOfflineUntil && mayFetch(exchange)) {
+            data = awaitAsset("sprite:" + material, () -> fetchSprite(material));
         }
 
         if (data == null) {
-            exchange.sendResponseHeaders(404, -1);
-            exchange.close();
+            sendNoImage(exchange);
             return;
         }
 
@@ -1560,11 +2138,13 @@ public class WebPanel {
             });
 
     /**
-     * Until when faces are not fetched at all, after the source could not be reached.
+     * Until when faces are not fetched at all: the source could not be reached, or asked to slow
+     * down.
      *
      * <p>A server with no way out to the internet would otherwise spend a connection timeout on
-     * every face of every table, on the panel's few HTTP threads, and the pages would wait behind
-     * them. The dashboard draws a monogram in the meantime.</p>
+     * every face of every table. The dashboard draws a monogram in the meantime. A face the source
+     * simply does not have is remembered for that name alone: it used to turn every face off, for
+     * everyone, for five minutes.</p>
      */
     private volatile long headsOfflineUntil;
 
@@ -1575,10 +2155,15 @@ public class WebPanel {
      * told a third party which players were being looked at, and a blocked or offline site left
      * broken images. As with {@link #handleSprite}, the server fetches each face once and the
      * browser only ever talks to the server it is already talking to.</p>
+     *
+     * <p>Open without a session — an {@code <img>} sends no token — so it is held to a limit per
+     * address, and of its requests only some may send the server out for a face it does not have,
+     * on {@link #assetExecutor}, never on the panel's own threads.</p>
      */
     private void handleHead(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
+        if (!imageLimit(exchange)) return;
 
         String path = exchange.getRequestURI().getPath();
         String name = path.substring(path.lastIndexOf('/') + 1);
@@ -1591,17 +2176,16 @@ public class WebPanel {
             return;
         }
 
+        String player = name;
         String key = name.toLowerCase(java.util.Locale.ROOT);
         byte[] data = headCache.get(key);
-        if (data == null && System.currentTimeMillis() >= headsOfflineUntil) {
-            data = fetchBytes("https://mc-heads.net/avatar/" + name + "/64");
-            if (data != null) headCache.put(key, data);
-            else headsOfflineUntil = System.currentTimeMillis() + 300_000L;
+        if (data == null && !missed(headMisses, key)
+                && System.currentTimeMillis() >= headsOfflineUntil && mayFetch(exchange)) {
+            data = awaitAsset("head:" + key, () -> fetchHead(player, key));
         }
 
         if (data == null) {
-            exchange.sendResponseHeaders(404, -1);
-            exchange.close();
+            sendNoImage(exchange);
             return;
         }
 
@@ -1614,25 +2198,28 @@ public class WebPanel {
         }
     }
 
-    /** Reads a remote image, or {@code null} when it cannot be had. */
-    private byte[] fetchBytes(String url) {
-        java.net.HttpURLConnection conn = null;
-        try {
-            conn = (java.net.HttpURLConnection) java.net.URI.create(url).toURL().openConnection();
-            conn.setConnectTimeout(4000);
-            conn.setReadTimeout(4000);
-            conn.setRequestProperty("User-Agent", "XCore-Dashboard");
-            if (conn.getResponseCode() != 200) return null;
-            try (java.io.InputStream in = conn.getInputStream()) {
-                byte[] data = in.readAllBytes();
-                return data.length > 0 ? data : null;
-            }
-        } catch (Exception e) {
-            logger.sendDebug("Could not fetch " + url + ": " + e.getMessage());
-            return null;
-        } finally {
-            if (conn != null) conn.disconnect();
+    /**
+     * Fetches a player's face into the cache. Runs on {@link #assetExecutor}.
+     *
+     * @param name The name as asked for.
+     * @param key  The same in lower case, as it is cached.
+     * @return The face, or {@code null} when there is none to be had now.
+     */
+    private byte[] fetchHead(String name, String key) {
+        Fetched fetched = fetchImage("https://mc-heads.net/avatar/" + name + "/64");
+        if (fetched.data() != null) {
+            headCache.put(key, fetched.data());
+            return fetched.data();
         }
+        long now = System.currentTimeMillis();
+        if (sourceTrouble(fetched.status())) {
+            headsOfflineUntil = now + SOURCE_BACKOFF_MS;
+            headMisses.put(key, now + 5 * 60_000L);
+        } else {
+            // The source answered, and has nothing for this name.
+            headMisses.put(key, now + 30 * 60_000L);
+        }
+        return null;
     }
 
     /** Vanilla translations, fetched once per language and kept for the process. */
@@ -1713,28 +2300,30 @@ public class WebPanel {
         }
     }
 
-    /** Tries each mirror in turn; {@code null} when none has that texture. */
+    /**
+     * Tries each mirror in turn and caches what it finds; {@code null} when none has that texture
+     * now. Runs on {@link #assetExecutor}.
+     *
+     * <p>A material no mirror has is not asked for again for six hours; one that could not be
+     * fetched because the mirror was unreachable, for five minutes — it used to be remembered as
+     * missing until the next restart.</p>
+     */
     private byte[] fetchSprite(String name) {
+        long now = System.currentTimeMillis();
         for (String source : SPRITE_SOURCES) {
-            java.net.HttpURLConnection conn = null;
-            try {
-                conn = (java.net.HttpURLConnection) java.net.URI.create(String.format(source, assetVersion(), name))
-                        .toURL().openConnection();
-                conn.setConnectTimeout(4000);
-                conn.setReadTimeout(4000);
-                conn.setRequestProperty("User-Agent", "XCore-Dashboard");
-                if (conn.getResponseCode() != 200) continue;
-                try (java.io.InputStream in = conn.getInputStream()) {
-                    byte[] data = in.readAllBytes();
-                    if (data.length > 0) return data;
-                }
-            } catch (Exception ignored) {
-                // Next mirror.
-            } finally {
-                if (conn != null) conn.disconnect();
+            Fetched fetched = fetchImage(String.format(source, assetVersion(), name));
+            if (fetched.data() != null) {
+                spriteCache.put(name, fetched.data());
+                return fetched.data();
+            }
+            if (sourceTrouble(fetched.status())) {
+                spritesOfflineUntil = now + SOURCE_BACKOFF_MS;
+                spriteMisses.put(name, now + 5 * 60_000L);
+                return null;
             }
         }
         logger.sendDebug("No mirror had a texture for '" + name + "'.");
+        spriteMisses.put(name, now + 6 * 3_600_000L);
         return null;
     }
 
@@ -1756,7 +2345,8 @@ public class WebPanel {
      * Handles {@code GET /api/auth} — validates the token, and says what the session may do.
      *
      * <p>{@code {"status":"ok", "player", "permissions", "access":{"players","config"},
-     * "locked":{"modules":[…], "pages":{"<module>":[…]}}}}. Always requires authentication.</p>
+     * "locked":{"modules":[…], "pages":{"<module>":[…]}, "needs":{"<module>":{"<page>":[[…]]}}}}}.
+     * Always requires authentication.</p>
      */
     private void handleAuth(HttpExchange exchange) throws IOException {
         addCorsHeaders(exchange);
@@ -2167,8 +2757,9 @@ public class WebPanel {
     }
 
     /**
-     * The live session a request carries: known, not expired, and owned by someone who still holds
-     * {@value #LOGIN_PERMISSION}. An expired one is dropped on the way.
+     * The live session a request carries: known, not expired, its owner's permissions read in game
+     * recently enough, and owned by someone who still holds {@value #LOGIN_PERMISSION}. One that
+     * fails the first two is dropped on the way.
      */
     private Session liveSession(HttpExchange exchange) {
         String auth = exchange.getRequestHeaders().getFirst("Authorization");
@@ -2177,7 +2768,8 @@ public class WebPanel {
         if (presented.isEmpty()) return null;
         Session session = sessions.get(hash(presented));
         if (session == null) return null;
-        if (session.expiresAt() > 0 && session.expiresAt() < System.currentTimeMillis()) {
+        long now = System.currentTimeMillis();
+        if (session.expiresAt() < now || now - session.readAt() > offlineTrustMillis) {
             pruneSessions();
             saveSessions();
             return null;
@@ -2243,7 +2835,7 @@ public class WebPanel {
      */
     private void pruneRateLimits() {
         long cutoff = System.currentTimeMillis() - AUTH_WINDOW_MS;
-        for (java.util.Map<String, java.util.Deque<Long>> map : java.util.List.of(authAttempts, requestHits)) {
+        for (java.util.Map<String, java.util.Deque<Long>> map : java.util.List.of(authAttempts, requestHits, imageHits, imageFetches)) {
             // computeIfPresent, not removeIf: it holds the map's lock for that key while the
             // function runs, so a concurrent record() — which reaches the same key through
             // computeIfAbsent — waits rather than adding a hit to a deque this is about to drop.
@@ -2385,13 +2977,16 @@ public class WebPanel {
     /**
      * Serves {@code GET|POST /api/<addon>/config/raw} for every registered module.
      *
-     * <p>The GET returns the addon's {@code config.yml} verbatim. The POST parses the submitted
-     * text before touching the disk, so a typo cannot leave an addon with a file it will refuse
-     * to load, and reloads the addon once the file is written.</p>
+     * <p>The GET returns the addon's {@code config.yml} as it is written, its secrets — passwords,
+     * keys, webhook addresses — shown as {@value ConfigSecrets#PLACEHOLDER} ({@link ConfigSecrets}).
+     * The POST puts the stored value back wherever the placeholder was left, parses the result
+     * before touching the disk, so a typo cannot leave an addon with a file it will refuse to load,
+     * and reloads the addon once the file is written.</p>
      *
-     * <p>Reading the file needs the module's permission and {@value #CONFIG_PERMISSION}; saving it
-     * needs, besides, what the module's configuration page declared — usually its reload
-     * command's permission — or {@code xcore.dashboard.<module>.manage}.</p>
+     * <p>Reading the file needs the module's permission and {@value #CONFIG_PERMISSION}. Saving it
+     * is trusted like the console — a configuration can make a plugin run any command — and needs,
+     * besides, {@value #CONFIG_SAVE_PERMISSION} and what the module named for it, usually its
+     * reload command's permission; nothing short of an operator when it named nothing.</p>
      *
      * @param addonName The module name, which is also the addon's data folder name.
      */
@@ -2399,11 +2994,21 @@ public class WebPanel {
         addCorsHeaders(exchange);
         if (handlePreflight(exchange)) return;
         if (!rateLimit(exchange)) return;
-        List<List<String>> needed = new ArrayList<>();
-        needed.add(List.of(modulePermission(addonName)));
-        needed.add(List.of(CONFIG_PERMISSION));
-        if (isChange(exchange)) needed.addAll(saveRequirements(addonName));
-        if (!authorize(exchange, needed)) return;
+        Session session = authenticated(exchange);
+        if (session == null) return;
+        boolean change = isChange(exchange);
+        SaveRule save = saveRequirements(addonName);
+        List<List<String>> needed = change ? save.requirements()
+                : List.of(List.of(modulePermission(addonName)), List.of(CONFIG_PERMISSION));
+        if (!permitted(exchange, session, needed)) return;
+        if (change && save.operator() && !session.access().op()) {
+            JsonObject body = new JsonObject();
+            body.addProperty("error", addonName + " names no permission for saving its configuration:"
+                    + " only an operator may save it from the dashboard.");
+            body.addProperty("operator", true);
+            sendJson(exchange, 403, body.toString());
+            return;
+        }
 
         File file = new File(moduleFolder(addonName), "config.yml");
         if (!file.isFile()) {
@@ -2412,8 +3017,18 @@ public class WebPanel {
         }
 
         if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            ConfigSecrets.Masked masked;
+            try {
+                masked = ConfigSecrets.mask(Files.readString(file.toPath(), StandardCharsets.UTF_8));
+            } catch (ConfigSecrets.Unsafe e) {
+                // Better no editor than one that shows a password.
+                logger.sendWarning("The configuration editor did not show " + addonName + "'s config.yml: " + e.getMessage() + ".");
+                sendJson(exchange, 500, "{\"error\":\"The file could not be shown with its secrets hidden\"}");
+                return;
+            }
             JsonObject result = new JsonObject();
-            result.addProperty("yaml", Files.readString(file.toPath(), StandardCharsets.UTF_8));
+            result.addProperty("yaml", masked.yaml());
+            result.addProperty("hidden", masked.hidden());
             sendJson(exchange, 200, result.toString());
             return;
         }
@@ -2436,6 +3051,18 @@ public class WebPanel {
             return;
         }
 
+        // The secrets went out as placeholders: those left as they were keep what is stored.
+        try {
+            yaml = ConfigSecrets.restore(yaml, Files.readString(file.toPath(), StandardCharsets.UTF_8));
+        } catch (ConfigSecrets.Refused e) {
+            JsonObject error = new JsonObject();
+            error.addProperty("error", e.getMessage());
+            error.addProperty("hiddenKey", e.key());
+            error.addProperty("line", e.line());
+            sendJson(exchange, 400, error.toString());
+            return;
+        }
+
         // Parse before writing: rejecting bad YAML here keeps the addon's file loadable.
         try {
             new YamlConfiguration().loadFromString(yaml);
@@ -2452,6 +3079,9 @@ public class WebPanel {
             sendJson(exchange, 500, "{\"error\":\"Could not write config.yml\"}");
             return;
         }
+        // Trusted like the console, and written down like it.
+        logger.sendInfo("Configuration of <aqua>" + addonName + "</aqua> saved from the dashboard by <aqua>"
+                + session.owner() + "</aqua>.");
 
         // Reloading touches addon state, so it belongs on the server thread rather than here.
         main.schedulerAdapter().runGlobalTask(() -> main.extensions().reload(addonName));

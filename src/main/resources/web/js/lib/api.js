@@ -60,11 +60,13 @@ export class ApiError extends Error {
    * @param {string} message What the server said ({"error": "..."}), or the status.
    * @param {string[]|null} permissions On a refusal for want of a permission, the nodes that
    *   would have let the reader through — any one of them.
+   * @param {object|null} body The answer as the server sent it, for a page that reads more of it.
    */
-  constructor(status, message, permissions = null) {
+  constructor(status, message, permissions = null, body = null) {
     super(message || `HTTP ${status}`);
     this.status = status;
     this.permissions = permissions;
+    this.body = body;
   }
 }
 
@@ -131,14 +133,19 @@ async function read(response, path) {
     const nodes = permissionsOf(body);
     if (nodes) {
       onForbidden(nodes, path);
-      throw new ApiError(403, t("no-permission-action", { permission: nodeList(nodes) }), nodes);
+      throw new ApiError(403, t("no-permission-action", { permission: nodeList(nodes) }), nodes, body);
+    }
+    // What no permission opens: saving the configuration of a plugin that names none for it.
+    if (body && body.operator === true) {
+      onForbidden([], path);
+      throw new ApiError(403, t("no-permission-operator"), [], body);
     }
   }
   if (!response.ok) {
     // Some refusals explain themselves in a second field: "Password refused" says little
     // without the policy sentence that follows it.
     const said = body && typeof body === "object" ? [body.error, body.message].filter((part) => typeof part === "string" && part) : [];
-    throw new ApiError(response.status, [...new Set(said)].join(" — "));
+    throw new ApiError(response.status, [...new Set(said)].join(" — "), null, body && typeof body === "object" ? body : null);
   }
   if (!isJson) throw new ApiError(404, "");
   return body;

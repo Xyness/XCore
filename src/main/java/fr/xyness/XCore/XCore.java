@@ -710,12 +710,14 @@ public class XCore extends JavaPlugin {
                     schedulerAdapter.runAsyncTaskTimer(() -> {
                         List<UUID> online = Bukkit.getOnlinePlayers().stream().map(Player::getUniqueId).toList();
                         if (online.isEmpty()) return;
+                        // What is credited: the amount at the currency's precision, rounded down.
+                        double paid = coinsManager.amountOf(currency, amount);
                         coinsManager.depositAll(online, currency, amount).thenAccept(applied -> {
                             for (UUID id : applied.keySet()) {
                                 Player player = Bukkit.getPlayer(id);
                                 // Money appearing with no explanation reads as a bug; the message for
                                 // this existed in the language file but nothing ever sent it.
-                                if (player != null) notifyEconomy(player, "eco-payout-received", currency, amount);
+                                if (player != null) notifyEconomy(player, "eco-payout-received", currency, paid);
                             }
                         });
                     }, interval, interval);
@@ -729,14 +731,13 @@ public class XCore extends JavaPlugin {
                     schedulerAdapter.runAsyncTaskTimer(() -> {
                         List<UUID> online = Bukkit.getOnlinePlayers().stream().map(Player::getUniqueId).toList();
                         if (online.isEmpty()) return;
-                        coinsManager.applyInterest(online, currency, rate).thenAccept(applied ->
-                            applied.forEach((id, balance) -> {
+                        coinsManager.creditInterest(online, currency, rate).thenAccept(credited ->
+                            credited.forEach((id, credit) -> {
                                 Player player = Bukkit.getPlayer(id);
-                                if (player == null) return;
-                                // The balance already carries the interest, so what was earned is the
-                                // share the multiplier added.
-                                double earned = balance * rate / (1.0 + rate);
-                                notifyEconomy(player, "eco-interest-received", currency, earned);
+                                // What was added, as added: worked out again from the balance, it
+                                // could read a cent away from it.
+                                if (player == null || credit.amount() <= 0) return;
+                                notifyEconomy(player, "eco-interest-received", currency, credit.amount());
                             }));
                     }, interval, interval);
                 }

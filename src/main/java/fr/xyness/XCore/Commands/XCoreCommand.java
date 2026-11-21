@@ -33,6 +33,7 @@ import org.bukkit.entity.Player;
  *   <li>{@code /xcore stats} — cache, API and circuit-breaker counters</li>
  *   <li>{@code /xcore addons} — every addon and every plugin built on XCore, with its version and state</li>
  *   <li>{@code /xcore dashboard} — web dashboard address and one-click login link</li>
+ *   <li>{@code /xcore dashboard revoke [player]} — close one's own dashboard sessions, or a player's</li>
  *   <li>{@code /xcore reload} — reload the core, every addon and every plugin built on it</li>
  *   <li>{@code /xcore reload <name>} — reload one addon or plugin</li>
  *   <li>{@code /xcore clear-cache} — empty every cache region</li>
@@ -68,6 +69,26 @@ public class XCoreCommand {
         }
         return builder.buildFuture();
     };
+
+    /**
+     * Suggests whose dashboard sessions can be closed: the names the open sessions were issued to,
+     * then the connected players who have none.
+     */
+    private SuggestionProvider<CommandSourceStack> sessionOwnerSuggestions() {
+        return (ctx, builder) -> {
+            String input = builder.getRemainingLowerCase();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            if (core.getWebPanel() != null) {
+                for (String name : core.getWebPanel().sessionOwners()) {
+                    if (name.toLowerCase().startsWith(input) && seen.add(name.toLowerCase())) builder.suggest(name);
+                }
+            }
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                if (p.getName().toLowerCase().startsWith(input) && seen.add(p.getName().toLowerCase())) builder.suggest(p.getName());
+            }
+            return builder.buildFuture();
+        };
+    }
 
     /** Suggests the names of the loaded addons and of the plugins built on XCore. */
     private SuggestionProvider<CommandSourceStack> addonSuggestions() {
@@ -121,7 +142,12 @@ public class XCoreCommand {
                     .then(Commands.literal("dashboard")
                         .executes(ctx -> { handleDashboard(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
                         .then(Commands.literal("revoke")
-                            .executes(ctx -> { handleDashboardRevoke(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })))
+                            .executes(ctx -> { handleDashboardRevoke(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
+                            // Somebody else's sessions: an administrator's call, the console's too.
+                            .then(Commands.argument("player", StringArgumentType.word())
+                                .requires(XCoreCommand::isAdmin)
+                                .suggests(sessionOwnerSuggestions())
+                                .executes(ctx -> { handleDashboardRevokeOf(ctx.getSource().getSender(), StringArgumentType.getString(ctx, "player")); return Command.SINGLE_SUCCESS; }))))
                     .then(Commands.literal("reload")
                         .requires(XCoreCommand::isAdmin)
                         .executes(ctx -> { handleReload(ctx.getSource().getSender()); return Command.SINGLE_SUCCESS; })
@@ -700,16 +726,18 @@ public class XCoreCommand {
             send(sender, "dashboard-login-denied", "permission", WebPanel.LOGIN_PERMISSION);
         } else if (sender instanceof Player player) {
             String session = core.getWebPanel().createSession(player.getUniqueId(), player.getName());
-            long ttl = core.getConfig().getLong("web-dashboard.session-ttl-hours", 24);
+            // As the panel applies it: a setting of 0 or past the maximum is a week.
+            long ttl = core.getWebPanel().sessionHours();
             send(sender, "dashboard-login", "url", tagSafe(url + "/#token=" + session));
-            send(sender, ttl > 0 ? "dashboard-login-ttl" : "dashboard-login-forever",
-                "hours", String.valueOf(ttl));
+            send(sender, "dashboard-login-ttl", "hours", String.valueOf(ttl));
+            send(sender, "dashboard-login-away", "away", core.getWebPanel().offlineTrustLabel());
             send(sender, "dashboard-login-revoke");
         } else {
             // The console has no browser to click into, and echoing a token into the log is the
             // one place it should never end up.
             send(sender, "dashboard-login-console");
         }
+        if (sender.hasPermission(ADMIN_PERMISSION)) send(sender, "dashboard-revoke-other");
         send(sender, "bar");
     }
 
@@ -720,11 +748,32 @@ public class XCoreCommand {
             return;
         }
         if (!(sender instanceof Player player)) {
-            send(sender, "dashboard-login-console");
+            // The console opens none, and closes a player's by name.
+            send(sender, "dashboard-revoke-console");
             return;
         }
         int closed = core.getWebPanel().revokeSessions(player.getUniqueId());
         send(sender, closed > 0 ? "dashboard-revoked" : "dashboard-revoked-none",
+            "count", String.valueOf(closed));
+    }
+
+    /**
+     * Closes every dashboard session of another player: one who left the staff, lost a rank while
+     * away from this server, or whose link went astray. Their next link comes from the game, where
+     * their permissions are read again.
+     */
+    private void handleDashboardRevokeOf(CommandSender sender, String name) {
+        if (core.getWebPanel() == null) {
+            send(sender, "dashboard-status", "status", onOff(false));
+            return;
+        }
+        int closed = core.getWebPanel().revokeSessions(name);
+        if (closed > 0) {
+            core.logger().sendInfo("Dashboard sessions of <aqua>" + name + "</aqua> closed by <aqua>" + sender.getName()
+                    + "</aqua> (" + closed + ").");
+        }
+        send(sender, closed > 0 ? "dashboard-revoked-player" : "dashboard-revoked-player-none",
+            "player", name,
             "count", String.valueOf(closed));
     }
 
@@ -750,8 +799,12 @@ public class XCoreCommand {
                 core.getConfig().getBoolean("debug", false) || core.getConfig().getBoolean("profiling", false));
 
         // The dashboard serves its own strings to the browser; a language change has to reach it
-        // too, otherwise the setting looks like it needs a restart.
-        if (core.getWebPanel() != null) core.getWebPanel().reloadStrings();
+        // too, otherwise the setting looks like it needs a restart. Its session settings as well:
+        // how long a link lasts, and how long a session goes on without its owner in game.
+        if (core.getWebPanel() != null) {
+            core.getWebPanel().reloadStrings();
+            core.getWebPanel().reloadSettings();
+        }
         if (core.getCoinsManager() != null) core.getCoinsManager().reload();
 
         // Addons and plugins built on XCore alike. The registry catches what a reload hook throws
