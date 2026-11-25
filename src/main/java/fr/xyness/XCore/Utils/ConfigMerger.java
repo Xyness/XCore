@@ -25,6 +25,15 @@ import org.bukkit.configuration.file.FileConfiguration;
  *   <li>a list whose key was deleted, unless the section around it is new too.</li>
  * </ul>
  *
+ * <p>"Already on disk" means on disk <em>before the pass started</em>. The tests used to look at the
+ * configuration being filled in, where the first plain key written into a section creates it: every
+ * list that followed found its section "already there" and was skipped, so a section that came back
+ * — or a whole file rebuilt from nothing — never got a single one of its lists. A new list therefore
+ * ships inside a section that is new with it: one added to a section the administrator already has
+ * cannot be told from one they deleted, and is left out.</p>
+ *
+ * <p>A key that is added brings its comments along, and so does a section created for it.</p>
+ *
  * <p>A key the new version renamed is a fourth case, handled before the merge by
  * {@link #moveRenamedKeys(ConfigurationSection, Map)}: left to the merge, the new name arrives with
  * its default and the prune that follows deletes the old one, with the value the administrator had
@@ -239,17 +248,56 @@ public final class ConfigMerger {
         List<String> added = new ArrayList<>();
         if (disk == null || defaults == null) return added;
 
+        // The sections the file held before anything is written: see the class note.
+        Set<String> sectionsBefore = new HashSet<>();
+        for (String key : disk.getKeys(true)) {
+            if (disk.isConfigurationSection(key)) sectionsBefore.add(key);
+        }
+        Set<String> commented = new HashSet<>();
+        // A file that held nothing is being written for the first time: nothing in it was "seen".
+        boolean blank = disk.getKeys(false).isEmpty();
+
         for (String key : defaults.getKeys(true)) {
             if (defaults.isConfigurationSection(key)) continue;
             if (disk.contains(key)) continue;
             if (isUnderProtectedSection(key, protectedSections)) continue;
-            if (isUnderExistingListing(key, disk, defaults)) continue;
-            if (defaults.isList(key) && parentExistsOnDisk(key, disk)) continue;
+            if (isUnderExistingListing(key, sectionsBefore, defaults)) continue;
+            if (defaults.isList(key) && parentExisted(key, sectionsBefore, blank)) continue;
 
             disk.set(key, defaults.get(key));
+            copyComments(defaults, disk, key, sectionsBefore, commented);
             added.add(key);
         }
         return added;
+    }
+
+    /**
+     * Gives an added key the comments it has in the bundled file, and the same to each section the
+     * addition created on the way.
+     *
+     * <p>A setting used to arrive bare: the line explaining it stayed in the jar, and a file kept
+     * across a few versions ended up with whole blocks nobody could read without the wiki open.</p>
+     */
+    private static void copyComments(FileConfiguration defaults, FileConfiguration disk, String key,
+                                     Set<String> sectionsBefore, Set<String> commented) {
+        try {
+            int cut = key.indexOf('.');
+            while (cut > 0) {
+                String parent = key.substring(0, cut);
+                if (!sectionsBefore.contains(parent) && commented.add(parent)) copy(defaults, disk, parent);
+                cut = key.indexOf('.', cut + 1);
+            }
+            copy(defaults, disk, key);
+        } catch (Throwable ignored) {
+            // A server whose configuration API carries no comments: the value is what matters.
+        }
+    }
+
+    private static void copy(FileConfiguration defaults, FileConfiguration disk, String path) {
+        List<String> above = defaults.getComments(path);
+        if (above != null && !above.isEmpty()) disk.setComments(path, above);
+        List<String> inline = defaults.getInlineComments(path);
+        if (inline != null && !inline.isEmpty()) disk.setInlineComments(path, inline);
     }
 
     /**
@@ -268,12 +316,12 @@ public final class ConfigMerger {
         return false;
     }
 
-    /** Walks up the key looking for a listing section the file already has. */
-    private static boolean isUnderExistingListing(String key, FileConfiguration disk, FileConfiguration defaults) {
+    /** Walks up the key looking for a listing section the file already had before the pass. */
+    private static boolean isUnderExistingListing(String key, Set<String> sectionsBefore, FileConfiguration defaults) {
         int cut = key.lastIndexOf('.');
         while (cut > 0) {
             String parent = key.substring(0, cut);
-            if (isListing(defaults, parent) && disk.isConfigurationSection(parent)) return true;
+            if (isListing(defaults, parent) && sectionsBefore.contains(parent)) return true;
             cut = parent.lastIndexOf('.');
         }
         return false;
@@ -299,10 +347,13 @@ public final class ConfigMerger {
         return true;
     }
 
-    /** Whether the section holding this key is already on disk. Top-level keys count as seen. */
-    private static boolean parentExistsOnDisk(String key, FileConfiguration disk) {
+    /**
+     * Whether the section holding this key was on disk before the pass. A top-level key counts as
+     * seen — unless the file held nothing at all, which is a file being written for the first time.
+     */
+    private static boolean parentExisted(String key, Set<String> sectionsBefore, boolean blank) {
         int cut = key.lastIndexOf('.');
-        if (cut <= 0) return true;
-        return disk.isConfigurationSection(key.substring(0, cut));
+        if (cut <= 0) return !blank;
+        return sectionsBefore.contains(key.substring(0, cut));
     }
 }

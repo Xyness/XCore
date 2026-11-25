@@ -62,6 +62,17 @@ public final class ExtensionSupport {
     private File configFile;
     private Updater updater;
 
+    /**
+     * Why {@code config.yml} could not be read as it stands on disk, or {@code null} when it was.
+     *
+     * <p>While this is set the file is never written: not by the merge, not by the prune, not by
+     * {@link #saveConfig()}. It only had a typo, and everything in it is one correction away.</p>
+     */
+    private volatile String configProblem;
+
+    /** When the problem above was last written to the console, so one start says it once. */
+    private long configProblemReported;
+
     /** Built on first use, so an extension that never opens a GUI never creates one. */
     private GuiUtils guiUtils;
 
@@ -244,22 +255,121 @@ public final class ExtensionSupport {
         return config;
     }
 
-    /** Reloads the configuration from disk. */
+    /**
+     * Reloads the configuration from disk.
+     *
+     * <p>A file that is not valid YAML is left exactly as it is. On the first load the settings
+     * bundled in the jar are used instead; on a later one, the settings read before stay. Loading it
+     * anyway answered with an empty configuration — every setting at the fallback written in the
+     * code and every list empty — and the merge that followed then wrote that emptiness over the
+     * file. The console names the line; nothing else changes until it is fixed.</p>
+     */
     public void reloadConfig() {
         if (configFile == null) {
             configFile = new File(dataFolder, "config.yml");
         }
-        config = YamlConfiguration.loadConfiguration(configFile);
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+        if (problem == null) {
+            if (configProblem != null) logger.sendInfo("config.yml can be read again.");
+            configProblem = null;
+            config = YamlConfiguration.loadConfiguration(configFile);
+            return;
+        }
+
+        boolean firstLoad = config == null;
+        if (firstLoad) config = bundledConfig();
+
+        // Said once per start or per reload: this method runs several times in a row during both.
+        long now = System.currentTimeMillis();
+        boolean justSaid = problem.equals(configProblem) && now - configProblemReported < 3000L;
+        configProblem = problem;
+        if (justSaid) return;
+        configProblemReported = now;
+        logger.sendError("config.yml is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem));
+        logger.sendError("The file was left untouched. " + (firstLoad
+                ? "The default settings are used until it is fixed and the " + noun + " reloaded."
+                : "The settings read before stay in use until it is fixed and the " + noun + " reloaded."));
     }
 
-    /** Saves the configuration to disk. */
+    /** The configuration bundled in the jar, for a start on a file that cannot be read. */
+    private FileConfiguration bundledConfig() {
+        try (InputStream in = resources.getResourceAsStream("config.yml")) {
+            if (in != null) {
+                return YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8));
+            }
+        } catch (IOException ignored) {
+            // No bundled file to fall back on: the fallbacks written in the code apply.
+        }
+        return new YamlConfiguration();
+    }
+
+    /**
+     * @return Whether {@code config.yml} was read as it stands on disk. {@code false} means the file
+     *         is not valid YAML, is being left alone, and the settings in use are not the ones it holds.
+     */
+    public boolean isConfigReadable() {
+        return configProblem == null;
+    }
+
+    /**
+     * @return Where {@code config.yml} stops being YAML and why, or {@code null} when it was read.
+     */
+    public String configProblem() {
+        return configProblem;
+    }
+
+    /**
+     * Saves the configuration to disk.
+     *
+     * <p>Not while the file on disk cannot be read: what is in memory then is the bundled defaults,
+     * or an older reading, and saving it would replace the file an administrator only has to
+     * correct.</p>
+     */
     public void saveConfig() {
         if (config == null || configFile == null) return;
+        if (configProblem != null) {
+            logger.sendWarning("config.yml was not saved: the file on disk is not valid YAML and stays as it is until that is fixed.");
+            return;
+        }
         try {
             config.save(configFile);
         } catch (IOException e) {
             logger.sendWarning("Failed to save config.yml: " + e.getMessage());
         }
+    }
+
+    /**
+     * Changes a few keys of {@code config.yml} on disk, and the same keys in memory.
+     *
+     * <p>{@link #saveConfig()} writes the configuration as it was last read. Whatever an
+     * administrator typed into the file since then and has not reloaded yet goes with it: setting
+     * one location from a command used to undo an afternoon of edits. This reads the file as it is
+     * now, applies the change to it and saves that.</p>
+     *
+     * @param change Sets the keys; called once on the file's content and once on the loaded one.
+     * @return {@code false} when nothing was written — the file cannot be read, or could not be saved.
+     */
+    public boolean updateConfigFile(java.util.function.Consumer<FileConfiguration> change) {
+        if (change == null) return false;
+        if (configFile == null) {
+            configFile = new File(dataFolder, "config.yml");
+        }
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+        if (problem != null) {
+            logger.sendWarning("config.yml was not written: the file is not valid YAML ("
+                    + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem) + ") and stays as it is until that is fixed.");
+            return false;
+        }
+        FileConfiguration disk = YamlConfiguration.loadConfiguration(configFile);
+        change.accept(disk);
+        try {
+            disk.save(configFile);
+        } catch (IOException e) {
+            logger.sendWarning("Failed to save config.yml: " + e.getMessage());
+            return false;
+        }
+        if (config != null) change.accept(config);
+        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -331,7 +441,13 @@ public final class ExtensionSupport {
             return;
         }
 
-        setAsideIfUnreadable(configFile);
+        // A file that cannot be read is never merged into. It used to be copied aside and then
+        // rebuilt from the defaults — without a single list, since the merge leaves those to the
+        // administrator, nor any of the sections declared as theirs: one tab in front of an entry
+        // and the exclusions, the caps and the levels of a configuration were gone at the next start.
+        reloadConfig();
+        if (configProblem != null) return;
+
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
         // Renamed keys first: merged before, the new name would arrive with its default.
         boolean renamedAny = applyRenames("config.yml", diskConfig);
@@ -527,6 +643,17 @@ public final class ExtensionSupport {
         File file = new File(dataFolder, fileName);
         if (!file.exists()) return 0;
 
+        // Not valid YAML: nothing in it can be told obsolete, and it is not to be written.
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(file);
+        if (problem != null) {
+            boolean alreadySaid = "config.yml".equals(normalize(fileName)) && configProblem != null;
+            if (!alreadySaid) {
+                logger.sendError(fileName + " is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem)
+                        + ". The file was left untouched.");
+            }
+            return 0;
+        }
+
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(file);
         // A renamed key is not obsolete: its value moves to the new name before anything is pruned.
         boolean renamedAny = applyRenames(fileName, diskConfig);
@@ -671,7 +798,12 @@ public final class ExtensionSupport {
     private void mergeMissingKeys(String resourcePath) {
         File target = new File(dataFolder, resourcePath.replace('/', File.separatorChar));
         if (!target.isFile()) return;
-        setAsideIfUnreadable(target);
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(target);
+        if (problem != null) {
+            logger.sendError(resourcePath + " is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem)
+                    + ". The file was left untouched.");
+            return;
+        }
         try (InputStream defaults = resources.getResourceAsStream(resourcePath)) {
             if (defaults == null) return;
             YamlConfiguration bundled = YamlConfiguration.loadConfiguration(
@@ -741,6 +873,11 @@ public final class ExtensionSupport {
             lang.reload(target, defaults);
         } catch (IOException e) {
             logger.sendError("Failed to load language '" + wanted + "': " + e.getMessage());
+        }
+        if (lang.fileProblem() != null) {
+            logger.sendError("lang/" + wanted + ".yml is not valid YAML: "
+                    + fr.xyness.XCore.Utils.YamlFiles.forConsole(lang.fileProblem()));
+            logger.sendError("The file was left untouched. The bundled texts are used until it is fixed.");
         }
     }
 }

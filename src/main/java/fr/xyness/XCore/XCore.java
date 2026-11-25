@@ -316,7 +316,7 @@ public class XCore extends JavaPlugin {
         this.schedulerAdapter = new SchedulerAdapter(this);
 
         // ---- Config ----
-        updateConfigWithDefaults();
+        if (!updateConfigWithDefaults()) return false;
         FileConfiguration config = getConfig();
         String configuredType = config.getString("database-type", "sqlite");
         try {
@@ -984,14 +984,26 @@ public class XCore extends JavaPlugin {
      * <p>The currencies and the exchange rates are named by whoever configures them, so they are
      * declared as protected: a renamed entry must not come back on the next start.</p>
      */
-    private void updateConfigWithDefaults() {
+    private boolean updateConfigWithDefaults() {
         saveDefaultConfig();
         File configFile = new File(getDataFolder(), "config.yml");
-        if (!configFile.exists()) return;
+        if (!configFile.exists()) return true;
+
+        // A file that is not valid YAML is neither merged into nor started on. Read anyway, it came
+        // back empty: the defaults were then written over it — database settings, currencies and
+        // all, with no copy kept — and the server went on with an empty local database in place of
+        // the one that had been configured.
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+        if (problem != null) {
+            logger.sendError("config.yml is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem));
+            logger.sendError("The file was left untouched. XCore does not start on default settings: they would"
+                    + " point every plugin at an empty local database. Fix that line, then restart.");
+            return false;
+        }
 
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
         try (InputStream defStream = getResource("config.yml")) {
-            if (defStream == null) return;
+            if (defStream == null) return true;
             YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(
                 new InputStreamReader(defStream, StandardCharsets.UTF_8));
 
@@ -1006,6 +1018,33 @@ public class XCore extends JavaPlugin {
             logger.sendError("Error updating config with defaults: " + e.getMessage());
         }
         reloadConfig();
+        return true;
+    }
+
+    /** Set once {@code config.yml} has been read from disk, so a later reload has something to keep. */
+    private boolean configRead;
+
+    /**
+     * Reloads {@code config.yml}, keeping the settings already read when the file has stopped
+     * being valid YAML.
+     *
+     * <p>{@code /xcore reload} and {@code /eco reload} both come through here. On a file with a typo
+     * the server's own loader answers with the bundled defaults, and the currencies defined by the
+     * administrator were replaced by the shipped one for as long as the typo stayed.</p>
+     */
+    @Override
+    public void reloadConfig() {
+        File configFile = new File(getDataFolder(), "config.yml");
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+        if (problem != null && configRead) {
+            if (logger != null) {
+                logger.sendError("config.yml is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem));
+                logger.sendError("The file was left untouched. The settings read before stay in use until it is fixed.");
+            }
+            return;
+        }
+        super.reloadConfig();
+        if (problem == null) configRead = true;
     }
 
     // -------------------------------------------------------------------------

@@ -4,7 +4,7 @@ plugins {
     id 'com.gradleup.shadow' version '8.3.6'
 }
 group = 'fr.xyness'
-version = '2.0'
+version = '2.0.1'
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
@@ -28,6 +28,16 @@ dependencies {
     compileOnly 'com.github.ben-manes.caffeine:caffeine:3.1.8'
     compileOnly 'redis.clients:jedis:5.2.0'
     compileOnly 'com.google.code.gson:gson:2.10.1'
+
+    // Tests of what does not need a server: the configuration merge and the YAML checks.
+    testImplementation 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
 }
 // paper-plugin.yml used to carry its own hardcoded version, which drifted from the build and
 // made the server report an old release. It now takes the number from here.

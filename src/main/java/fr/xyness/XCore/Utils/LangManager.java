@@ -93,6 +93,14 @@ public class LangManager {
      */
     private static void fillMissingKeys(XCore main, File target) {
         String resource = "lang/" + target.getName();
+        // Never into a file that cannot be read: it would be saved back holding the bundled texts
+        // and nothing of what was in it.
+        String problem = YamlFiles.problem(target);
+        if (problem != null) {
+            main.logger().sendError("lang/" + target.getName() + " is not valid YAML: " + YamlFiles.forConsole(problem));
+            main.logger().sendError("The file was left untouched. The bundled texts are used until it is fixed.");
+            return;
+        }
         try (InputStream defaults = main.getResource(resource)) {
             if (defaults == null) return;
             YamlConfiguration bundled = YamlConfiguration.loadConfiguration(
@@ -130,7 +138,21 @@ public class LangManager {
     }
 
     private void load() {
-        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(langFile);
+        YamlConfiguration yaml = null;
+        if (YamlFiles.problem(langFile) != null) {
+            // Reported when the file was resolved. The jar's copy speaks in the meantime, English
+            // when the file is a translation the jar does not carry.
+            for (String name : new String[] { langFile.getName(), "en.yml" }) {
+                try (InputStream bundled = main.getResource("lang/" + name)) {
+                    if (bundled == null) continue;
+                    yaml = YamlConfiguration.loadConfiguration(new InputStreamReader(bundled, StandardCharsets.UTF_8));
+                    break;
+                } catch (Exception ignored) {
+                    // Next candidate.
+                }
+            }
+        }
+        if (yaml == null) yaml = YamlConfiguration.loadConfiguration(langFile);
         for (String key : yaml.getKeys(false)) {
             messages.put(key, yaml.getString(key, ""));
         }

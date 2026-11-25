@@ -332,6 +332,42 @@ public abstract class XAddon {
         support.saveConfig();
     }
 
+    /**
+     * Whether {@code config.yml} was read as it stands on disk.
+     *
+     * <p>{@code false} means the file is not valid YAML. It is then left untouched — nothing merges
+     * into it, prunes it or saves over it — and the settings in use are the bundled defaults (at
+     * start) or the ones read before (after a reload). Worth telling whoever asked for the reload.</p>
+     *
+     * @return {@code true} when the file was read.
+     */
+    public final boolean isConfigReadable() {
+        return support.isConfigReadable();
+    }
+
+    /**
+     * @return Where {@code config.yml} stops being YAML and why, as one line of plain text, or
+     *         {@code null} when it was read.
+     */
+    public final String configProblem() {
+        return support.configProblem();
+    }
+
+    /**
+     * Changes a few keys of {@code config.yml} on disk, and the same keys in memory.
+     *
+     * <p>To be used instead of {@code getConfig().set(...)} followed by {@link #saveConfig()}, which
+     * writes the configuration as it was last read: whatever an administrator typed into the file
+     * since then, and has not reloaded yet, is lost. This reads the file as it is now, applies the
+     * change and saves that.</p>
+     *
+     * @param change Sets the keys; called on the file's content, then on the loaded configuration.
+     * @return {@code false} when nothing was written: the file is not valid YAML, or could not be saved.
+     */
+    public final boolean updateConfigFile(java.util.function.Consumer<FileConfiguration> change) {
+        return support.updateConfigFile(change);
+    }
+
     // -------------------------------------------------------------------------
     // Update checker
     // -------------------------------------------------------------------------

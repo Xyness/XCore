@@ -195,6 +195,17 @@ public class LangNamespace {
     /** Stores the lang file for no-arg reload. */
     private File langFile;
 
+    /** Why the file could not be read at the last load, or {@code null} when it was. */
+    private volatile String fileProblem;
+
+    /**
+     * @return Where the language file stops being YAML and why, or {@code null} when the last load
+     *         read it. While it is set the bundled texts speak, and the file is not written.
+     */
+    public String fileProblem() {
+        return fileProblem;
+    }
+
     public void reload(File langFile, InputStream defaults) {
         this.langFile = langFile;
         messages.clear();
@@ -216,6 +227,12 @@ public class LangNamespace {
         // Taken before the disk file is overlaid: read afterwards, this set also contains the keys
         // that only exist on disk, and the removal pass below can never match anything.
         Set<String> defaultKeys = new HashSet<>(messages.keySet());
+
+        // A file that is not valid YAML is neither read nor written. Read anyway, it came back
+        // empty: every bundled text then looked missing from it, and the merge below saved them
+        // over an administrator's whole translation, without a copy.
+        this.fileProblem = fr.xyness.XCore.Utils.YamlFiles.problem(langFile);
+        if (this.fileProblem != null) return;
 
         // Overlay with file values
         if (langFile != null && langFile.exists()) {
