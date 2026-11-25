@@ -817,7 +817,14 @@ public class XCoreCommand {
             else failed.add(extension.name());
         }
 
-        send(sender, "reload-core");
+        // Not "reloaded" over a config.yml that was not read: the settings in use are the old ones,
+        // and the next restart would refuse to start on that file.
+        String problem = core.configProblem();
+        if (problem != null) {
+            send(sender, "reload-config-invalid", "problem", fr.xyness.XCore.Utils.YamlFiles.forConsole(problem));
+        } else {
+            send(sender, "reload-core");
+        }
         if (!reloaded.isEmpty()) {
             send(sender, "reload-addons",
                 "count", String.valueOf(reloaded.size()),

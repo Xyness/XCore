@@ -42,6 +42,33 @@ public final class YamlFiles {
             return describe(e);
         } catch (IOException e) {
             return "the file could not be opened (" + e.getMessage() + ")";
+        } catch (RuntimeException e) {
+            // What the parser only finds while building the values — an unknown tag, a merge key
+            // that points nowhere — comes out unchecked, past the exception the loader declares.
+            return describe(e);
+        }
+    }
+
+    /**
+     * Whether a file exists and holds nothing but blank space.
+     *
+     * <p>Such a file parses, and a merge then fills it with the defaults — which is right for a
+     * plugin's settings, and wrong where the defaults decide which database is used.</p>
+     *
+     * @param file The file.
+     * @return {@code true} for an existing file with no content.
+     */
+    public static boolean isBlank(File file) {
+        if (file == null || !file.isFile()) return false;
+        long length = file.length();
+        if (length == 0L) return true;
+        // A file of any real size holds something; reading it whole to learn that would be waste.
+        if (length > 4096L) return false;
+        try {
+            String text = java.nio.file.Files.readString(file.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+            return text.replace("\uFEFF", "").isBlank();
+        } catch (IOException | RuntimeException e) {
+            return false;
         }
     }
 

@@ -159,4 +159,51 @@ class ConfigMergerTest {
         assertTrue(ConfigMerger.addMissingKeys(again, yaml(DEFAULTS)).isEmpty());
         assertEquals(once, again.saveToString());
     }
+
+    @Test
+    void aSectionMadeByARenameGetsItsLists() throws Exception {
+        // cleanup.sounds exists on disk only because a renamed key was just moved into it: the
+        // administrator never saw the section, so never deleted its list.
+        YamlConfiguration disk = yaml("""
+                debug: false
+                stacker:
+                  enabled: true
+                  max: 50
+                  excluded: []
+                cleanup:
+                  enabled: true
+                  types: []
+                  sounds:
+                    enabled: false
+                """);
+        java.util.Set<String> made = java.util.Set.of("cleanup.sounds");
+        List<String> added = ConfigMerger.addMissingKeys(disk, yaml(DEFAULTS), made);
+        assertTrue(added.contains("cleanup.sounds.silent"), added.toString());
+        assertEquals(List.of(90), disk.getIntegerList("cleanup.sounds.silent"));
+        assertFalse(disk.getBoolean("cleanup.sounds.enabled"), "the moved value is kept");
+
+        // The same file without that knowledge: the section counts as theirs, the list stays out.
+        YamlConfiguration plain = yaml("""
+                debug: false
+                stacker:
+                  enabled: true
+                  max: 50
+                  excluded: []
+                cleanup:
+                  enabled: true
+                  types: []
+                  sounds:
+                    enabled: false
+                """);
+        assertFalse(ConfigMerger.addMissingKeys(plain, yaml(DEFAULTS)).contains("cleanup.sounds.silent"));
+    }
+
+    @Test
+    void sectionsOfListsEveryDepth() throws Exception {
+        java.util.Set<String> sections = ConfigMerger.sectionsOf(yaml(DEFAULTS));
+        assertTrue(sections.contains("stacker"));
+        assertTrue(sections.contains("cleanup.sounds"));
+        assertFalse(sections.contains("stacker.max"));
+        assertTrue(ConfigMerger.sectionsOf(null).isEmpty());
+    }
 }

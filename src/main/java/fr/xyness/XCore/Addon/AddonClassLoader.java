@@ -116,6 +116,27 @@ public class AddonClassLoader extends URLClassLoader {
     }
 
     /**
+     * A file of this addon's own jar, and never one of XCore's that happens to carry the same name.
+     *
+     * <p>{@link #getResourceAsStream(String)} goes on to XCore's jar when the addon has no such
+     * file. For the files XCore keeps up to date on an addon's behalf that answer is wrong: an addon
+     * shipping no French translation was handed XCore's as the defaults of its own
+     * {@code lang/fr.yml}, and the administrator's translation was pruned against it.</p>
+     *
+     * @param name The resource path inside the jar.
+     * @return The stream, or {@code null} when the addon's jar has no such file.
+     */
+    public InputStream getOwnResourceAsStream(String name) {
+        URL url = findResource(name);
+        if (url == null) return null;
+        try {
+            return url.openStream();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
      * Override to search the addon JAR FIRST before delegating to parent.
      */
     @Override

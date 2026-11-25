@@ -805,7 +805,14 @@ public class WebPanel {
         if (!target.exists()) target = new File(folder, "web_en.yml");
 
         JsonObject json = new JsonObject();
-        readStringsInto(json, target, "core");
+        if (fr.xyness.XCore.Utils.YamlFiles.problem(target) == null) {
+            readStringsInto(json, target, "core");
+        } else {
+            // Left untouched and reported above; the dashboard speaks from the jar meanwhile
+            // instead of printing its keys.
+            readBundledStringsInto(json, "lang/web_" + wanted + ".yml");
+            if (json.size() == 0) readBundledStringsInto(json, "lang/web_en.yml");
+        }
 
         // Each addon owns the words its own pages use, and ships them beside its other language
         // files. The core only holds the shared vocabulary, so it wins on the rare overlap.
@@ -833,6 +840,9 @@ public class WebPanel {
      * @param name The module name, which is the extension's name.
      * @return The folder.
      */
+    /** Strings files already reported as unreadable: this runs at every module registration and reload. */
+    private final java.util.Set<String> unreadableStrings = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private File moduleFolder(String name) {
         return main.extensions().find(name)
                 .map(fr.xyness.XCore.Extension.XExtension::dataFolder)
@@ -846,6 +856,16 @@ public class WebPanel {
      * @param resourcePath The bundled version inside XCore's jar.
      */
     private void mergeMissingKeys(File target, String resourcePath) {
+        // Never into a file that cannot be read: it would be saved back holding the bundled texts
+        // and nothing of what was in it.
+        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(target);
+        if (problem != null) {
+            if (unreadableStrings.add(target.getName() + ": " + problem)) {
+                logger.sendError(resourcePath + " is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem)
+                        + ". The file was left untouched.");
+            }
+            return;
+        }
         try (java.io.InputStream defaults = main.getResource(resourcePath)) {
             if (defaults == null) return;
             var bundled = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(
@@ -870,6 +890,19 @@ public class WebPanel {
      * @param file   The YAML file to read.
      * @param source Who the strings belong to, for the debug line on a clash.
      */
+    private void readBundledStringsInto(JsonObject into, String resourcePath) {
+        try (java.io.InputStream in = main.getResource(resourcePath)) {
+            if (in == null) return;
+            var yaml = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+            for (String key : yaml.getKeys(false)) {
+                if (!into.has(key)) into.addProperty(key, yaml.getString(key, key));
+            }
+        } catch (Exception e) {
+            logger.sendDebug("Could not read the bundled " + resourcePath + ": " + e.getMessage());
+        }
+    }
+
     private void readStringsInto(JsonObject into, File file, String source) {
         try {
             var yaml = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);

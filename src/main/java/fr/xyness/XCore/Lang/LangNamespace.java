@@ -206,6 +206,22 @@ public class LangNamespace {
         return fileProblem;
     }
 
+    /**
+     * Gives a text to every key that has none, from a bundled translation.
+     *
+     * <p>For a language file that cannot be read and that the jar does not carry — a translation
+     * the administrator wrote: without this every message was shown as its own key.</p>
+     *
+     * @param bundled A translation shipped in the jar; may be {@code null}.
+     */
+    public void fillFrom(InputStream bundled) {
+        if (bundled == null) return;
+        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(new InputStreamReader(bundled, StandardCharsets.UTF_8));
+        for (String key : yaml.getKeys(true)) {
+            if (!yaml.isConfigurationSection(key)) messages.putIfAbsent(key, yaml.getString(key, ""));
+        }
+    }
+
     public void reload(File langFile, InputStream defaults) {
         this.langFile = langFile;
         messages.clear();

@@ -196,7 +196,7 @@ public final class ExtensionSupport {
         if (outFile.exists()) return;
 
         outFile.getParentFile().mkdirs();
-        try (InputStream is = resources.getResourceAsStream(path)) {
+        try (InputStream is = bundled(path)) {
             if (is == null) {
                 logger.sendDebug("Resource not found in JAR: " + path);
                 return;
@@ -226,7 +226,7 @@ public final class ExtensionSupport {
         File outFile = new File(dataFolder, path);
         if (outFile.exists() && !replace) return;
         outFile.getParentFile().mkdirs();
-        try (InputStream is = resources.getResourceAsStream(path)) {
+        try (InputStream is = bundled(path)) {
             if (is == null) return;
             try (OutputStream os = Files.newOutputStream(outFile.toPath())) {
                 byte[] buffer = new byte[4096];
@@ -273,11 +273,14 @@ public final class ExtensionSupport {
             if (configProblem != null) logger.sendInfo("config.yml can be read again.");
             configProblem = null;
             config = YamlConfiguration.loadConfiguration(configFile);
+            configEverRead = true;
             return;
         }
 
-        boolean firstLoad = config == null;
-        if (firstLoad) config = bundledConfig();
+        if (config == null) config = bundledConfig();
+        // Not "is this the first load": after a start on a file that could not be read, what is
+        // in memory is still the bundled settings, however many reloads later.
+        boolean firstLoad = !configEverRead;
 
         // Said once per start or per reload: this method runs several times in a row during both.
         long now = System.currentTimeMillis();
@@ -291,9 +294,32 @@ public final class ExtensionSupport {
                 : "The settings read before stay in use until it is fixed and the " + noun + " reloaded."));
     }
 
+    /**
+     * A file bundled in this extension's own jar.
+     *
+     * <p>An addon's class loader goes on to XCore's jar when the addon has no such file, and XCore
+     * ships a {@code config.yml} and a {@code lang/fr.yml} of its own: an addon without one was
+     * handed XCore's as its defaults. A plugin's class loader never looks further than its jar.</p>
+     *
+     * @param path The resource path inside the jar.
+     * @return The stream, or {@code null} when the jar has no such file.
+     */
+    private InputStream bundled(String path) {
+        if (resources instanceof fr.xyness.XCore.Addon.AddonClassLoader addon) {
+            return addon.getOwnResourceAsStream(path);
+        }
+        return resources.getResourceAsStream(path);
+    }
+
+    /** Set once {@code config.yml} has been read from disk: until then the bundled settings are in use. */
+    private volatile boolean configEverRead;
+
+    /** One writer at a time on {@code config.yml}: two changes read the same file and one was lost. */
+    private final Object configWriteLock = new Object();
+
     /** The configuration bundled in the jar, for a start on a file that cannot be read. */
     private FileConfiguration bundledConfig() {
-        try (InputStream in = resources.getResourceAsStream("config.yml")) {
+        try (InputStream in = bundled("config.yml")) {
             if (in != null) {
                 return YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8));
             }
@@ -323,18 +349,25 @@ public final class ExtensionSupport {
      *
      * <p>Not while the file on disk cannot be read: what is in memory then is the bundled defaults,
      * or an older reading, and saving it would replace the file an administrator only has to
-     * correct.</p>
+     * correct. The refusal goes to the console only; a command that has to answer its sender uses
+     * {@link #updateConfigFile(java.util.function.Consumer)}, which says whether it wrote.</p>
      */
     public void saveConfig() {
         if (config == null || configFile == null) return;
-        if (configProblem != null) {
-            logger.sendWarning("config.yml was not saved: the file on disk is not valid YAML and stays as it is until that is fixed.");
-            return;
-        }
-        try {
-            config.save(configFile);
-        } catch (IOException e) {
-            logger.sendWarning("Failed to save config.yml: " + e.getMessage());
+        synchronized (configWriteLock) {
+            // Asked of the file as it is now: one edited into a mistake since the last reload has
+            // not been reported yet, and is just as much not to be written over.
+            String problem = configProblem != null ? configProblem : fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+            if (problem != null) {
+                logger.sendWarning("config.yml was not saved: the file on disk is not valid YAML ("
+                        + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem) + ") and stays as it is until that is fixed.");
+                return;
+            }
+            try {
+                config.save(configFile);
+            } catch (IOException e) {
+                logger.sendWarning("Failed to save config.yml: " + e.getMessage());
+            }
         }
     }
 
@@ -354,22 +387,29 @@ public final class ExtensionSupport {
         if (configFile == null) {
             configFile = new File(dataFolder, "config.yml");
         }
-        String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
-        if (problem != null) {
-            logger.sendWarning("config.yml was not written: the file is not valid YAML ("
-                    + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem) + ") and stays as it is until that is fixed.");
-            return false;
+        synchronized (configWriteLock) {
+            // Deleted while the server runs: the file a fresh install gets comes first. Written
+            // with the changed keys alone, it would be taken at the next start for a file its
+            // administrator had emptied of everything else on purpose.
+            if (!configFile.exists()) saveDefaultConfig();
+
+            String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+            if (problem != null) {
+                logger.sendWarning("config.yml was not written: the file is not valid YAML ("
+                        + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem) + ") and stays as it is until that is fixed.");
+                return false;
+            }
+            FileConfiguration disk = YamlConfiguration.loadConfiguration(configFile);
+            change.accept(disk);
+            try {
+                disk.save(configFile);
+            } catch (IOException e) {
+                logger.sendWarning("Failed to save config.yml: " + e.getMessage());
+                return false;
+            }
+            if (config != null) change.accept(config);
+            return true;
         }
-        FileConfiguration disk = YamlConfiguration.loadConfiguration(configFile);
-        change.accept(disk);
-        try {
-            disk.save(configFile);
-        } catch (IOException e) {
-            logger.sendWarning("Failed to save config.yml: " + e.getMessage());
-            return false;
-        }
-        if (config != null) change.accept(config);
-        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -447,11 +487,25 @@ public final class ExtensionSupport {
         // and the exclusions, the caps and the levels of a configuration were gone at the next start.
         reloadConfig();
         if (configProblem != null) return;
+        reportCopySetAside(configFile);
+
+        // An empty file is a missing one: it gets the file a fresh install gets, comments and
+        // all, rather than the same settings written back one key at a time.
+        if (fr.xyness.XCore.Utils.YamlFiles.isBlank(configFile) && configFile.delete()) {
+            saveDefaultConfig();
+            logger.sendWarning("config.yml was empty: the default file was written in its place.");
+            reloadConfig();
+            return;
+        }
 
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
-        // Renamed keys first: merged before, the new name would arrive with its default.
+        // Renamed keys first: merged before, the new name would arrive with its default. A section
+        // a rename creates is new to the administrator, and gets its lists like any new section.
+        java.util.Set<String> sectionsBefore = fr.xyness.XCore.Utils.ConfigMerger.sectionsOf(diskConfig);
         boolean renamedAny = applyRenames("config.yml", diskConfig);
-        try (InputStream defStream = resources.getResourceAsStream("config.yml")) {
+        java.util.Set<String> madeByRenames = fr.xyness.XCore.Utils.ConfigMerger.sectionsOf(diskConfig);
+        madeByRenames.removeAll(sectionsBefore);
+        try (InputStream defStream = bundled("config.yml")) {
             if (defStream == null) {
                 if (renamedAny) diskConfig.save(configFile);
                 return;
@@ -460,7 +514,7 @@ public final class ExtensionSupport {
                 new InputStreamReader(defStream, StandardCharsets.UTF_8));
 
             java.util.List<String> added = fr.xyness.XCore.Utils.ConfigMerger.addMissingKeys(
-                    diskConfig, defConfig, protectedSections);
+                    diskConfig, defConfig, madeByRenames, protectedSections);
 
             if (renamedAny || !added.isEmpty()) {
                 diskConfig.save(configFile);
@@ -471,6 +525,33 @@ public final class ExtensionSupport {
         } finally {
             reloadConfig();
         }
+    }
+
+    /** Whether the copy an earlier version set aside has been pointed out since this start. */
+    private boolean copySetAsideReported;
+
+    /**
+     * Points out the copy an earlier version made of a file before rebuilding it from the defaults.
+     *
+     * <p>Until 2.0.1 a file that could not be read was copied to {@code <name>.unreadable-<time>}
+     * and written again from the bundled settings — without its lists, which the merge leaves to
+     * the administrator. Nothing can tell today which lists such a file is missing, but the copy
+     * still holds them; said at every start for as long as it is there.</p>
+     *
+     * @param file The file that may have been rebuilt.
+     */
+    private void reportCopySetAside(File file) {
+        if (copySetAsideReported || file == null) return;
+        String prefix = file.getName() + ".unreadable-";
+        String[] copies = file.getParentFile() == null ? null
+                : file.getParentFile().list((dir, name) -> name.startsWith(prefix));
+        if (copies == null || copies.length == 0) return;
+        copySetAsideReported = true;
+        java.util.Arrays.sort(copies);
+        String newest = copies[copies.length - 1];
+        logger.sendWarning(newest + " is your " + file.getName() + " from before an earlier version rebuilt it after a"
+                + " YAML mistake. What you had set is still in that copy, the lists above all: they were not"
+                + " carried over. Put back what is missing, then delete the copy to end this notice.");
     }
 
     // -------------------------------------------------------------------------
@@ -657,7 +738,7 @@ public final class ExtensionSupport {
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(file);
         // A renamed key is not obsolete: its value moves to the new name before anything is pruned.
         boolean renamedAny = applyRenames(fileName, diskConfig);
-        try (InputStream defStream = resources.getResourceAsStream(fileName)) {
+        try (InputStream defStream = bundled(fileName)) {
             if (defStream == null) {
                 logger.sendDebug("No bundled " + fileName + " to compare against; nothing pruned.");
                 if (renamedAny) saveRenamed(fileName, diskConfig, file);
@@ -804,7 +885,7 @@ public final class ExtensionSupport {
                     + ". The file was left untouched.");
             return;
         }
-        try (InputStream defaults = resources.getResourceAsStream(resourcePath)) {
+        try (InputStream defaults = bundled(resourcePath)) {
             if (defaults == null) return;
             YamlConfiguration bundled = YamlConfiguration.loadConfiguration(
                     new InputStreamReader(defaults, StandardCharsets.UTF_8));
@@ -869,7 +950,9 @@ public final class ExtensionSupport {
         // A translation the administrator added themselves (lang/de.yml): its keys were renamed too.
         if (!renamedFiles.contains(target.getName().toLowerCase())) applyRenames(target);
 
-        try (InputStream defaults = resources.getResourceAsStream("lang/" + wanted + ".yml")) {
+        boolean inJar = false;
+        try (InputStream defaults = bundled("lang/" + wanted + ".yml")) {
+            inJar = defaults != null;
             lang.reload(target, defaults);
         } catch (IOException e) {
             logger.sendError("Failed to load language '" + wanted + "': " + e.getMessage());
@@ -877,7 +960,19 @@ public final class ExtensionSupport {
         if (lang.fileProblem() != null) {
             logger.sendError("lang/" + wanted + ".yml is not valid YAML: "
                     + fr.xyness.XCore.Utils.YamlFiles.forConsole(lang.fileProblem()));
-            logger.sendError("The file was left untouched. The bundled texts are used until it is fixed.");
+            if (inJar) {
+                logger.sendError("The file was left untouched. The bundled texts are used until it is fixed.");
+                return;
+            }
+            // A translation of the administrator's own: the jar has no texts for it, and every
+            // message was shown as its key. The first bundled language speaks meanwhile.
+            String fallback = available.length > 0 ? available[0] : "en";
+            try (InputStream texts = bundled("lang/" + fallback + ".yml")) {
+                lang.fillFrom(texts);
+            } catch (IOException e) {
+                logger.sendError("Failed to load language '" + fallback + "': " + e.getMessage());
+            }
+            logger.sendError("The file was left untouched. The '" + fallback + "' texts are used until it is fixed.");
         }
     }
 }

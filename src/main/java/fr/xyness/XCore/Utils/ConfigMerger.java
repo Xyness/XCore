@@ -245,14 +245,31 @@ public final class ConfigMerger {
      */
     public static List<String> addMissingKeys(FileConfiguration disk, FileConfiguration defaults,
                                               String... protectedSections) {
+        return addMissingKeys(disk, defaults, Set.of(), protectedSections);
+    }
+
+    /**
+     * Same, told which sections of {@code disk} are there only because a renamed key was just
+     * moved into them.
+     *
+     * <p>Such a section is as new as one the merge creates itself: the administrator never saw it,
+     * and so never deleted a list from it. Counted as theirs, it kept its lists out — the very
+     * thing the snapshot exists to prevent, one step earlier.</p>
+     *
+     * @param disk              The config loaded from the file.
+     * @param defaults          The config bundled in the jar.
+     * @param newSections       Sections created by this start's renames; may be empty.
+     * @param protectedSections Paths to leave alone entirely.
+     * @return The keys that were added, empty when there was nothing to do.
+     */
+    public static List<String> addMissingKeys(FileConfiguration disk, FileConfiguration defaults,
+                                              Set<String> newSections, String... protectedSections) {
         List<String> added = new ArrayList<>();
         if (disk == null || defaults == null) return added;
 
         // The sections the file held before anything is written: see the class note.
-        Set<String> sectionsBefore = new HashSet<>();
-        for (String key : disk.getKeys(true)) {
-            if (disk.isConfigurationSection(key)) sectionsBefore.add(key);
-        }
+        Set<String> sectionsBefore = sectionsOf(disk);
+        if (newSections != null) sectionsBefore.removeAll(newSections);
         Set<String> commented = new HashSet<>();
         // A file that held nothing is being written for the first time: nothing in it was "seen".
         boolean blank = disk.getKeys(false).isEmpty();
@@ -269,6 +286,21 @@ public final class ConfigMerger {
             added.add(key);
         }
         return added;
+    }
+
+    /**
+     * The paths of every section of a configuration, at any depth.
+     *
+     * @param yaml The configuration.
+     * @return The section paths; a new set the caller may change.
+     */
+    public static Set<String> sectionsOf(ConfigurationSection yaml) {
+        Set<String> sections = new HashSet<>();
+        if (yaml == null) return sections;
+        for (String key : yaml.getKeys(true)) {
+            if (yaml.isConfigurationSection(key)) sections.add(key);
+        }
+        return sections;
     }
 
     /**

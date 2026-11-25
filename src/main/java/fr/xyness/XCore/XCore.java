@@ -176,6 +176,12 @@ public class XCore extends JavaPlugin {
     private FileConfiguration addonsConfig;
     private File addonsFile;
 
+    /** Where {@code addons.yml} stops being YAML and why, or {@code null} when it was read. */
+    private volatile String addonsProblem;
+
+    /** Set when a failed start has already released everything: only the login lock is left. */
+    private boolean halted;
+
     /** The database API addons build their tables and queries with. */
     private fr.xyness.XCore.Database.TableManager tableManager;
 
@@ -224,7 +230,13 @@ public class XCore extends JavaPlugin {
             getDataFolder().mkdirs();
             try { addonsFile.createNewFile(); } catch (IOException e) { getLogger().warning("Failed to create addons.yml: " + e.getMessage()); }
         }
-        this.addonsConfig = YamlConfiguration.loadConfiguration(addonsFile);
+        // Read anyway, a file that is not valid YAML came back empty: every switch then looked
+        // new, was written with its default over the file, and a plugin switched off ran again
+        // while one that shared its data across servers stopped doing so. It is left alone now, and
+        // XCore says why it does not start (see start()).
+        this.addonsProblem = fr.xyness.XCore.Utils.YamlFiles.problem(addonsFile);
+        this.addonsConfig = addonsProblem == null
+                ? YamlConfiguration.loadConfiguration(addonsFile) : new YamlConfiguration();
 
         // Load addons early so their onLoad() runs during server load phase
         // (allows addons to hook into Netty, register protocol handlers, etc.)
@@ -235,12 +247,18 @@ public class XCore extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        if (!start()) Bukkit.getServer().getPluginManager().disablePlugin(this);
+        if (start()) return;
+        if (addonManager != null && addonManager.foundJarOf("XBans") && isAddonEnabled("XBans")) {
+            logger.sendSevere("XBans is still the 1.x addon here, which runs inside XCore: no ban is enforced"
+                    + " until XCore starts.");
+        }
+        if (closedAfterFailedStart()) return;
+        Bukkit.getServer().getPluginManager().disablePlugin(this);
     }
 
     @Override
     public void onDisable() {
-        stop();
+        if (!halted) stop();
     }
 
     // -------------------------------------------------------------------------
@@ -316,7 +334,9 @@ public class XCore extends JavaPlugin {
         this.schedulerAdapter = new SchedulerAdapter(this);
 
         // ---- Config ----
-        if (!updateConfigWithDefaults()) return false;
+        // Both files are looked at before refusing, so that one start names every line to fix.
+        boolean addonsRead = addonsFileRead();
+        if (!updateConfigWithDefaults() || !addonsRead) return false;
         FileConfiguration config = getConfig();
         String configuredType = config.getString("database-type", "sqlite");
         try {
@@ -827,7 +847,27 @@ public class XCore extends JavaPlugin {
      * wherever its files are.</p>
      */
     private void armLoginLockdown() {
-        if (!isAddonEnabled(LOGIN_EXTENSION)) return;
+        Boolean refuse = loginRefusal();
+        if (refuse == null) return;
+        if (refuse) {
+            org.bukkit.event.Listener lockdown =
+                    new fr.xyness.XCore.Listeners.LoginLockdownListener(langManager.getComponent("auth-unavailable"));
+            getServer().getPluginManager().registerEvents(lockdown, this);
+            loginLockdown = lockdown;
+            logger.sendDebug("Connections are refused until XLogin is running.");
+        }
+        // Once the server is up: by then XLogin has started, or never will.
+        schedulerAdapter.runGlobalTaskLater(this::reportLoginLockdown, 1L);
+    }
+
+    /**
+     * Whether XLogin is expected on this server, and what it wants done while it is not running.
+     *
+     * @return {@code null} when XLogin is not expected here or is switched off, {@code TRUE} when
+     *         connections are to be refused without it, {@code FALSE} when its settings say not to.
+     */
+    private Boolean loginRefusal() {
+        if (!isAddonEnabled(LOGIN_EXTENSION)) return null;
 
         File pluginsDir = getDataFolder().getParentFile();
         File settings = new File(pluginsDir, LOGIN_EXTENSION + File.separator + "config.yml");
@@ -839,25 +879,68 @@ public class XCore extends JavaPlugin {
         boolean expected = settings != null
                 || Bukkit.getPluginManager().getPlugin(LOGIN_EXTENSION) != null
                 || (addonManager != null && addonManager.foundJarOf(LOGIN_EXTENSION));
-        if (!expected) return;
+        if (!expected) return null;
 
         boolean refuse = true;
-        if (settings != null) {
+        // A settings file that cannot be read says nothing: XLogin will report it; the careful
+        // side meanwhile. Read anyway it came back empty, which gave the same answer by accident.
+        if (settings != null && fr.xyness.XCore.Utils.YamlFiles.problem(settings) == null) {
             try {
                 refuse = YamlConfiguration.loadConfiguration(settings).getBoolean("security.refuse-connections-on-failure", true);
             } catch (RuntimeException e) {
-                // Unreadable: XLogin will say so; the careful side meanwhile.
+                // Same.
             }
         }
-        if (refuse) {
-            org.bukkit.event.Listener lockdown =
-                    new fr.xyness.XCore.Listeners.LoginLockdownListener(langManager.getComponent("auth-unavailable"));
-            getServer().getPluginManager().registerEvents(lockdown, this);
-            loginLockdown = lockdown;
-            logger.sendDebug("Connections are refused until XLogin is running.");
+        return refuse;
+    }
+
+    /**
+     * Keeps the server closed when XCore itself did not start, on a server that has XLogin.
+     *
+     * <p>{@link #armLoginLockdown()} only closes the door once the start has got that far. A start
+     * refused before — a {@code config.yml} that cannot be read, a database that does not answer —
+     * left a server whose XLogin is still the 1.x addon, or whose XLogin 2.0 jar never loaded,
+     * taking anyone under any name: nothing of XLogin runs there to close it. The server removes
+     * the listeners of a plugin it disables, so XCore stays enabled, holding that one listener and
+     * nothing else; everything the start had opened is released first.</p>
+     *
+     * @return {@code true} when XCore stays enabled to keep the door shut.
+     */
+    private boolean closedAfterFailedStart() {
+        Boolean refuse = loginRefusal();
+        if (refuse == null) return false;
+        if (!refuse) {
+            logger.sendSevere("XCore did not start, so XLogin does not run, and security.refuse-connections-on-failure"
+                    + " is false in its config.yml: this server accepts players WITHOUT any authentication.");
+            return false;
         }
-        // Once the server is up: by then XLogin has started, or never will.
-        schedulerAdapter.runGlobalTaskLater(this::reportLoginLockdown, 1L);
+
+        net.kyori.adventure.text.Component message = null;
+        try {
+            if (langManager != null) message = langManager.getComponent("auth-unavailable");
+        } catch (Throwable ignored) {
+            // The language files were not reached: the plain text below.
+        }
+        if (message == null) {
+            message = net.kyori.adventure.text.Component.text(
+                    "Authentication is unavailable on this server right now.\nPlease try again in a moment.",
+                    net.kyori.adventure.text.format.NamedTextColor.RED);
+        }
+
+        stop();
+        halted = true;
+        try {
+            getServer().getPluginManager().registerEvents(
+                    new fr.xyness.XCore.Listeners.LoginLockdownListener(message), this);
+        } catch (Throwable t) {
+            logger.sendSevere("The server could not be closed to connections: " + t);
+            return false;
+        }
+        logger.sendSevere("XCore did not start and XLogin runs on it: every connection is refused until it does."
+                + " Fix what the lines above name, then restart.");
+        logger.sendSevere("To open this server WITHOUT any authentication instead, set addons.XLogin: false"
+                + " in plugins/XCore/addons.yml.");
+        return true;
     }
 
     /** Says, once the server is up, that XLogin never came: what that leaves, and the way out. */
@@ -1000,6 +1083,14 @@ public class XCore extends JavaPlugin {
                     + " point every plugin at an empty local database. Fix that line, then restart.");
             return false;
         }
+        // An empty file is what an interrupted upload or a full disk leaves. It parses, and the
+        // merge below would fill it with the defaults: the same start on an empty local database.
+        if (fr.xyness.XCore.Utils.YamlFiles.isBlank(configFile)) {
+            logger.sendError("config.yml is empty. XCore does not start on default settings: they would point every"
+                    + " plugin at an empty local database.");
+            logger.sendError("Put your file back, or delete this one to get the default file, then restart.");
+            return false;
+        }
 
         FileConfiguration diskConfig = YamlConfiguration.loadConfiguration(configFile);
         try (InputStream defStream = getResource("config.yml")) {
@@ -1024,6 +1115,30 @@ public class XCore extends JavaPlugin {
     /** Set once {@code config.yml} has been read from disk, so a later reload has something to keep. */
     private boolean configRead;
 
+    /** Where {@code config.yml} stopped being YAML at the last reload, or {@code null} when it was read. */
+    private volatile String configProblem;
+
+    /**
+     * @return Where {@code config.yml} stops being YAML and why, or {@code null} when the last
+     *         reload read it. While it is set, the settings in use are the ones read before.
+     */
+    public String configProblem() {
+        return configProblem;
+    }
+
+    /**
+     * Says why XCore does not start on an {@code addons.yml} that cannot be read.
+     *
+     * @return Whether the file was read.
+     */
+    private boolean addonsFileRead() {
+        if (addonsProblem == null) return true;
+        logger.sendError("addons.yml is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(addonsProblem));
+        logger.sendError("The file was left untouched. XCore does not start without it: it says which plugins run"
+                + " and which of them share their data across servers. Fix that line, then restart.");
+        return false;
+    }
+
     /**
      * Reloads {@code config.yml}, keeping the settings already read when the file has stopped
      * being valid YAML.
@@ -1036,6 +1151,7 @@ public class XCore extends JavaPlugin {
     public void reloadConfig() {
         File configFile = new File(getDataFolder(), "config.yml");
         String problem = fr.xyness.XCore.Utils.YamlFiles.problem(configFile);
+        configProblem = problem;
         if (problem != null && configRead) {
             if (logger != null) {
                 logger.sendError("config.yml is not valid YAML: " + fr.xyness.XCore.Utils.YamlFiles.forConsole(problem));
@@ -1273,6 +1389,8 @@ public class XCore extends JavaPlugin {
 
     /** Saves the addons.yml file (called once after all addons are loaded). */
     public void saveDataConfig() {
+        // Not over a file that could not be read: what is in memory is not what it holds.
+        if (addonsProblem != null) return;
         try {
             addonsConfig.save(addonsFile);
             dataConfigDirty = false;

@@ -59,4 +59,23 @@ class YamlFilesTest {
                 net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(YamlFiles.forConsole(complaint)));
         assertEquals(complaint, rendered);
     }
+
+    @Test
+    void aMistakeFoundAfterParsingIsAProblemToo() throws Exception {
+        // An unknown tag parses, then fails while the values are built: outside the exception
+        // the loader declares. It used to escape as a stack trace.
+        String problem = YamlFiles.problem(file("prefix: !Attention wrong\nother: 1\n"));
+        assertNotNull(problem);
+        assertFalse(problem.contains("\n"), "one line");
+    }
+
+    @Test
+    void anEmptyFileIsBlankAndAFileWithAKeyIsNot() throws Exception {
+        assertTrue(YamlFiles.isBlank(file("")));
+        assertTrue(YamlFiles.isBlank(file("\n  \n\r\n")));
+        assertFalse(YamlFiles.isBlank(file("debug: false\n")));
+        assertFalse(YamlFiles.isBlank(file("# only a comment\n")));
+        assertFalse(YamlFiles.isBlank(folder.resolve("absent.yml").toFile()));
+        assertNull(YamlFiles.problem(file("")), "an empty file parses");
+    }
 }

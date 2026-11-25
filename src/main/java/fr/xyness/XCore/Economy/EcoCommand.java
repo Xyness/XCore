@@ -992,6 +992,14 @@ public class EcoCommand {
 
     private void handleReload(CommandSender sender) {
         plugin.reloadConfig();
+        String problem = plugin.configProblem();
+        if (problem != null) {
+            // Nothing was read: the currencies in use are the ones from before, and saying
+            // "reloaded" would hide a file the next restart refuses to start on.
+            sender.sendMessage(lang().getComponent("reload-config-invalid",
+                    "problem", fr.xyness.XCore.Utils.YamlFiles.forConsole(problem)));
+            return;
+        }
         coinsManager.reload();
         lang.reload();
         if (coins().getVaultCurrency() == null) {

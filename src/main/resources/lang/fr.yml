@@ -136,6 +136,7 @@ dashboard-revoked-player-none: "<red>Aucune session ouverte sur le dashboard pou
 # ---------------------------------------------------------------------------
 
 reload-core: "<green>Rechargement effectué."
+reload-config-invalid: "<red>config.yml n'est pas un YAML valide : <white>{problem}<red>. Le fichier n'a pas été modifié et les réglages précédents restent en place : corrige-le, puis recharge."
 reload-addons: "<green>{count} addon(s) rechargé(s) : <white>{list}"
 reload-addons-none: "<red>Aucun addon actif à recharger."
 reload-addons-failed: "<red>Échec du rechargement : {list}. Consulte la console."
