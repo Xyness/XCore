@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Xyness/XCore/releases"><img src="https://img.shields.io/badge/version-2.0-4fb3a0?style=flat-square&labelColor=24292f" alt="Version 2.0"></a>
+  <a href="https://github.com/Xyness/XCore/releases"><img src="https://img.shields.io/badge/version-2.0.1-4fb3a0?style=flat-square&labelColor=24292f" alt="Version 2.0.1"></a>
   <img src="https://img.shields.io/badge/Paper-1.21.1%2B-57606a?style=flat-square&labelColor=24292f" alt="Paper 1.21.1+">
   <img src="https://img.shields.io/badge/Folia-supported-57606a?style=flat-square&labelColor=24292f" alt="Folia supported">
   <img src="https://img.shields.io/badge/Java-21%2B-57606a?style=flat-square&labelColor=24292f" alt="Java 21+">
@@ -93,7 +93,7 @@ More on the [dashboard settings](https://celestis.dev/plugins/xcore/wiki/configu
 
 XCore needs Paper 1.21.1 or newer, or Folia, and Java 21 or newer. Vault and PlaceholderAPI are optional: Vault shows the economy to other plugins, PlaceholderAPI serves the placeholders.
 
-1. **Put `XCore-2.0.jar` in `plugins/`.** It is on the [releases](https://github.com/Xyness/XCore/releases) page; the plugins that run on it go in `plugins/` too.
+1. **Put `XCore-2.0.1.jar` in `plugins/`.** It is on the [releases](https://github.com/Xyness/XCore/releases) page; the plugins that run on it go in `plugins/` too.
 2. **Start the server.** XCore writes `plugins/XCore/config.yml`, and each plugin its own `config.yml` in `plugins/<name>/`. On a single server, SQLite needs nothing more.
 3. **Run `/xcore dashboard`** and open the link. For a network, set MySQL or PostgreSQL and `cross-server` in [`config.yml`](#configuration) first, then restart.
 
@@ -105,7 +105,7 @@ XCore needs Paper 1.21.1 or newer, or Folia, and Java 21 or newer. Vault and Pla
 In 1.x the four plugins were addons, loaded by XCore from `plugins/XCore/addons/`. In 2.0 each one is a Paper plugin of its own, and each needs XCore 2.0. The database does not change: same tables, nothing to migrate.
 
 1. Stop the server.
-2. In `plugins/`, replace `XCore-1.x.jar` with `XCore-2.0.jar`. XCore always comes first, in this same stop.
+2. In `plugins/`, replace `XCore-1.x.jar` with `XCore-2.0.1.jar`. XCore always comes first, in this same stop.
 3. Put the 2.0 jar of each plugin in `plugins/`, and delete its old jar from `plugins/XCore/addons/`.
 4. Start the server.
 
@@ -455,7 +455,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    compileOnly 'com.github.Xyness:XCore:2.0'
+    compileOnly 'com.github.Xyness:XCore:2.0.1'
 }
 ```
 
@@ -476,7 +476,7 @@ dependencies {
     <dependency>
         <groupId>com.github.Xyness</groupId>
         <artifactId>XCore</artifactId>
-        <version>2.0</version>
+        <version>2.0.1</version>
         <scope>provided</scope>
     </dependency>
 </dependencies>
@@ -833,7 +833,9 @@ The whole recognition is bounded: about 10 seconds to find and move the row, 2 m
 | `updateConfigWithDefaults(protected...)` | Adds keys the bundled default has and the file lacks. Never overwrites a value. |
 | `pruneObsoleteConfigKeys(protected...)` | Removes keys the bundled default no longer has. |
 | `pruneObsoleteKeys(file, protected...)` | The same, for any file. |
-| `setAsideIfUnreadable(file)` | Copies a file that is not valid YAML to `<name>.unreadable-<millis>` and reports it in the console. `updateConfigWithDefaults` does it for `config.yml`: the defaults are used until the copy is repaired and put back. |
+| `isConfigReadable()` / `configProblem()` | Whether `config.yml` was read as it stands on disk, and where it stops being YAML when it was not. Since 2.0.1 |
+| `updateConfigFile(change)` | Writes a few keys into `config.yml` as it is on disk now, and into the loaded configuration. To be used instead of `getConfig().set(...)` then `saveConfig()`, which writes the file as it was last read. Since 2.0.1 |
+| `setAsideIfUnreadable(file)` | For a file of your own that you are about to rewrite: copies it to `<name>.unreadable-<millis>` when it is not valid YAML, and reports it. `config.yml`, the language files and the dashboard strings no longer need it: since 2.0.1 a file that cannot be read is never written |
 
 Pruning copies the file to `<name>.pre-prune.bak` and logs every key dropped. Protected sections (world names, material maps, shop entries) are never added to and never pruned. YAML lists count as values.
 
@@ -1245,7 +1247,7 @@ cd XCore
 ./gradlew clean shadowJar
 ```
 
-The jar lands in `build/libs/XCore-2.0.jar`.
+The jar lands in `build/libs/XCore-2.0.1.jar`.
 
 <br>
 

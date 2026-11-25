@@ -1,14 +1,12 @@
 # Version
-version: 2.0
+version: 2.0.1
 
 # Update date
-date: 21/11/2026
+date: 25/11/2026
 
 # Update notes
 update-notes:
-- "XBans, XLogin, XAuctionHouse and XAntiLag are real plugins now, their jars go in plugins/"
-- "Brand new web dashboard, with staff roles based on in-game permissions"
-- "Players keep their data when the server switches between offline and online mode"
-- "Fixed the server freezing when an auction ended"
-- "Fixed an exploit in /eco pay"
-- "Old addons in plugins/XCore/addons/ still work"
+- "Fixed a config losing its lists and limits after a YAML mistake"
+- "A config or language file with a YAML mistake is left untouched now, and the console tells you the line"
+- "XCore no longer starts on default settings when its config.yml cannot be read"
+- "Settings added by an update come with their comments"
