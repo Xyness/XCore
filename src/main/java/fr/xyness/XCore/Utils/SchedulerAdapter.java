@@ -205,6 +205,23 @@ public class SchedulerAdapter {
 	 * @return {@code false} when the task was not scheduled ({@code retired} has then already run).
 	 */
 	public boolean runEntityTask(Player player, Runnable task, Runnable retired) {
+        if (retired != null) {
+            // Exactly one of the two, even when the server drops the task (the owner stopping
+            // first): the fallback of a task not run yet is run by runPendingFallbacks.
+            Pending entry = new Pending(retired);
+            pending.add(entry);
+            Runnable onlyTask = task;
+            task = () -> {
+                if (!entry.done.compareAndSet(false, true)) return;
+                pending.remove(entry);
+                onlyTask.run();
+            };
+            retired = () -> {
+                if (!entry.done.compareAndSet(false, true)) return;
+                pending.remove(entry);
+                entry.retired.run();
+            };
+        }
         if (isFolia) {
             try {
                 Object scheduler = playerGetSchedulerMethod.invoke(player);
@@ -225,11 +242,52 @@ public class SchedulerAdapter {
             if (retired != null) retired.run();
             return false;
         }
-        Bukkit.getScheduler().runTask(owner, () -> {
-            if (player.isOnline()) task.run();
-            else if (retired != null) retired.run();
-        });
-        return true;
+        try {
+            Runnable run = task;
+            Runnable fallback = retired;
+            Bukkit.getScheduler().runTask(owner, () -> {
+                if (player.isOnline()) run.run();
+                else if (fallback != null) fallback.run();
+            });
+            return true;
+        } catch (org.bukkit.plugin.IllegalPluginAccessException | IllegalStateException stopping) {
+            // The owner is being disabled: nothing can be scheduled for it any more, as on Folia.
+            // The callback is what puts things back (an item already paid for, to the delivery).
+            if (retired != null) retired.run();
+            return false;
+        }
+    }
+
+    /** A fallback waiting on its task: the first of the two to claim it runs. */
+    private static final class Pending {
+        final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean();
+        final Runnable retired;
+
+        Pending(Runnable retired) {
+            this.retired = retired;
+        }
+    }
+
+    /** The fallbacks of entity tasks taken but not run yet. */
+    private final java.util.Set<Pending> pending = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Runs the fallback of every entity task taken and not run yet. Called when the owner stops:
+     * the server drops its tasks then, and neither the task nor its fallback would ever run, so
+     * an item already paid for was neither given nor sent.
+     *
+     * @since 2.1
+     */
+    public void runPendingFallbacks() {
+        for (Pending entry : new java.util.ArrayList<>(pending)) {
+            if (!entry.done.compareAndSet(false, true)) continue;
+            try {
+                entry.retired.run();
+            } catch (Throwable t) {
+                logger.sendError("A task's fallback failed while stopping: " + t);
+            }
+        }
+        pending.clear();
     }
 
 	/**
@@ -359,6 +417,45 @@ public class SchedulerAdapter {
 	 *
 	 * @param task The task to run.
 	 */
+    /**
+     * Whether the current thread is the one global tasks run on: the main thread on Paper, the
+     * global region thread on Folia. Code that must run there can then run at once instead of a
+     * tick later, which matters to a caller waiting on that very thread.
+     *
+     * @return {@code true} on that thread.
+     * @since 2.1
+     */
+    public boolean isGlobalThread() {
+        if (!isFolia) return Bukkit.isPrimaryThread();
+        try {
+            return (Boolean) Bukkit.class.getMethod("isGlobalTickThread").invoke(null);
+        } catch (Throwable unknown) {
+            return false;
+        }
+    }
+
+    /**
+     * {@link #runGlobalTask(Runnable)}, saying whether the task was taken: {@code false} when the
+     * server refused it (the owner is being disabled, the server is stopping), and the task will
+     * never run.
+     *
+     * @param task The task.
+     * @return Whether it was scheduled.
+     * @since 2.1
+     */
+    public boolean tryRunGlobalTask(Runnable task) {
+        try {
+            if (isFolia) {
+                globalSchedulerRunMethod.invoke(globalScheduler, owner, wrapConsumer(task));
+            } else {
+                Bukkit.getScheduler().runTask(owner, task);
+            }
+            return true;
+        } catch (Throwable refused) {
+            return false;
+        }
+    }
+
     public void runGlobalTask(Runnable task) {
         if (isFolia) {
             try {

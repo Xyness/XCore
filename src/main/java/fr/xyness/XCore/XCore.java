@@ -188,6 +188,9 @@ public class XCore extends JavaPlugin {
     /** The mailbox addons hand things to when a player cannot take them right away. */
     private fr.xyness.XCore.Delivery.DeliveryService deliveryService;
 
+    /** One way to move money, whichever plugin holds it. Built with the instance: it holds no state of the start. */
+    private final fr.xyness.XCore.Economy.Money money = new fr.xyness.XCore.Economy.Money(this);
+
     /** One queue for every Discord webhook in the installation. */
     private fr.xyness.XCore.Integrations.DiscordNotifier discordNotifier;
 
@@ -1203,6 +1206,15 @@ public class XCore extends JavaPlugin {
 
     /** @return The mailbox for things a player could not be handed straight away. */
     public fr.xyness.XCore.Delivery.DeliveryService delivery() { return deliveryService; }
+
+    /**
+     * Returns the money service: withdrawals, deposits and rounding in an XCore currency or in
+     * the economy another plugin registered with Vault, behind one set of methods.
+     *
+     * @return The {@link fr.xyness.XCore.Economy.Money} service.
+     * @since 2.1
+     */
+    public fr.xyness.XCore.Economy.Money money() { return money; }
 
     /** @return The shared Discord webhook sender. */
     public fr.xyness.XCore.Integrations.DiscordNotifier discord() { return discordNotifier; }

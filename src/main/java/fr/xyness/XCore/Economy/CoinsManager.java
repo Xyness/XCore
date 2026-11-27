@@ -1408,7 +1408,13 @@ public class CoinsManager {
     // *********************
 
     public Currency getCurrency(String id) {
-        return currencies.get(id);
+        Currency exact = currencies.get(id);
+        if (exact != null || id == null) return exact;
+        // Written with other capitals in a plugin's file ("Gems"): still that currency.
+        for (Currency currency : currencies.values()) {
+            if (currency.getId().equalsIgnoreCase(id)) return currency;
+        }
+        return null;
     }
 
     public Collection<Currency> getCurrencies() {

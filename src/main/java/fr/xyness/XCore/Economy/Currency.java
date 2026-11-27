@@ -77,7 +77,7 @@ public class Currency {
         BigDecimal exact = BigDecimal.valueOf(value);
         BigDecimal down = exact.setScale(decimals, RoundingMode.FLOOR);
         BigDecimal next = down.add(step());
-        if (next.subtract(exact).doubleValue() <= NOISE_ULPS * Math.ulp(value)) return next.doubleValue();
+        if (next.subtract(exact).doubleValue() <= noise(value)) return next.doubleValue();
         return down.doubleValue();
     }
 
@@ -95,8 +95,16 @@ public class Currency {
         BigDecimal exact = BigDecimal.valueOf(value);
         BigDecimal up = exact.setScale(decimals, RoundingMode.CEILING);
         BigDecimal previous = up.subtract(step());
-        if (exact.subtract(previous).doubleValue() <= NOISE_ULPS * Math.ulp(value)) return previous.doubleValue();
+        if (exact.subtract(previous).doubleValue() <= noise(value)) return previous.doubleValue();
         return up.doubleValue();
+    }
+
+    /**
+     * The noise a double carries in its last bits, never more than a thousandth of a step: past a
+     * few thousand billion, the last bits alone are worth a cent, and floor would have rounded up.
+     */
+    private double noise(double value) {
+        return Math.min(NOISE_ULPS * Math.ulp(value), step().doubleValue() * 0.001);
     }
 
     /** @return The smallest amount this currency counts: {@code 0.01} with two decimals, {@code 1} with none. */

@@ -145,6 +145,10 @@ public class GuiUtils {
      * <p>This is what makes the {@code sound}, {@code actions} and {@code permission} keys of a GUI
      * definition work. Every addon carried an identical copy of it in its own listener.</p>
      *
+     * <p>A click on an empty slot makes no sound: a hole in a page, a button the page does not show
+     * (no "previous" on the first page). {@code slots-sound} is the sound of the page's entries, so
+     * an item of the file without a sound of its own, a border, stays silent too.</p>
+     *
      * @param player    Who clicked.
      * @param slot      The slot they clicked.
      * @param clickType How they clicked.
@@ -155,10 +159,12 @@ public class GuiUtils {
     public static boolean handleCommonFeatures(Player player, int slot, ClickType clickType, GuiDefinition def) {
         GuiItem item = def != null ? def.itemAt(slot) : null;
 
-        if (item != null && item.getSound() != null && !item.getSound().isBlank()) {
-            playSound(player, item.getSound());
-        } else if (def != null && def.getSound() != null && !def.getSound().isBlank()) {
-            playSound(player, def.getSound());
+        if (occupied(player, slot)) {
+            if (item != null) {
+                if (item.getSound() != null && !item.getSound().isBlank()) playSound(player, item.getSound());
+            } else if (def != null && def.getSound() != null && !def.getSound().isBlank()) {
+                playSound(player, def.getSound());
+            }
         }
 
         // The permission is checked before the actions: a button's commands used to run first and
@@ -174,6 +180,18 @@ public class GuiUtils {
             }
         }
         return true;
+    }
+
+    /** Whether the open screen shows something in a slot. When it cannot tell, it says yes. */
+    private static boolean occupied(Player player, int slot) {
+        try {
+            Inventory top = player.getOpenInventory().getTopInventory();
+            if (slot < 0 || slot >= top.getSize()) return true;
+            ItemStack stack = top.getItem(slot);
+            return stack != null && !stack.getType().isAir();
+        } catch (Throwable unknown) {
+            return true;
+        }
     }
 
     // -------------------------------------------------------------------------

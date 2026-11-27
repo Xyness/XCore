@@ -68,6 +68,9 @@ public class WebPanel {
     /** Path to the static web files directory. */
     private final Path webRoot;
 
+    /** XCore's own folder, where the icons drawn for the dashboard are kept between runs. */
+    private final File dataFolder;
+
     /** The server start time in millis, for uptime calculation. */
     private final long startTimeMillis;
 
@@ -384,6 +387,7 @@ public class WebPanel {
         }
 
         this.logger = new Logger("WebPanel");
+        this.dataFolder = dataFolder;
         this.webRoot = new File(dataFolder, "web").toPath();
         this.sessionFile = new File(dataFolder, "web-sessions.json");
         this.startTimeMillis = System.currentTimeMillis();
@@ -976,6 +980,8 @@ public class WebPanel {
         server.createContext("/api/modules", this::handleModules);
         server.createContext("/api/metrics", this::handleMetrics);
         server.createContext("/api/players", this::handlePlayers);
+        server.createContext("/api/items", this::handleItems);
+        server.createContext("/api/currencies", this::handleCurrencies);
 
         // Static file handler (catch-all, must be last)
         server.createContext("/", this::handleStatic);
@@ -1002,6 +1008,7 @@ public class WebPanel {
         logger.sendInfo("Dashboard assets follow Minecraft <aqua>" + assetVersion() + "</aqua>.");
 
         Thread warm = new Thread(() -> {
+            resolveAssetVersion();
             String locale = switch (main.getLanguage() == null ? "en" : main.getLanguage().toLowerCase(java.util.Locale.ROOT)) {
                 case "fr" -> "fr_fr";
                 case "es" -> "es_es";
@@ -1302,6 +1309,11 @@ public class WebPanel {
         for (WebModule module : modulesSnapshot()) {
             nodes.add(modulePermission(module.getName()));
             nodes.add(managePermission(module.getName()));
+            // The lists a filter or a field reads its choices from, with what reading them needs:
+            // whoever may read one of the pages that use a list may read the list. A page that
+            // asks nothing more than the module's permission opens it to every reader.
+            java.util.Map<String, java.util.Set<String>> optionReaders = new java.util.HashMap<>();
+            java.util.Set<String> openOptions = new java.util.HashSet<>();
             for (WebPage page : pagesOf(module)) {
                 WebPageSpec spec = page.spec();
                 if (spec == null) continue;
@@ -1311,6 +1323,19 @@ public class WebPanel {
                     addRequirement(endpoints.computeIfAbsent(path, key -> new ArrayList<>()), anyOf);
                     nodes.addAll(anyOf);
                 });
+                spec.readingPermissions((endpoint, anyOf) -> {
+                    String path = endpointPath(endpoint);
+                    if (path == null) return;
+                    addRequirement(reads.computeIfAbsent(trimmed(path), key -> new ArrayList<>()), anyOf);
+                    nodes.addAll(anyOf);
+                });
+                List<String> pageRead = spec.readPermissions();
+                for (String endpoint : spec.optionEndpoints()) {
+                    String path = endpointPath(endpoint);
+                    if (path == null) continue;
+                    if (pageRead.isEmpty()) openOptions.add(trimmed(path));
+                    else optionReaders.computeIfAbsent(trimmed(path), key -> new java.util.LinkedHashSet<>()).addAll(pageRead);
+                }
                 List<String> read = spec.readPermissions();
                 if (!read.isEmpty()) {
                     for (String endpoint : spec.readEndpoints()) {
@@ -1326,6 +1351,9 @@ public class WebPanel {
                     nodes.addAll(save);
                 }
             }
+            optionReaders.forEach((path, anyOf) -> {
+                if (!openOptions.contains(path)) addRequirement(reads.computeIfAbsent(path, key -> new ArrayList<>()), List.copyOf(anyOf));
+            });
             for (WebRoute route : routesOf(module)) {
                 String path = endpointPath(route.path());
                 if (path == null) continue;
@@ -1649,13 +1677,29 @@ public class WebPanel {
      */
     private JsonObject visibleSpec(WebPageSpec spec, Access access) {
         JsonObject json = spec.toJson();
-        if (json.has("actions") && json.get("actions").isJsonArray()) {
+        // Row actions, the buttons of a grid's container and the page-wide buttons: one that only
+        // reads (a chart, a download) is judged as a read, any other as the POST it sends.
+        for (String part : new String[]{"actions", "containerActions", "buttons"}) {
+            if (!json.has(part) || !json.get(part).isJsonArray()) continue;
             JsonArray kept = new JsonArray();
-            for (var action : json.getAsJsonArray("actions")) {
-                if (action.isJsonObject() && mayPost(access, stringOf(action.getAsJsonObject(), "endpoint"))) kept.add(action);
+            for (var entry : json.getAsJsonArray(part)) {
+                if (!entry.isJsonObject()) continue;
+                JsonObject button = entry.getAsJsonObject();
+                String kind = stringOf(button, "kind");
+                boolean reads = "chart".equals(kind) || "download".equals(kind);
+                String endpoint = stringOf(button, "endpoint");
+                if (reads ? readable(access, endpoint) : mayPost(access, endpoint)) kept.add(button);
             }
-            if (kept.size() == 0) json.remove("actions");
-            else json.add("actions", kept);
+            if (kept.size() == 0) json.remove(part);
+            else json.add(part, kept);
+        }
+        if (json.has("lists") && json.get("lists").isJsonArray()) {
+            JsonArray kept = new JsonArray();
+            for (var list : json.getAsJsonArray("lists")) {
+                if (list.isJsonObject() && readable(access, stringOf(list.getAsJsonObject(), "endpoint"))) kept.add(list);
+            }
+            if (kept.size() == 0) json.remove("lists");
+            else json.add("lists", kept);
         }
         for (String part : new String[]{"form", "bulk"}) {
             if (json.has(part) && json.get(part).isJsonObject()
@@ -2093,6 +2137,53 @@ public class WebPanel {
      * that exists one version later.</p>
      */
     private String assetVersion() {
+        String resolved = resolvedAssetVersion;
+        return resolved != null ? resolved : serverVersion();
+    }
+
+    /**
+     * The version asked of the mirror instead of the server's own, when the mirror does not have
+     * that one yet; {@code null} while the server's own is the one to ask for.
+     */
+    private volatile String resolvedAssetVersion;
+
+    /**
+     * Whether the mirror has been asked which version to use. Until it answers, a file it does
+     * not have may only be missing from the version asked first: not remembered as missing.
+     */
+    private volatile boolean assetVersionProbed;
+
+    /** What the mirror calls the newest version it holds. */
+    private static final String LATEST_ASSETS = "latest";
+
+    /**
+     * Checks that the mirror holds this server's version, and falls back on the newest it has
+     * when it does not.
+     *
+     * <p>A server updated on the day a Minecraft version comes out is ahead of the mirror for a
+     * while. Every texture and every item name then answered 404, and the dashboard showed
+     * neither until the mirror caught up: nearly all of them are the same one version earlier.
+     * Runs off the server thread, once at start.</p>
+     */
+    private void resolveAssetVersion() {
+        String own = serverVersion();
+        Fetched probe = fetchImage("https://assets.mcasset.cloud/" + own + "/version.json");
+        if (probe.status() == 404) {
+            resolvedAssetVersion = LATEST_ASSETS;
+            logger.sendInfo("The asset mirror has nothing for Minecraft <aqua>" + own + "</aqua> yet: the dashboard's"
+                    + " icons and item names come from the newest version it holds until it does.");
+            // What was asked of the version it does not have is forgotten: it is asked again of the right one.
+            spriteMisses.clear();
+            assetMisses.clear();
+            minecraftLangMisses.clear();
+        } else {
+            resolvedAssetVersion = null;
+        }
+        assetVersionProbed = true;
+    }
+
+    /** The Minecraft version this server runs, as the mirror names its folders. */
+    private String serverVersion() {
         try {
             String version = Bukkit.getMinecraftVersion();
             if (version != null && version.matches("[0-9][0-9a-zA-Z.\\-]{0,15}")) return version;
@@ -2111,7 +2202,8 @@ public class WebPanel {
     }
 
     /**
-     * Handles {@code GET /api/sprite/<material>.png} — an item texture, served from here.
+     * Handles {@code GET /api/sprite/<material>.png}: an item's icon, drawn from its model (its flat
+     * texture when the model cannot be drawn), served from here.
      *
      * <p>The dashboard used to point its images straight at a public mirror. That works until it
      * does not: a mirror answers a command-line request and refuses the browser's, an extension
@@ -2136,10 +2228,21 @@ public class WebPanel {
             return;
         }
 
+        // An item of this server, nothing else: any other name sent a handful of requests to the
+        // mirror and pushed real icons out of the caches.
+        org.bukkit.Material known = org.bukkit.Material.matchMaterial(name);
+        if (known == null || !known.isItem()) {
+            sendNoImage(exchange);
+            return;
+        }
+
         String material = name;
         byte[] data = spriteCache.get(material);
-        if (data == null && !missed(spriteMisses, material)
-                && System.currentTimeMillis() >= spritesOfflineUntil && mayFetch(exchange)) {
+        // A request that joins a fetch already under way starts nothing, and is not counted
+        // against what its address may start: a page of forty icons asks for each of them again
+        // a moment later, and those second askings used to use up the allowance.
+        if (data == null && !missed(spriteMisses, material) && System.currentTimeMillis() >= spritesOfflineUntil
+                && (assetFetches.containsKey("sprite:" + material) || mayFetch(exchange))) {
             data = awaitAsset("sprite:" + material, () -> fetchSprite(material));
         }
 
@@ -2294,11 +2397,19 @@ public class WebPanel {
 
         String json = minecraftLangCache.get(locale);
         if (json == null) {
-            String base = "https://assets.mcasset.cloud/" + assetVersion() + "/assets/minecraft/lang/";
-            json = fetchText(base + locale + ".json");
-            if (json == null && !"en_us".equals(locale)) json = fetchText(base + "en_us.json");
+            Long missedUntil = minecraftLangMisses.get(locale);
+            if (missedUntil == null || missedUntil <= System.currentTimeMillis()) {
+                String base = "https://assets.mcasset.cloud/" + assetVersion() + "/assets/minecraft/lang/";
+                json = fetchText(base + locale + ".json");
+                if (json == null && !"en_us".equals(locale)) json = fetchText(base + "en_us.json");
+                if (json != null) {
+                    minecraftLangCache.put(locale, json);
+                } else {
+                    // Asked again in ten minutes: remembered as empty, the names never came back.
+                    minecraftLangMisses.put(locale, System.currentTimeMillis() + 600_000L);
+                }
+            }
             if (json == null) json = "{}";
-            minecraftLangCache.put(locale, json);
         }
 
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
@@ -2312,6 +2423,9 @@ public class WebPanel {
             os.write(data);
         }
     }
+
+    /** The game languages the mirror did not give, until when they are not asked for again. */
+    private final java.util.Map<String, Long> minecraftLangMisses = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Reads a remote text resource, or {@code null} when it cannot be had. */
     private String fetchText(String url) {
@@ -2343,6 +2457,39 @@ public class WebPanel {
      */
     private byte[] fetchSprite(String name) {
         long now = System.currentTimeMillis();
+
+        // Drawn before, on this or an earlier run: an icon is worked out once per Minecraft version.
+        byte[] kept = readIconFile(name);
+        if (kept != null) {
+            spriteCache.put(name, kept);
+            return kept;
+        }
+
+        // Drawn from the item's model, as the inventory shows it: a stair looks like a stair. The
+        // flat texture below only knows the items that have one of their own name, and a third of
+        // them — every slab, stair, wall, bed and chest — have none.
+        if (!iconsUnavailable) {
+            try {
+                byte[] drawn = iconRenderer().render(name);
+                if (drawn != null) {
+                    spriteCache.put(name, drawn);
+                    writeIconFile(name, drawn);
+                    return drawn;
+                }
+            } catch (IOException trouble) {
+                spritesOfflineUntil = now + SOURCE_BACKOFF_MS;
+                spriteMisses.put(name, now + 5 * 60_000L);
+                return null;
+            } catch (LinkageError noGraphics) {
+                // A Java runtime trimmed of its image classes: the flat textures still work.
+                iconsUnavailable = true;
+                logger.sendWarning("Item icons cannot be drawn on this Java runtime (" + noGraphics
+                        + "): the dashboard shows the flat textures only.");
+            } catch (Throwable broken) {
+                logger.sendDebug("Could not draw an icon for '" + name + "': " + broken);
+            }
+        }
+
         for (String source : SPRITE_SOURCES) {
             Fetched fetched = fetchImage(String.format(source, assetVersion(), name));
             if (fetched.data() != null) {
@@ -2356,8 +2503,202 @@ public class WebPanel {
             }
         }
         logger.sendDebug("No mirror had a texture for '" + name + "'.");
-        spriteMisses.put(name, now + 6 * 3_600_000L);
+        spriteMisses.put(name, now + (assetVersionProbed ? 6 * 3_600_000L : 60_000L));
         return null;
+    }
+
+    // **************************************************************************
+    // *                          Drawn item icons                              *
+    // **************************************************************************
+
+    /** Set once drawing proved impossible on this runtime, so it is not tried for every item. */
+    private volatile boolean iconsUnavailable;
+
+    /** The renderer, made on first use: most servers never open a page that shows an item. */
+    private volatile fr.xyness.XCore.Web.Icons.IconRenderer iconRenderer;
+
+    /** How many of the game's files the renderer keeps in memory: models and textures are shared by many items. */
+    private static final int ASSET_CACHE_SIZE = 1536;
+
+    /** The game's files already read, the least recently used dropped first. An empty array stands for "the mirror has no such file". */
+    private final java.util.Map<String, byte[]> assetCache = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, byte[]>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, byte[]> eldest) {
+                    return size() > ASSET_CACHE_SIZE;
+                }
+            });
+
+    /** The game's files the mirror did not have, until when they are not asked for again. */
+    private final java.util.Map<String, Long> assetMisses = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** How long a file the mirror did not have is not asked for again: a hiccup is not a verdict. */
+    private static final long ASSET_MISS_MS = 3_600_000L;
+
+    private fr.xyness.XCore.Web.Icons.IconRenderer iconRenderer() {
+        fr.xyness.XCore.Web.Icons.IconRenderer renderer = iconRenderer;
+        if (renderer == null) {
+            renderer = new fr.xyness.XCore.Web.Icons.IconRenderer(this::readAsset);
+            iconRenderer = renderer;
+        }
+        return renderer;
+    }
+
+    /**
+     * Reads one of the game's files from the mirror, for the renderer.
+     *
+     * @param path The path under {@code assets/minecraft/}.
+     * @return Its bytes, or {@code null} when the mirror has no such file.
+     * @throws IOException When the mirror could not be reached or asked to slow down.
+     */
+    private byte[] readAsset(String path) throws IOException {
+        // The path is pasted into a URL: only what a file of the game is ever called.
+        if (path == null || !path.matches("[a-z0-9_./-]{1,160}") || path.contains("..")) return null;
+        byte[] known = assetCache.get(path);
+        if (known != null) return known;
+        long now = System.currentTimeMillis();
+        Long missedUntil = assetMisses.get(path);
+        if (missedUntil != null && missedUntil > now) return null;
+        Fetched fetched = fetchImage("https://assets.mcasset.cloud/" + assetVersion() + "/assets/minecraft/" + path);
+        if (fetched.data() != null) {
+            assetCache.put(path, fetched.data());
+            assetMisses.remove(path);
+            return fetched.data();
+        }
+        if (sourceTrouble(fetched.status())) throw new IOException("asset mirror answered " + fetched.status());
+        if (assetVersionProbed) {
+            if (assetMisses.size() > 8192) assetMisses.clear();
+            assetMisses.put(path, now + ASSET_MISS_MS);
+        }
+        return null;
+    }
+
+    /** How long an icon drawn from a stand-in version is kept on disk: the mirror catches up within days. */
+    private static final long FALLBACK_ICON_MAX_AGE_MS = 7L * 86_400_000L;
+
+    /**
+     * Where the icons drawn for this Minecraft version are kept: {@code cache/icons/<version>-r<revision>/}
+     * in XCore's folder. Those drawn from the mirror's newest version, for want of this one, go
+     * to a folder of their own and are drawn again after a week.
+     */
+    private File iconFolder() {
+        String own = serverVersion();
+        boolean standIn = resolvedAssetVersion != null;
+        // With the renderer's revision: an icon an earlier XCore drew wrong is drawn again by the
+        // one that draws it right, instead of being served from the disk for good.
+        return new File(dataFolder, "cache/icons/" + own + "-r" + fr.xyness.XCore.Web.Icons.IconRenderer.REVISION
+                + (standIn ? "-fallback" : ""));
+    }
+
+    /** An icon drawn before, or {@code null}. */
+    private byte[] readIconFile(String name) {
+        try {
+            File file = new File(iconFolder(), name + ".png");
+            if (!file.isFile()) return null;
+            if (resolvedAssetVersion != null
+                    && System.currentTimeMillis() - file.lastModified() > FALLBACK_ICON_MAX_AGE_MS) return null;
+            byte[] data = java.nio.file.Files.readAllBytes(file.toPath());
+            return data.length > 0 ? data : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Keeps an icon for the next start. Written beside, then moved: a file half written is never read. */
+    private void writeIconFile(String name, byte[] data) {
+        try {
+            File folder = iconFolder();
+            if (!folder.isDirectory() && !folder.mkdirs()) return;
+            java.nio.file.Path target = new File(folder, name + ".png").toPath();
+            java.nio.file.Path beside = new File(folder, name + ".png.tmp").toPath();
+            java.nio.file.Files.write(beside, data);
+            try {
+                java.nio.file.Files.move(beside, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                java.nio.file.Files.move(beside, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception e) {
+            logger.sendDebug("Could not keep the icon of '" + name + "': " + e.getMessage());
+        }
+    }
+
+    // **************************************************************************
+    // *                    What a form lets a reader pick                      *
+    // **************************************************************************
+
+    /** The server's items as JSON, built once: the list only changes with the server's version. */
+    private volatile String itemsJson;
+
+    /**
+     * Handles {@code GET /api/items} — every item of this server, for a form field that picks one.
+     *
+     * <p>Each entry carries the material name and the key of its name in the game's language
+     * file, which the dashboard resolves in its reader's language ({@code /api/mclang}).</p>
+     */
+    private void handleItems(HttpExchange exchange) throws IOException {
+        addCorsHeaders(exchange);
+        if (handlePreflight(exchange)) return;
+        if (!rateLimit(exchange)) return;
+        if (authenticated(exchange) == null) return;
+
+        String json = itemsJson;
+        if (json == null) {
+            JsonArray items = new JsonArray();
+            for (org.bukkit.Material material : org.bukkit.Material.values()) {
+                try {
+                    if (material.isLegacy() || material.isAir() || !material.isItem()) continue;
+                    JsonObject item = new JsonObject();
+                    item.addProperty("id", material.name().toLowerCase(java.util.Locale.ROOT));
+                    String key;
+                    try {
+                        key = material.getItemTranslationKey();
+                    } catch (Throwable older) {
+                        key = (material.isBlock() ? "block" : "item") + ".minecraft."
+                                + material.name().toLowerCase(java.util.Locale.ROOT);
+                    }
+                    if (key != null) item.addProperty("key", key);
+                    items.add(item);
+                } catch (Throwable ignored) {
+                    // A material this server cannot describe is one a reader cannot pick.
+                }
+            }
+            JsonObject out = new JsonObject();
+            out.add("items", items);
+            json = out.toString();
+            itemsJson = json;
+        }
+        exchange.getResponseHeaders().set("Cache-Control", "private, max-age=300");
+        sendJson(exchange, 200, json);
+    }
+
+    /**
+     * Handles {@code GET /api/currencies} — the currencies a price can be set in, for a form
+     * field that picks one: XCore's own, and {@code vault} when the economy registered with Vault
+     * is another plugin's.
+     */
+    private void handleCurrencies(HttpExchange exchange) throws IOException {
+        addCorsHeaders(exchange);
+        if (handlePreflight(exchange)) return;
+        if (!rateLimit(exchange)) return;
+        if (authenticated(exchange) == null) return;
+
+        fr.xyness.XCore.Economy.Money money = main.money();
+        String primary = money.defaultCurrency();
+        JsonArray currencies = new JsonArray();
+        for (String id : money.currencies()) {
+            JsonObject currency = new JsonObject();
+            currency.addProperty("id", id);
+            currency.addProperty("symbol", money.symbol(id));
+            currency.addProperty("decimals", money.decimals(id));
+            currency.addProperty("primary", id.equals(primary));
+            currency.addProperty("sample", money.format(id, 1234.5));
+            currencies.add(currency);
+        }
+        JsonObject out = new JsonObject();
+        out.add("currencies", currencies);
+        out.addProperty("default", primary);
+        sendJson(exchange, 200, out.toString());
     }
 
     /**
@@ -2778,6 +3119,30 @@ public class WebPanel {
     public String sessionOwner(HttpExchange exchange) {
         Session session = liveSession(exchange);
         return session == null ? null : session.owner();
+    }
+
+    /**
+     * Whether the player behind a request holds every one of these permissions, as the panel read
+     * them for the session. For a change that needs more than its action's own permission: a field
+     * of a form only some may fill, such as console commands, which are the console's trust.
+     *
+     * @param exchange The HTTP exchange, already authenticated.
+     * @param nodes    The permissions, all of them required. Each must be one a page, an action or
+     *                 a route declares, or one of XCore's own: only those are read from the player,
+     *                 any other is answered as for a permission nobody set (yes for an operator).
+     * @return {@code true} when the session holds them all; {@code false} without a live session
+     *         or without any node to check.
+     * @since 2.1
+     */
+    public boolean sessionHolds(HttpExchange exchange, String... nodes) {
+        if (nodes == null || nodes.length == 0) return false;
+        Session session = liveSession(exchange);
+        if (session == null) return false;
+        Access access = session.access();
+        for (String node : nodes) {
+            if (node == null || node.isBlank() || !access.has(node.toLowerCase(java.util.Locale.ROOT))) return false;
+        }
+        return true;
     }
 
     /**

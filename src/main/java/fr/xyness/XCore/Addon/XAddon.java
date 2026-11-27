@@ -176,6 +176,17 @@ public abstract class XAddon {
     }
 
     /**
+     * Returns the money service: withdrawals, deposits and rounding in an XCore currency or in
+     * the economy another plugin registered with Vault, behind one set of methods.
+     *
+     * @return The {@link fr.xyness.XCore.Economy.Money} service.
+     * @since 2.1
+     */
+    public final fr.xyness.XCore.Economy.Money money() {
+        return core.money();
+    }
+
+    /**
      * Returns the shared Discord sender.
      *
      * @return The {@link fr.xyness.XCore.Integrations.DiscordNotifier}.

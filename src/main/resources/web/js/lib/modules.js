@@ -1,5 +1,5 @@
 // What the panel has installed: the modules /api/modules lists, each with the pages it described
-// in Java (WebPageSpec). Nothing about a particular addon lives in this code, except how the four
+// in Java (WebPageSpec). Nothing about a particular addon lives in this code, except how the
 // Celestis plugins are recognised by name to wear their colour and icon from the site — any other
 // module gets the icon it asked for and the brass.
 
@@ -51,11 +51,12 @@ const KNOWN = {
   xauctionhouse: { mark: "var(--p-economy)", icon: "gavel" },
   xlogin: { mark: "var(--p-security)", icon: "lock" },
   xantilag: { mark: "var(--p-performance)", icon: "zap" },
+  xshop: { mark: "var(--p-economy)", icon: "store" },
   // XCore's own economy belongs to the framework.
   economy: { mark: "var(--p-framework)", icon: "coins" },
 };
 
-/** Icon names modules use for themselves and their pages, mapped onto the bundled set. */
+/** Icon names modules use for themselves, their pages and their buttons, mapped onto the bundled set. */
 const ICON_ALIASES = {
   shield: "shield",
   "shield-ban": "shield-off",
@@ -131,6 +132,27 @@ const ICON_ALIASES = {
   banknote: "banknote",
   search: "search",
   trash: "trash-2",
+  "trash-2": "trash-2",
+  delete: "trash-2",
+  edit: "pencil",
+  pencil: "pencil",
+  rename: "pencil",
+  move: "move",
+  download: "download",
+  export: "download",
+  plus: "plus",
+  add: "plus",
+  check: "check",
+  x: "x",
+  copy: "copy",
+  refresh: "refresh-cw",
+  "refresh-cw": "refresh-cw",
+  reset: "rotate-ccw",
+  "rotate-ccw": "rotate-ccw",
+  save: "save",
+  info: "info",
+  sliders: "sliders-horizontal",
+  "sliders-horizontal": "sliders-horizontal",
 };
 
 export function iconFor(name, fallback = "puzzle") {
@@ -153,11 +175,12 @@ export function kindOf(page) {
   if (!spec) return "list";
   if (spec.type === "stats") return "stats";
   if (spec.type === "config") return "config";
+  if (spec.type === "grid") return "grid";
   if (spec.form) return "manage";
   return "list";
 }
 
-const KIND_ICON = { stats: "chart-column", config: "settings", manage: "list", list: "list" };
+const KIND_ICON = { stats: "chart-column", config: "settings", grid: "grid-3x3", manage: "list", list: "list" };
 
 export function pageIcon(page) {
   return iconFor(page && page.icon, KIND_ICON[kindOf(page)]);

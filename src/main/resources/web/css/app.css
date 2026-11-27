@@ -932,6 +932,168 @@
   color: var(--text);
 }
 
+.select[aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--danger) 70%, var(--line-2));
+}
+
+/* Several lines — a list of commands, a lore — in the mono face, as a
+   configuration file would show them. */
+.textarea {
+  display: block;
+  height: auto;
+  min-height: 6.25rem;
+  padding: 0.6875rem 0.9375rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+/* What a field says about itself, under it. */
+.field-help {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.field-note {
+  font-size: 0.8125rem;
+  color: var(--danger);
+}
+
+/* A switch sits beside its label, as a setting does; its help runs under both. */
+.field-beside {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 1rem;
+}
+
+.field-beside .field-label {
+  cursor: pointer;
+}
+
+.field-beside .field-help {
+  grid-column: 1 / -1;
+}
+
+/* The item picker: a box to type in, the chosen item's icon in it, and the
+   matches in a list that floats under it. */
+.picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.picker .input {
+  padding-left: 3rem;
+  padding-right: 2.75rem;
+  text-overflow: ellipsis;
+}
+
+.picker-slot {
+  position: absolute;
+  left: 0.3125rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.picker-slot .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.picker-pop {
+  display: flex;
+  flex-direction: column;
+  max-height: var(--room, 18rem);
+  margin-top: 0.375rem;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 0.875rem;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+
+/* In a dialog the list is the dialog's own child, placed by transform (see
+   ui/fields.js): the form scrolls, and would cut off a list inside it. */
+.picker-pop[data-floating] {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  top: 0;
+  width: var(--w, 16rem);
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .picker-pop[data-floating] {
+    animation: fade var(--fast);
+  }
+}
+
+.picker-options {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 0.25rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.picker-options:empty {
+  display: none;
+}
+
+.picker-option {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  padding: 0.25rem 0.75rem 0.25rem 0.25rem;
+  border-radius: 0.625rem;
+  cursor: pointer;
+}
+
+.picker-option[aria-selected="true"] {
+  background: var(--accent-soft);
+}
+
+.picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-id {
+  flex: none;
+  max-width: 42%;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-note {
+  padding: 0.5rem 0.875rem;
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.picker-options:not(:empty) + .picker-note {
+  border-top: 1px solid var(--line);
+}
+
 /* The search field: a pill with its glass, an icon and a way to clear it. */
 .search {
   position: relative;
@@ -1024,15 +1186,30 @@
   white-space: nowrap;
 }
 
+/* A statistics page's filters, alone above its figures: the bar holds them and no more, and
+   stays where it is — nothing scrolls under it. */
+.toolbar-filters {
+  position: relative;
+  top: auto;
+  width: fit-content;
+  max-width: 100%;
+}
+
 @media (min-width: 1024px) {
   .toolbar {
     top: 0.75rem;
   }
+
+  .toolbar-filters {
+    top: auto;
+  }
 }
 
 @media (max-width: 639.98px) {
+  /* Two filters share a row only when both fit whole: a choice cut short
+     ("Bought and so…") cannot be read. */
   .toolbar .select {
-    flex: 1 1 8rem;
+    flex: 1 1 10rem;
   }
 
   .toolbar-count {
@@ -1525,10 +1702,28 @@ a.who:hover > .who-name {
   overflow-wrap: anywhere;
 }
 
+/* One field to a row; two short ones that follow each other — a price and
+   its currency — share theirs (data-half, set by ui/overlay.js). */
 .dialog-fields {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
   margin-top: 1.25rem;
+}
+
+.dialog-fields > .field {
+  grid-column: 1 / -1;
+  align-content: start;
+}
+
+.dialog-fields > .field[data-half] {
+  grid-column: auto;
+}
+
+@media (max-width: 479.98px) {
+  .dialog-fields > .field[data-half] {
+    grid-column: 1 / -1;
+  }
 }
 
 .dialog-actions {
@@ -1559,6 +1754,74 @@ a.who:hover > .who-name {
   from {
     opacity: 0;
     transform: translate3d(0, 0.75rem, 0) scale(0.97);
+  }
+}
+
+/* A pane that shows rather than asks — a chart, what a cell of a grid
+   holds: a heading with a way out at its corner, then whatever it shows. */
+.dialog-wide {
+  width: min(46rem, calc(100vw - 1.5rem));
+}
+
+.pane-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+}
+
+.pane-head > .sprite {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 0.875rem;
+}
+
+.pane-head > .sprite img {
+  width: 3rem;
+  height: 3rem;
+}
+
+.pane-heading {
+  flex: 1;
+  min-width: 0;
+  align-self: center;
+}
+
+.pane-heading .dialog-title {
+  overflow-wrap: anywhere;
+}
+
+.pane-sub {
+  margin-top: 0.125rem;
+  font-size: 0.875rem;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.pane-close {
+  margin: -0.375rem -0.5rem 0 0;
+}
+
+.pane > .kv,
+.pane > .mc-tip,
+.pane-chart {
+  margin-top: 1.25rem;
+}
+
+.pane-chart {
+  --chart: var(--mark, var(--accent));
+}
+
+.pane-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+@media (max-width: 479.98px) {
+  .pane-actions .btn {
+    flex: 1 1 auto;
   }
 }
 

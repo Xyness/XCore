@@ -161,6 +161,11 @@ public class XCoreApiService implements XCoreApi {
 	}
 
 	@Override
+	public @NotNull fr.xyness.XCore.Economy.Money money() {
+		return main.money();
+	}
+
+	@Override
 	public @NotNull fr.xyness.XCore.Leaderboards.LeaderboardService leaderboards() {
 		return main.leaderboards();
 	}

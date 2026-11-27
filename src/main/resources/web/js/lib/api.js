@@ -1,7 +1,8 @@
 // Talking to the panel.
 //
 // Every route is XCore's or a module's, unchanged: the token goes in an Authorization header, an
-// answer is JSON. Three things are handled here once rather than on every page. A route nobody
+// answer is JSON — or a file, for the exports a page offers. Three things are handled here once
+// rather than on every page. A route nobody
 // registered is answered by the panel's catch-all with index.html, so an answer that is not JSON
 // counts as missing. A 401 on any call means the session ran out while the page was open: the
 // dashboard goes back to the login screen and says so. And a 403 that names a permission is the
@@ -172,6 +173,50 @@ export async function post(path, body) {
     throw new ApiError(0, "");
   }
   return read(response, path);
+}
+
+/**
+ * The name a download asks to be saved under (Content-Disposition), or the last word of its path
+ * when the server names none. The encoded form — filename*=UTF-8''... — wins over the plain one,
+ * which cannot carry an accent.
+ */
+function fileName(disposition, path) {
+  let name = "";
+  const encoded = /filename\*\s*=\s*[\w-]*'[^']*'([^;]+)/i.exec(disposition);
+  if (encoded) {
+    try {
+      name = decodeURIComponent(encoded[1].trim());
+    } catch {
+      name = "";
+    }
+  }
+  if (!name) {
+    const plain = /filename\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;]+))/i.exec(disposition);
+    if (plain) name = plain[1] !== undefined ? plain[1].replace(/\\(.)/g, "$1") : plain[2].trim();
+  }
+  // Only ever a name: a folder in it is dropped, and so is what no file system takes.
+  name = name.split(/[\\/]/).pop().replace(/[\u0000-\u001f<>:"|?*]/g, "").trim();
+  return name || path.split("?")[0].split("/").filter(Boolean).pop() || "download";
+}
+
+/**
+ * GET a file rather than JSON: an export a page offers. Asked with the session's token, which a
+ * plain link could not carry, and refused like any other call. Resolves to the file and the name
+ * to save it under.
+ */
+export async function download(path) {
+  let response;
+  try {
+    response = await fetch(path, { headers: headers(false) });
+  } catch {
+    throw new ApiError(0, "");
+  }
+  // A refusal is JSON like everywhere else: read() says why, and always throws on one.
+  if (!response.ok) await read(response, path);
+  const disposition = response.headers.get("Content-Disposition") || "";
+  // The catch-all's index.html, for a route nobody registered, is not a file to save.
+  if (!disposition && (response.headers.get("Content-Type") || "").includes("text/html")) throw new ApiError(404, "");
+  return { blob: await response.blob(), name: fileName(disposition, path) };
 }
 
 /** A path with a query string built from the defined, non-empty values of `params`. */

@@ -1,12 +1,16 @@
 # Version
-version: 2.0.1
+version: 2.1
 
 # Update date
-date: 25/11/2026
+date: 26/11/2026
 
 # Update notes
 update-notes:
-- "Fixed a config losing its lists and limits after a YAML mistake"
-- "A config or language file with a YAML mistake is left untouched now, and the console tells you the line"
-- "XCore no longer starts on default settings when its config.yml cannot be read"
-- "Settings added by an update come with their comments"
+- "Needed by XShop, the new shop plugin of the family"
+- "The dashboard draws every item icon itself: stairs, slabs, chests, beds and the rest look like they do in your inventory"
+- "Dashboard forms have number, switch, list, currency and item fields, and a table can edit a row in place"
+- "New dashboard page that shows a container as an inventory grid"
+- "Icons and item names keep working when the asset mirror is behind a brand new Minecraft version"
+- "Plugins get one way to take and give money, whether it is an XCore currency or another economy plugin"
+- "A click on an empty slot of a menu no longer plays a sound"
+- "An item a plugin was handing to a player at the very moment the server stopped goes to their delivery instead of being lost"

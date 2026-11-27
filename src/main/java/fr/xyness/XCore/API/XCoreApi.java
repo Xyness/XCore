@@ -172,6 +172,15 @@ public interface XCoreApi {
 	@NotNull fr.xyness.XCore.Delivery.DeliveryService delivery();
 
 	/**
+	 * Returns the money service: withdrawals, deposits and rounding in an XCore currency or in the
+	 * economy another plugin registered with Vault, behind one set of methods.
+	 *
+	 * @return The {@link fr.xyness.XCore.Economy.Money} service.
+	 * @since 2.1
+	 */
+	@NotNull fr.xyness.XCore.Economy.Money money();
+
+	/**
 	 * Returns the leaderboard service.
 	 *
 	 * @return The {@link fr.xyness.XCore.Leaderboards.LeaderboardService}.

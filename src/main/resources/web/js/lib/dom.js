@@ -138,6 +138,17 @@ export async function copyText(text) {
   return done;
 }
 
+/** Hands a file to the browser to save under `name`: a link to it, clicked. */
+export function saveFile(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = h("a", { href: url, download: name, hidden: true });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // The browser reads the address after the click has returned: it is let go a little later.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
 /**
  * Lays a grid of tiles out in even rows on a wide screen: eight tiles read as two rows of four,
  * not a row of six and two left over. Six or fewer keep the grid's own flow.

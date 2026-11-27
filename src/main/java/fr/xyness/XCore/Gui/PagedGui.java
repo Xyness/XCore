@@ -125,6 +125,41 @@ public abstract class PagedGui<T> implements InventoryHolder {
     }
 
     /**
+     * How many pages there are, for a screen whose entries say which page they are on — a shop
+     * laid out by hand, where page two can hold three items and page one forty.
+     *
+     * <p>Left at -1 the count follows from {@link #items(Player)} or {@link #totalItems(Player)}.
+     * Return a count here together with {@link #loadPage(Player, int, int)}, which then answers the
+     * entries of the page asked for, and {@link #slotOf(Object, int)}, which says where each one sits.</p>
+     *
+     * <p>Called off the server thread, before the page is loaded.</p>
+     *
+     * @param viewer Who is looking.
+     * @return The number of pages, at least one; -1 to work it out from the entries.
+     * @since 2.1
+     */
+    protected int pageCount(Player viewer) {
+        return -1;
+    }
+
+    /**
+     * Where an entry of the page is drawn.
+     *
+     * <p>By default the entries fill the page's slots in order, which is what a list wants. A
+     * screen whose entries each have a place of their own answers it here; two entries answering
+     * the same slot leave the later one out.</p>
+     *
+     * @param item  The entry.
+     * @param index Its position among the entries of the page.
+     * @return The slot, or -1 to leave the entry out.
+     * @since 2.1
+     */
+    protected int slotOf(T item, int index) {
+        List<Integer> slots = definition.pageSlots();
+        return index >= 0 && index < slots.size() ? slots.get(index) : -1;
+    }
+
+    /**
      * Draws one entry.
      *
      * @param item     The entry.
@@ -286,6 +321,13 @@ public abstract class PagedGui<T> implements InventoryHolder {
     private Loaded<T> read(Player player, int requested) {
         int perPage = Math.max(1, definition.pageSlots().size());
         try {
+            int fixed = pageCount(player);
+            if (fixed > 0) {
+                // The entries say which page they are on: the page asked for, read as it is.
+                int shown = Math.min(Math.max(1, requested), fixed);
+                List<T> loaded = loadPage(player, shown, perPage);
+                return new Loaded<>(loaded == null ? List.of() : loaded, shown, fixed);
+            }
             int total = totalItems(player);
             if (total >= 0) {
                 // The database pages: only the entries actually shown are read.
@@ -392,27 +434,53 @@ public abstract class PagedGui<T> implements InventoryHolder {
         goTo(page);
     }
 
+    /** Which entry of the page each slot shows, as {@link #draw()} last placed them. */
+    private java.util.Map<Integer, Integer> placed = java.util.Map.of();
+
     /** Fills the inventory with the current page. */
     protected void draw() {
         boolean on = blinkState[0];
-        List<Integer> slots = definition.pageSlots();
+        java.util.Map<Integer, Integer> now = new java.util.HashMap<>();
+        for (int i = 0; i < pageItems.size(); i++) {
+            int slot = slotOf(pageItems.get(i), i);
+            if (slot < 0 || slot >= inventory.getSize() || now.containsKey(slot)) continue;
+            // A slot the file puts an item of its own in (the bar, a border) is not an entry's: the
+            // bar would draw over it, and a click there would still have reached the hidden entry.
+            if (!definition.pageSlots().contains(slot) && definition.itemAt(slot) != null) continue;
+            now.put(slot, i);
+        }
 
-        for (int i = 0; i < slots.size(); i++) {
-            int slot = slots.get(i);
-            if (i >= pageItems.size()) {
-                inventory.setItem(slot, null);
-                continue;
-            }
-            T item = pageItems.get(i);
+        // The page's own slots and those an entry sat in before, emptied when nothing sits there now.
+        java.util.Set<Integer> clear = new java.util.HashSet<>(definition.pageSlots());
+        clear.addAll(placed.keySet());
+        for (int slot : clear) {
+            if (!now.containsKey(slot) && slot >= 0 && slot < inventory.getSize()) inventory.setItem(slot, null);
+        }
+        for (var entry : now.entrySet()) {
+            int slot = entry.getKey();
+            T item = pageItems.get(entry.getValue());
             if (itemsBlink() && itemCacheTicks() > 0) {
                 inventory.setItem(slot, blink.get(slot, on, () -> render(item, viewer, on)));
             } else {
                 inventory.setItem(slot, render(item, viewer, on));
             }
         }
+        placed = now;
 
         decorate(inventory, viewer, on);
         drawBar(on);
+    }
+
+    /**
+     * The entry drawn in a slot.
+     *
+     * @param slot A slot of the screen.
+     * @return The entry, or {@code null} when the slot shows none.
+     * @since 2.1
+     */
+    protected T entryAt(int slot) {
+        Integer index = placed.get(slot);
+        return index == null || index >= pageItems.size() ? null : pageItems.get(index);
     }
 
     /**
@@ -517,9 +585,9 @@ public abstract class PagedGui<T> implements InventoryHolder {
             return;
         }
 
-        int index = definition.pageSlots().indexOf(slot);
-        if (index >= 0 && index < pageItems.size()) {
-            onItemClick(pageItems.get(index), player, event.getClick());
+        T entry = entryAt(slot);
+        if (entry != null) {
+            onItemClick(entry, player, event.getClick());
             return;
         }
         onOtherClick(slot, player, event.getClick());

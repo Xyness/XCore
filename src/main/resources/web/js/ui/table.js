@@ -113,6 +113,9 @@ const SERVER_KEYS = new Set(["server", "server_name"]);
 const MATERIAL_KEYS = new Set(["material", "item_id", "item_material", "item_type", "itemtype"]);
 const EXPIRY_KEYS = new Set(["expiration", "expires", "expire_date", "end_date", "duration", "expires_at", "until"]);
 
+/** Whether a field holds a material name, which reads as the game names the item. */
+export const isMaterialKey = (key) => MATERIAL_KEYS.has(String(key).toLowerCase());
+
 export function badge(text, tone, iconName) {
   return h("span", { class: "badge", data: { tone: tone && tone !== "neutral" ? tone : null } }, iconName ? icon(iconName) : null, text);
 }
@@ -221,20 +224,48 @@ function roman(value) {
   return out;
 }
 
-/** An item's 16px texture, served and cached by the panel; a material no mirror has gets a tile. */
-export function sprite(material) {
-  const box = h("span", { class: "sprite", "aria-hidden": "true" });
-  if (material && /^[a-z0-9_]{1,64}$/i.test(String(material))) {
-    const img = h("img", { alt: "", width: 32, height: 32, loading: "lazy", decoding: "async" });
-    img.addEventListener("error", () => {
-      img.remove();
-      box.setAttribute("data-missing", "");
-    }, { once: true });
-    img.src = `/api/sprite/${encodeURIComponent(String(material).toLowerCase())}.png`;
-    box.append(img);
-  } else {
+/** How long an icon the panel has not got yet is waited for before asking again, try after try. */
+const SPRITE_WAITS = [1500, 4000, 10000];
+
+/**
+ * An item's icon, served and cached by the panel: the item as the inventory shows it, or its 16px
+ * texture where that is all there is. `size` is the side it is drawn at, in pixels.
+ *
+ * The panel draws an icon the first time anyone asks for it and answers "not there" meanwhile, so
+ * a tile left empty asks again — a little later each time — before it settles for the mark of a
+ * material nothing has a picture of.
+ */
+export function sprite(material, size = 32) {
+  const box = h("span", { class: "sprite", "aria-hidden": "true", vars: { size: size === 32 ? null : `${size}px` } });
+  const name = String(material || "").toLowerCase();
+  if (!/^[a-z0-9_]{1,64}$/.test(name)) {
     box.setAttribute("data-missing", "");
+    return box;
   }
+  let tries = 0;
+  const ask = () => {
+    const img = h("img", { alt: "", width: size, height: size, loading: "lazy", decoding: "async" });
+    img.addEventListener("load", () => box.removeAttribute("data-pending"), { once: true });
+    img.addEventListener(
+      "error",
+      () => {
+        img.remove();
+        const wait = SPRITE_WAITS[tries++];
+        if (wait === undefined) {
+          box.removeAttribute("data-pending");
+          box.setAttribute("data-missing", "");
+          return;
+        }
+        box.setAttribute("data-pending", "");
+        // A tile that left the page meanwhile — a search narrowed, a page turned — asks no more.
+        setTimeout(() => box.isConnected && ask(), wait);
+      },
+      { once: true }
+    );
+    img.src = `/api/sprite/${encodeURIComponent(name)}.png`;
+    box.append(img);
+  };
+  ask();
   return box;
 }
 
@@ -252,10 +283,16 @@ function materialCell(material) {
   return node;
 }
 
-function materialLabel(material) {
+/**
+ * A bare material as the details an item carries, so one tooltip and one name serve both. The
+ * game keys a name as an item or as a block: whichever it has.
+ */
+export function materialDetails(material, amount = 1) {
   const id = String(material).toLowerCase();
-  return itemName({ translationKey: hasMinecraftKey(`item.minecraft.${id}`) ? `item.minecraft.${id}` : `block.minecraft.${id}`, material });
+  return { material, amount, translationKey: hasMinecraftKey(`item.minecraft.${id}`) ? `item.minecraft.${id}` : `block.minecraft.${id}` };
 }
+
+export const materialLabel = (material) => itemName(materialDetails(material));
 
 export function itemCell(details) {
   if (!details || !details.material) return h("span", { class: "nil", text: "—" });
@@ -290,10 +327,22 @@ export function refreshItemNames() {
     if (details) label.firstChild.nodeValue = itemName(details);
     else if (material) label.firstChild.nodeValue = materialLabel(material);
   }
+  for (const fn of nameReaders) fn();
+}
+
+const nameReaders = new Set();
+
+/**
+ * Calls `fn` when Minecraft's own names arrive, for a page that wrote an item's name where
+ * refreshItemNames() does not look — the label of a button, say. Returns what stops it.
+ */
+export function onItemNames(fn) {
+  nameReaders.add(fn);
+  return () => nameReaders.delete(fn);
 }
 
 /** The game's tooltip for an item: name, enchantments, lore, durability, amount. */
-function tooltipFor(details) {
+export function tooltipFor(details) {
   const enchanted = Array.isArray(details.enchantments) && details.enchantments.length > 0;
   const lines = [
     h("p", {
@@ -320,6 +369,13 @@ function tooltipFor(details) {
  */
 let tip = null;
 let tipFor = null;
+
+/** Gives any node the game's tooltip for an item, on hover and on focus: a cell of a grid, say. */
+export function attachTip(node, details) {
+  node.setAttribute("data-tip", "");
+  tips.set(node, details);
+  return node;
+}
 
 function showTip(target) {
   const details = tips.get(target);
@@ -369,13 +425,6 @@ window.addEventListener("scroll", () => hideTip(), { passive: true, capture: tru
 // ---------------------------------------------------------------------------
 
 /**
- * A table of rows.
- *
- * options:
- *   actions   [{ label, tone, run(row, button) }] — a button per row each
- *   caption   an accessible name for the table
- */
-/**
  * The columns of a set of rows: every field any of them has, in the order they first appear. The
  * first row alone is not enough — an auction carries bid fields a fixed-price listing does not.
  * A field that holds an object or a list has nothing a cell can show, except the item, which gets
@@ -394,19 +443,49 @@ function columnsOf(rows) {
   return [...seen].filter(([, isObject]) => !isObject).map(([key]) => key);
 }
 
+/** The name a page gives the item column among its own (WebPageSpec#columns). */
+const ITEM_COLUMN = "item";
+
+/**
+ * The cell of the item column a page names: the row's item, else the material one of its fields
+ * names, else its own field of that name.
+ */
+function itemColumn(row) {
+  if (row.itemDetails && typeof row.itemDetails === "object" && row.itemDetails.material) return itemCell(row.itemDetails);
+  const material = Object.keys(row).find((key) => isMaterialKey(key) && typeof row[key] === "string" && row[key]);
+  return material ? materialCell(row[material]) : cell(ITEM_COLUMN, row[ITEM_COLUMN]);
+}
+
+/**
+ * A table of rows.
+ *
+ * options:
+ *   actions   [{ label, tone, when(row), run(row, button) }] — a button per row each
+ *   caption   an accessible name for the table
+ *   columns   [{ key, label }] — the columns, in order, when the page names them (the players
+ *             list, a module's WebPageSpec#columns); "item" is the item column. Without them,
+ *             every field of the rows is a column, the item first
+ */
 export function dataTable(rows, { actions = [], caption = "", columns = null } = {}) {
-  const withItem = rows.some((row) => row && row.itemDetails && typeof row.itemDetails === "object");
-  // A page that knows its columns (the players list) names them itself.
+  // A page that names its columns shows those, in its own order; the rows keep every field.
+  const named = Array.isArray(columns) && columns.length > 0;
+  const withItem = !named && rows.some((row) => row && row.itemDetails && typeof row.itemDetails === "object");
   const labels = new Map((columns || []).map((column) => [column.key, column.label]));
-  const fieldLabel = (key) => labels.get(key) || labelOf(key);
-  const keys = columns ? columns.map((column) => column.key) : columnsOf(rows);
+  const fieldLabel = (key) => labels.get(key) || (named && key === ITEM_COLUMN ? t("item") : labelOf(key));
+  const keys = named ? columns.map((column) => column.key) : columnsOf(rows);
+  // Rows that mix whole items and bare materials — an enchanted sword sold beside plain stone —
+  // show both in the one item column, rather than in two columns each half empty. Only when no
+  // row has both: then nothing is lost by it.
+  const material = withItem ? keys.find((key) => isMaterialKey(key)) : null;
+  const folded = material && rows.every((row) => !(row && row.itemDetails && row[material]));
+  if (folded) keys.splice(keys.indexOf(material), 1);
   const numeric = new Set(keys.filter((key) => !looksTemporal(key) && rows.some((row) => typeof row[key] === "number")));
 
   // The cell that says who or what a row is about — the item, else the first player — leads the
   // row: first in the table, where it stays in view while a wide table scrolls sideways, and the
-  // title of each card on a narrow screen.
-  const lead = withItem ? "itemDetails" : keys.find((key) => isPlayerColumn(key)) || keys[0];
-  if (!withItem && lead !== keys[0]) {
+  // title of each card on a narrow screen. A page that names its columns says it by its order.
+  const lead = withItem ? "itemDetails" : named ? keys[0] : keys.find((key) => isPlayerColumn(key)) || keys[0];
+  if (!withItem && !named && lead !== keys[0]) {
     keys.splice(keys.indexOf(lead), 1);
     keys.unshift(lead);
   }
@@ -422,7 +501,10 @@ export function dataTable(rows, { actions = [], caption = "", columns = null } =
   const body = h("tbody");
   for (const row of rows) {
     const tr = h("tr");
-    if (withItem) tr.append(h("td", { class: "is-lead", data: { label: t("item") } }, itemCell(row.itemDetails)));
+    if (withItem) {
+      const bare = folded && !(row.itemDetails && row.itemDetails.material) && typeof row[material] === "string" && row[material];
+      tr.append(h("td", { class: "is-lead", data: { label: t("item") } }, bare ? materialCell(row[material]) : itemCell(row.itemDetails)));
+    }
     for (const key of keys) {
       tr.append(
         h(
@@ -431,7 +513,7 @@ export function dataTable(rows, { actions = [], caption = "", columns = null } =
             class: [numeric.has(key) ? "is-num" : "", key === lead ? "is-lead" : ""].join(" ").trim() || null,
             data: { label: fieldLabel(key) },
           },
-          cell(key, row[key])
+          named && key === ITEM_COLUMN ? itemColumn(row) : cell(key, row[key])
         )
       );
     }
@@ -455,7 +537,8 @@ export function dataTable(rows, { actions = [], caption = "", columns = null } =
 
   const wrap = h(
     "div",
-    { class: "table-wrap" },
+    // A page that names its columns keeps its row actions in view at the right edge.
+    { class: "table-wrap", data: { pin: named && actions.length ? "actions" : null } },
     h(
       "table",
       { class: "data" },
@@ -472,7 +555,7 @@ export function dataTable(rows, { actions = [], caption = "", columns = null } =
  * A table wider than its card scrolls sideways inside it, and a table cut clean at the card's
  * edge does not say so: the side it continues past fades out (data-more), as on the site.
  */
-function watchOverflow(wrap) {
+export function watchOverflow(wrap) {
   let frame = 0;
   const update = () => {
     frame = 0;

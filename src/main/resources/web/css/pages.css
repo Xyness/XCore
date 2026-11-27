@@ -2,7 +2,8 @@
    XCore dashboard — pages
 
    Tables, the player profile, a module's home, the configuration
-   editor, charts and heat maps, and the game's items.
+   editor, charts and heat maps, the game's items, and the grid a
+   module lays its containers out on.
    ============================================================ */
 
 .lens-holder {
@@ -144,6 +145,45 @@
 .table-wrap[data-more~="end"] {
   -webkit-mask-image: linear-gradient(to left, transparent, #000 2.5rem);
   mask-image: linear-gradient(to left, transparent, #000 2.5rem);
+}
+
+/* A page that names its columns (WebPageSpec#columns) keeps its row actions in view as well, at
+   the right edge, while the columns between them scroll: what a row offers is never a sideways
+   scroll away. Pinned, they mark that edge themselves, so it does not fade. */
+.table-wrap[data-pin="actions"] .data .is-actions {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.table-wrap[data-pin="actions"] .data tbody tr:hover td.is-actions {
+  background: color-mix(in srgb, var(--bg-subtle) 70%, var(--surface));
+}
+
+.table-wrap[data-pin="actions"][data-more~="end"] .data .is-actions {
+  box-shadow: -1px 0 0 var(--line), -12px 0 16px -12px var(--scrim);
+}
+
+.table-wrap[data-pin="actions"][data-more~="end"] {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* The fade moves to where the hidden columns go on: just before the actions. */
+.table-wrap[data-pin="actions"][data-more~="end"] .data .is-actions::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 100%;
+  bottom: 0;
+  width: 2.5rem;
+  background: linear-gradient(to left, var(--surface), transparent);
+  pointer-events: none;
+}
+
+.table-wrap[data-pin="actions"][data-more~="end"] .data tbody tr:hover td.is-actions::before {
+  background: linear-gradient(to left, color-mix(in srgb, var(--bg-subtle) 70%, var(--surface)), transparent);
 }
 
 /* A list's card is a solid surface, so the column that stays in view matches what scrolls. */
@@ -288,6 +328,9 @@
     text-align: left;
     background: none;
     box-shadow: none;
+    /* Half a card is narrow: a long word — "shop.product_id" — breaks rather
+       than running into the field beside it. */
+    overflow-wrap: anywhere;
   }
 
   .data td::before {
@@ -322,6 +365,17 @@
   .data td.is-actions {
     grid-column: 1 / -1;
     width: auto;
+  }
+
+  .table-wrap[data-pin="actions"] .data .is-actions,
+  .table-wrap[data-pin="actions"] .data tbody tr:hover td.is-actions {
+    position: static;
+    background: none;
+    box-shadow: none;
+  }
+
+  .table-wrap[data-pin="actions"][data-more] .data .is-actions::before {
+    display: none;
   }
 
   .row-actions {
@@ -394,8 +448,9 @@
 }
 
 /* ============================================
-   Items: the game's textures, at twice their size, pixel for pixel,
-   and its tooltip, as players know it.
+   Items: the game's icons, pixel for pixel — a texture at twice its
+   size in a table, three times in a grid — and its tooltip, as players
+   know it.
    ============================================ */
 
 .item {
@@ -416,8 +471,8 @@
   position: relative;
   display: grid;
   place-items: center;
-  width: 2rem;
-  height: 2rem;
+  width: var(--size, 2rem);
+  height: var(--size, 2rem);
   flex: none;
   border-radius: 0.5rem;
   background: var(--glass-wash);
@@ -425,9 +480,16 @@
 }
 
 .sprite img {
-  width: 2rem;
-  height: 2rem;
+  width: 100%;
+  height: 100%;
   image-rendering: pixelated;
+}
+
+/* Not there yet: the panel is drawing it, and the tile will ask again. */
+@media (prefers-reduced-motion: no-preference) {
+  .sprite[data-pending] {
+    animation: skel 1.4s ease-in-out infinite alternate;
+  }
 }
 
 .sprite[data-missing]::after {
@@ -501,6 +563,14 @@
 
 .mc-meta {
   color: var(--mc-gray);
+}
+
+/* The same tooltip set into a pane, for a screen with nothing to hover. */
+.mc-tip-inline {
+  position: static;
+  max-width: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ============================================
@@ -1242,6 +1312,566 @@
   font-weight: 500;
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--glass-rim-lo), 0 1px 2px var(--scrim);
+}
+
+/* ============================================
+   A statistics page's lists, and its filters
+   ============================================ */
+
+/* Short tables under the charts: side by side once each has the room its
+   columns need — a table under 40rem turns into cards — one under the
+   other before that. */
+.lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 42rem), 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+/* While the figures for another choice are on their way, the ones shown
+   stay, dimmed — as a list does. */
+.tiles,
+.section {
+  transition: opacity var(--base);
+}
+
+.tiles[data-busy],
+.section[data-busy] {
+  opacity: 0.55;
+}
+
+/* A chart in a pane: its table runs to the pane's edges, and scrolls
+   whole — a pane of glass has no surface for a column to stay on. */
+.pane-chart .chart-table {
+  margin: 0 -1.5rem -1.5rem;
+}
+
+.pane-chart .data th:first-child,
+.pane-chart .data td:first-child {
+  position: static;
+  background: none;
+}
+
+.pane-chart .data tbody tr:hover td:first-child {
+  background: none;
+}
+
+/* ============================================
+   The grid — one container at a time, seen from above as the game
+   shows an inventory: rows of nine cells, an item in each. The cells
+   are the dashboard's own tiles, not a skin of the game's.
+
+   Two sizes are measured, each on its own box. The page decides where
+   the list of containers goes: a strip above the cells, a column beside
+   them once there is room. The cells follow the room they are given:
+   icons at three times their texture with two lines under each, then at
+   twice, then — on a phone — the icon alone in a square.
+   ============================================ */
+
+.grid-view {
+  container: grid / inline-size;
+}
+
+.grid-layout {
+  display: grid;
+  gap: 1rem;
+}
+
+/* --- The containers --------------------------------------------------- */
+
+.grid-rail {
+  display: flex;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.375rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  border: 1px solid var(--line);
+  border-radius: 1.375rem;
+  background: linear-gradient(180deg, var(--surface), var(--bg-subtle));
+}
+
+.grid-rail::-webkit-scrollbar {
+  display: none;
+}
+
+/* A strip that goes on past the edge says so, as a wide table does. */
+.grid-rail[data-more~="end"] {
+  -webkit-mask-image: linear-gradient(to left, transparent, #000 2.5rem);
+  mask-image: linear-gradient(to left, transparent, #000 2.5rem);
+}
+
+.grid-rail[data-more~="start"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 2.5rem);
+  mask-image: linear-gradient(to right, transparent, #000 2.5rem);
+}
+
+.grid-rail[data-more~="start"][data-more~="end"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 2.5rem, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 2.5rem, #000 calc(100% - 2.5rem), transparent);
+}
+
+.grid-tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  max-width: 14rem;
+  height: 2.75rem;
+  padding: 0 0.875rem 0 0.375rem;
+  border-radius: 1rem;
+  color: var(--text-2);
+  font-size: 0.875rem;
+  white-space: nowrap;
+  transition:
+    color var(--base),
+    background-color var(--slow);
+}
+
+.grid-tab:hover {
+  color: var(--text);
+  background: var(--glass-wash);
+}
+
+/* The one shown: a shallower piece of glass, as where you are in the menu. */
+.grid-tab[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 500;
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+}
+
+.grid-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grid-tab-count {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+@container grid (min-width: 58rem) {
+  .grid-layout {
+    grid-template-columns: 15.5rem minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .grid-rail {
+    position: sticky;
+    top: 0.75rem;
+    flex-direction: column;
+    max-height: min(46rem, calc(100svh - 1.5rem));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  /* A column taller than the screen fades where it goes on, as the strip
+     does sideways. */
+  .grid-rail[data-more~="bottom"] {
+    -webkit-mask-image: linear-gradient(to top, transparent, #000 2.5rem);
+    mask-image: linear-gradient(to top, transparent, #000 2.5rem);
+  }
+
+  .grid-rail[data-more~="top"] {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.5rem);
+    mask-image: linear-gradient(to bottom, transparent, #000 2.5rem);
+  }
+
+  .grid-rail[data-more~="top"][data-more~="bottom"] {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.5rem, #000 calc(100% - 2.5rem), transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 2.5rem, #000 calc(100% - 2.5rem), transparent);
+  }
+
+  .grid-rail::-webkit-scrollbar {
+    display: block;
+  }
+
+  .grid-tab {
+    max-width: none;
+  }
+
+  .grid-tab-name {
+    flex: 1;
+    text-align: left;
+  }
+}
+
+/* --- The container shown ---------------------------------------------- */
+
+.grid-card {
+  min-width: 0;
+}
+
+.grid-head {
+  flex-wrap: wrap;
+  gap: 0.625rem 1rem;
+}
+
+.grid-head .card-title > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.grid-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.grid-tools .btn .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* What is out of reach while a destination is being chosen. */
+.grid-rail[inert],
+.grid-tools[inert],
+.page-actions[inert] {
+  opacity: 0.45;
+}
+
+/* "Choose where": said in the accent, with the way out beside it. */
+.grid-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.875rem;
+  border-radius: 0.875rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+  font-size: 0.875rem;
+}
+
+.grid-hint .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.grid-hint p {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+
+/* --- The cells --------------------------------------------------------- */
+
+.inv-stage {
+  container: inv / inline-size;
+}
+
+.inv {
+  --icon: 3rem;
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 0.375rem;
+  max-width: 52rem;
+  margin-inline: auto;
+  transition: opacity var(--base);
+}
+
+.grid-card[data-busy] .inv {
+  opacity: 0.55;
+}
+
+.slot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1875rem;
+  min-width: 0;
+  min-height: calc(var(--icon) + 3.375rem);
+  padding: 0.5rem 0.25rem 0.4375rem;
+  border: 1px solid transparent;
+  border-radius: 0.875rem;
+  background: var(--glass-wash);
+  box-shadow: inset 0 0 0 1px var(--glass-rim-lo);
+  color: var(--text);
+  text-align: center;
+}
+
+button.slot {
+  transition:
+    background-color var(--fast),
+    box-shadow var(--fast),
+    scale var(--base) var(--standard);
+}
+
+button.slot:hover {
+  background: color-mix(in srgb, var(--mark, var(--accent)) 10%, var(--glass-wash));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mark, var(--accent)) 45%, transparent);
+}
+
+button.slot:active {
+  scale: 0.97;
+}
+
+.slot-icon {
+  position: relative;
+  width: var(--icon);
+  height: var(--icon);
+  flex: none;
+  margin-bottom: 0.125rem;
+}
+
+/* The cell is the tile: the icon in it needs none of its own. */
+.slot .sprite {
+  width: 100%;
+  height: 100%;
+  border-radius: 0.25rem;
+  background: none;
+  box-shadow: none;
+}
+
+.slot .sprite[data-pending] {
+  background: var(--skeleton);
+}
+
+/* How many, on the corner of the icon — where the game writes it. */
+.slot-amount {
+  position: absolute;
+  right: -0.4375rem;
+  bottom: -0.25rem;
+  min-width: 1.125rem;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line-2);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+  color: var(--text);
+}
+
+.slot-label,
+.slot-sub {
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.slot-sub {
+  font-size: 0.6875rem;
+  color: var(--text-3);
+}
+
+/* A cell's tone — out of stock, on offer — is a dot on its corner and a
+   trace of the colour in its rim: seen, never louder than the item. */
+.slot[data-tone] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 42%, transparent);
+}
+
+.slot[data-tone]::after {
+  content: "";
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--tone);
+}
+
+/* Empty, and the reader may fill it: a plus that comes up under the pointer
+   or the keyboard. Where nothing hovers, it stays faintly there. */
+.slot[data-empty] {
+  justify-content: center;
+}
+
+.slot[data-empty] .icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--fast);
+}
+
+button.slot[data-empty]:hover .icon,
+button.slot[data-empty]:focus-visible .icon {
+  color: var(--mark, var(--accent));
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .slot[data-empty] .icon {
+    opacity: 0.4;
+  }
+}
+
+/* Kept for something else: hatched, and what sits there dimmed. */
+.slot[data-locked] {
+  justify-content: center;
+  background: repeating-linear-gradient(135deg, transparent 0 0.3125rem, var(--glass-wash) 0.3125rem 0.4375rem);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.slot[data-locked] .slot-icon {
+  margin: 0;
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+
+.slot[data-ghost] {
+  background: var(--skeleton);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .slot[data-ghost] {
+    animation: skel 1.4s ease-in-out infinite alternate;
+  }
+}
+
+/* Choosing where: every cell that can take the item is outlined for it,
+   and the one it leaves stays in place, faded. */
+.inv[data-picking] button.slot {
+  border: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: none;
+}
+
+.inv[data-picking] button.slot:hover,
+.inv[data-picking] button.slot:focus-visible {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.slot[data-origin] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+
+.slot[data-origin] > * {
+  opacity: 0.4;
+}
+
+/* Less room: the cells closer, the two lines smaller; the icons keep their
+   size — three times their texture, so every pixel of it stays square. */
+@container inv (max-width: 43rem) {
+  .inv {
+    gap: 0.25rem;
+  }
+
+  .slot {
+    min-height: calc(var(--icon) + 2.875rem);
+    padding: 0.375rem 0.125rem;
+    border-radius: 0.625rem;
+  }
+
+  .slot-label {
+    font-size: 0.6875rem;
+  }
+
+  .slot-sub {
+    font-size: 0.625rem;
+  }
+
+  .slot-amount {
+    right: -0.375rem;
+    min-width: 1rem;
+    padding: 0 0.1875rem;
+    line-height: 1rem;
+  }
+}
+
+/* Less still: the icons at twice their texture. */
+@container inv (max-width: 36rem) {
+  .inv {
+    --icon: 2rem;
+  }
+}
+
+/* A phone: nine cells still, each a square with its icon. The two lines
+   are one tap away, in the pane. */
+@container inv (max-width: 30rem) {
+  .inv {
+    gap: 2px;
+  }
+
+  .slot {
+    aspect-ratio: 1;
+    justify-content: center;
+    min-height: 0;
+    padding: 0;
+    border-radius: 0.375rem;
+  }
+
+  /* The icon keeps a margin of the cell around it, as the game's slots do,
+     however narrow the cell gets. */
+  .slot-icon {
+    width: 76%;
+    height: auto;
+    aspect-ratio: 1;
+    margin: 0;
+  }
+
+  .slot-label,
+  .slot-sub {
+    display: none;
+  }
+
+  .slot-amount {
+    right: -0.25rem;
+    bottom: -0.25rem;
+    min-width: 0.875rem;
+    padding: 0 0.125rem;
+    font-size: 0.5625rem;
+    line-height: 0.875rem;
+  }
+
+  .slot[data-tone]::after {
+    top: 0.125rem;
+    right: 0.125rem;
+    width: 0.3125rem;
+    height: 0.3125rem;
+    box-shadow: 0 0 0 1px var(--surface);
+  }
+
+  .slot[data-empty] .icon {
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+}
+
+@container grid (max-width: 30rem) {
+  .grid-card {
+    padding: 0.875rem 0.375rem 0.375rem;
+  }
+
+  .grid-head {
+    padding: 0 0.5rem;
+  }
+
+  .grid-hint {
+    margin-inline: 0.25rem;
+  }
+
+  .grid-card .pager {
+    margin-bottom: 0.5rem;
+  }
 }
 
 /* ============================================

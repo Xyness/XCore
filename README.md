@@ -1,11 +1,11 @@
 <h1 align="center">XCore</h1>
 
 <p align="center">
-  <b>The free framework under XBans, XLogin, XAuctionHouse and XAntiLag:<br>the database, the cache, the cross-server sync and the dashboard they share.</b>
+  <b>The free framework under XBans, XLogin, XAuctionHouse, XAntiLag and XShop:<br>the database, the cache, the cross-server sync and the dashboard they share.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Xyness/XCore/releases"><img src="https://img.shields.io/badge/version-2.0.1-4fb3a0?style=flat-square&labelColor=24292f" alt="Version 2.0.1"></a>
+  <a href="https://github.com/Xyness/XCore/releases"><img src="https://img.shields.io/badge/version-2.1-4fb3a0?style=flat-square&labelColor=24292f" alt="Version 2.1"></a>
   <img src="https://img.shields.io/badge/Paper-1.21.1%2B-57606a?style=flat-square&labelColor=24292f" alt="Paper 1.21.1+">
   <img src="https://img.shields.io/badge/Folia-supported-57606a?style=flat-square&labelColor=24292f" alt="Folia supported">
   <img src="https://img.shields.io/badge/Java-21%2B-57606a?style=flat-square&labelColor=24292f" alt="Java 21+">
@@ -45,13 +45,15 @@ Your server gets more than the plugins' groundwork, though: an economy every Vau
 
 **Servers that agree with each other.** On a network, a ban issued in the lobby holds in survival, and a payment made on one server shows on all of them. The plugins' messages travel over Redis Pub/Sub, or through the database every three seconds when there is no Redis. Each channel carries a protocol version, so two servers on different versions of a plugin stop listening to each other instead of misreading each other.
 
-**An economy.** As many currencies as you need, each with its own symbol, decimals, starting balance and ceiling. The one marked `vault: true` is the balance every Vault plugin sees. `/eco` covers payments, exchange between currencies, history and the richest players, and interest or scheduled payouts are one switch away. A balance changes inside the database in a single step, so two servers paying the same player at the same moment cannot lose one of the payments.
+**An economy.** As many currencies as you need, each with its own symbol, decimals, starting balance and ceiling. The one marked `vault: true` is the balance every Vault plugin sees. `/eco` covers payments, exchange between currencies, history and the richest players, and interest or scheduled payouts are one switch away. A balance changes inside the database in a single step, so two servers paying the same player at the same moment cannot lose one of the payments. A server that keeps another economy plugin keeps it: the plugins built on XCore take money from it through Vault, with the same calls.
 
 ### The dashboard
 
-Type `/xcore dashboard` in game and you get a link. Click it and you are in, signed in as yourself: there is no password to set and no token to copy. Each plugin brings its own pages: XBans its sanctions and reports, XAuctionHouse its listings and sales history, XLogin its accounts and sessions, XAntiLag its performance charts. They sit next to XCore's own players list and balances.
+Type `/xcore dashboard` in game and you get a link. Click it and you are in, signed in as yourself: there is no password to set and no token to copy. Each plugin brings its own pages: XBans its sanctions and reports, XAuctionHouse its listings and sales history, XLogin its accounts and sessions, XAntiLag its performance charts, XShop its shops laid out as in game. They sit next to XCore's own players list and balances.
 
-Version 2.0 rebuilt it from scratch, with the look of celestis.dev in a light and a dark theme. The overview opens on a block of glass that turns a quarter as you scroll, with a live figure on each face: players online, TPS, memory, plugins. On a phone, tables become cards and the sidebar becomes a sheet. A first visit downloads about 200 KB and later ones about 20 KB, and nothing comes from the internet: fonts, item textures and player faces are all served by your own server.
+Version 2.0 rebuilt it from scratch, with the look of celestis.dev in a light and a dark theme. The overview opens on a block of glass that turns a quarter as you scroll, with a live figure on each face: players online, TPS, memory, plugins. On a phone, tables become cards and the sidebar becomes a sheet. A first visit downloads about 200 KB and later ones about 20 KB, and nothing comes from the internet: fonts, item icons and player faces are all served by your own server.
+
+Since 2.1 every item has its icon as the inventory shows it, a stair as a stair and a chest as a chest, drawn by your server from the game's own models the first time it is shown and kept on disk. Forms have number, switch, list, currency and item fields, the last with a search by name and the icons; a table can edit a row in place; and a page can show a container as a grid of slots, which is how XShop lays its shops out.
 
 Each member of staff sees and does only what their in-game permissions allow, and the server checks them on every request. Give a moderator `xcore.dashboard` and `xcore.dashboard.xbans`, and they work on the XBans pages with the XBans permissions they already have: without `xbans.ban`, there is no ban button. Ops keep everything. The nodes are listed under [Dashboard permissions](#dashboard-permissions).
 
@@ -86,6 +88,7 @@ More on the [dashboard settings](https://celestis.dev/plugins/xcore/wiki/configu
 | Bedrock players | Recognised through Geyser and Floodgate. Menus leave out what a Bedrock client cannot draw, such as custom skull textures. |
 | Support tools | `/xcore diag` writes the report a support thread starts with. `/xcore profile` shows the tick time each plugin spends, and a database query run on a tick thread is named in the console, with its class and line. |
 | Folia | Every plugin built on XCore schedules through it, so the whole family runs on Folia. |
+| Money | One way for a plugin to take and give money, whether it is an XCore currency or the economy another plugin registered with Vault: amounts rounded the server's way, a withdrawal that says whether it happened. |
 
 <br>
 
@@ -93,7 +96,7 @@ More on the [dashboard settings](https://celestis.dev/plugins/xcore/wiki/configu
 
 XCore needs Paper 1.21.1 or newer, or Folia, and Java 21 or newer. Vault and PlaceholderAPI are optional: Vault shows the economy to other plugins, PlaceholderAPI serves the placeholders.
 
-1. **Put `XCore-2.0.1.jar` in `plugins/`.** It is on the [releases](https://github.com/Xyness/XCore/releases) page; the plugins that run on it go in `plugins/` too.
+1. **Put `XCore-2.1.jar` in `plugins/`.** It is on the [releases](https://github.com/Xyness/XCore/releases) page; the plugins that run on it go in `plugins/` too.
 2. **Start the server.** XCore writes `plugins/XCore/config.yml`, and each plugin its own `config.yml` in `plugins/<name>/`. On a single server, SQLite needs nothing more.
 3. **Run `/xcore dashboard`** and open the link. For a network, set MySQL or PostgreSQL and `cross-server` in [`config.yml`](#configuration) first, then restart.
 
@@ -105,7 +108,7 @@ XCore needs Paper 1.21.1 or newer, or Folia, and Java 21 or newer. Vault and Pla
 In 1.x the four plugins were addons, loaded by XCore from `plugins/XCore/addons/`. In 2.0 each one is a Paper plugin of its own, and each needs XCore 2.0. The database does not change: same tables, nothing to migrate.
 
 1. Stop the server.
-2. In `plugins/`, replace `XCore-1.x.jar` with `XCore-2.0.1.jar`. XCore always comes first, in this same stop.
+2. In `plugins/`, replace `XCore-1.x.jar` with `XCore-2.1.jar`. XCore always comes first, in this same stop.
 3. Put the 2.0 jar of each plugin in `plugins/`, and delete its old jar from `plugins/XCore/addons/`.
 4. Start the server.
 
@@ -122,7 +125,7 @@ The whole guide, with what the console says, the network case and how to roll ba
 
 ## The plugins built on it
 
-Four plugins, sold on BuiltByBit. Since 2.0 each one is a Paper plugin of its own: it goes in `plugins/` next to XCore, and it requires XCore 2.0.
+Five plugins, sold on BuiltByBit. Since 2.0 each one is a Paper plugin of its own: it goes in `plugins/` next to XCore. XShop needs XCore 2.1, XAntiLag 2.1 needs 2.0.1, and the three others run on any 2.x.
 
 | Plugin | What it does |
 |---|---|
@@ -130,6 +133,7 @@ Four plugins, sold on BuiltByBit. Since 2.0 each one is a Paper plugin of its ow
 | **[XLogin](https://builtbybit.com/resources/xlogin.103391/)** | Online mode per player: premium players verified against Mojang, everyone else registers. 2FA, map captcha, cross-server sessions. |
 | **[XAuctionHouse](https://builtbybit.com/resources/xauctionhouse.103084/)** | Buy-now listings and live auctions in any currency, with categories, search, price history and standing alerts. |
 | **[XAntiLag](https://builtbybit.com/resources/xantilag.105658/)** | Chunk caps, mob and item stackers, clearlag and AFK detection, driven by a TPS and MSPT monitor. |
+| **[XShop](https://celestis.dev/plugins/xshop)** | The server shop: buy and sell menus, `/sell`, dynamic prices, stock and limits shared across a network, and an audit that finds the loops that print money. |
 
 <br>
 
@@ -203,8 +207,8 @@ The dashboard has nodes of its own, and none of them is registered, so they all 
 | `xcore.dashboard` | Logging in, and the overview. `/xcore dashboard` gives the link, and so does `/xcore` alone for someone without `xcore.admin`. A session lasts only while its owner holds this permission |
 | `xcore.dashboard.players` | The players list and profiles, clickable player names and the Recent players card |
 | `xcore.dashboard.config` | Reading the configuration editor of the modules the reader can open. Passwords, tokens, API keys and webhook addresses read `<hidden>` |
-| `xcore.dashboard.config.save` | Saving a configuration, together with `xcore.dashboard.config`, the module's own node and the plugin's save permission: XBans `xbans.admin`, XLogin `xlogin.admin`, XAuctionHouse `ah.admin`, XAntiLag `xantilag.admin`. A module that names none can only be saved by an operator |
-| `xcore.dashboard.<module>` | A module's pages, the module name in lower case: `economy`, `xbans`, `xauctionhouse`, `xlogin`, `xantilag`, third-party modules alike |
+| `xcore.dashboard.config.save` | Saving a configuration, together with `xcore.dashboard.config`, the module's own node and the plugin's save permission: XBans `xbans.admin`, XLogin `xlogin.admin`, XAuctionHouse `ah.admin`, XAntiLag `xantilag.admin`, XShop `xshop.admin`. A module that names none can only be saved by an operator |
+| `xcore.dashboard.<module>` | A module's pages, the module name in lower case: `economy`, `xbans`, `xauctionhouse`, `xlogin`, `xantilag`, `xshop`, third-party modules alike |
 | `xcore.dashboard.<module>.manage` | The module's actions that declare no permission of their own: every third-party action; XBans kick, freeze and notes. It does not cover saving a configuration |
 | `xcore.admin` | Unchanged: every `/xcore` subcommand except `dashboard`, plus `/xcore dashboard revoke <player>`. No dashboard access by itself |
 
@@ -226,6 +230,12 @@ A configuration can make a plugin run console commands, so saving one is trusted
 | XAuctionHouse: cancel a listing | `ah.admin.remove` or `ah.admin` |
 | XAuctionHouse: clear expired, ban, unban | `ah.admin` |
 | XLogin: reset a password, disable 2FA, delete an account, invalidate a session | `xlogin.admin` |
+| XShop: add, edit, move or delete a product; create or edit a shop; change prices; restore a version | `xshop.admin.edit` or `xshop.admin` |
+| XShop: delete a shop, save the configuration | `xshop.admin` |
+| XShop: write or change a product's console commands, restore a version that brings commands back | `xshop.admin`, with `xcore.dashboard.config` and `xcore.dashboard.config.save`: the console's trust |
+| XShop: set a stock, restock, reset a price | `xshop.admin.stock` or `xshop.admin` |
+| XShop: start or stop an event, give a booster | `xshop.admin.events` or `xshop.admin` |
+| XShop: run the audit | `xshop.admin.audit` or `xshop.admin` |
 
 **Reading.** A page that shows what not every member of staff may see also needs the permission of the matching screen in game, and a reader without it does not get the page at all. Whatever a plugin shows about one player also needs `xcore.dashboard.players`.
 
@@ -240,6 +250,10 @@ A configuration can make a plugin run console commands, so saving one is trusted
 | XLogin: players (accounts), sessions | `xlogin.admin` |
 | XLogin on a player's profile | `xlogin.admin` and `xcore.dashboard.players` |
 | XAuctionHouse on a player's profile | `ah.admin` and `xcore.dashboard.players` |
+| XShop: transactions and their export | `xshop.admin.logs` or `xshop.admin` |
+| XShop: audit | `xshop.admin.audit` or `xshop.admin` |
+| XShop: history of the shop files | `xshop.admin.edit` or `xshop.admin` |
+| XShop on a player's profile | `xshop.admin.logs` or `xshop.admin`, and `xcore.dashboard.players` |
 
 With LuckPerms, `xcore.dashboard.*` opens every page but grants no `xbans.*`.
 
@@ -444,7 +458,7 @@ With PlaceholderAPI installed, XCore registers the `xcore` placeholders, and eac
 
 ## Build on XCore
 
-A plugin built on XCore is a Paper plugin like any other: its own jar in `plugins/`, its own timings, its own data folder `plugins/<name>/`. Its main class extends `XPlugin` instead of `JavaPlugin`, and from there the database, the caches, the sync, the menus, the languages and the dashboard are one method call away. XBans, XLogin, XAuctionHouse and XAntiLag are built exactly this way. Addons on `XAddon` are still supported, see [Addons](#addons).
+A plugin built on XCore is a Paper plugin like any other: its own jar in `plugins/`, its own timings, its own data folder `plugins/<name>/`. Its main class extends `XPlugin` instead of `JavaPlugin`, and from there the database, the caches, the sync, the menus, the languages and the dashboard are one method call away. XBans, XLogin, XAuctionHouse, XAntiLag and XShop are built exactly this way. Addons on `XAddon` are still supported, see [Addons](#addons).
 
 ### Add the dependency
 
@@ -455,7 +469,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    compileOnly 'com.github.Xyness:XCore:2.0.1'
+    compileOnly 'com.github.Xyness:XCore:2.1'
 }
 ```
 
@@ -476,7 +490,7 @@ dependencies {
     <dependency>
         <groupId>com.github.Xyness</groupId>
         <artifactId>XCore</artifactId>
-        <version>2.0.1</version>
+        <version>2.1</version>
         <scope>provided</scope>
     </dependency>
 </dependencies>
@@ -685,6 +699,7 @@ The same methods, under the same names, on `XPlugin` and on `XAddon`.
 | `guiRegistry()` | GUI definitions loaded from YAML |
 | `guiUtils()` | Item building, sounds, heads, click handling |
 | `delivery()` | Give an item or money to someone offline, handed over on their next join |
+| `money()` | Take and give money in an XCore currency or another plugin's Vault economy, with the currency's rounding (2.1) |
 | `leaderboards()` | Declare a ranking once, read it from memory |
 | `network()` | Which servers are up, and where a player is |
 | `ranks()` | Primary group and numbered permission levels, LuckPerms or Vault |
@@ -920,6 +935,23 @@ The identifier is the plugin name in lower case, so for a plugin named MyKits th
 long seconds = api().getPlaytime(uuid);
 ```
 
+**Money** (2.1). A price names its currency by id: an XCore currency (`dollar`, `gems`), or `vault` (or an empty id) for whatever economy is registered with Vault, which is XCore's own on most servers and another plugin's on the others. A plugin that sells things asks `money()` and does not care which.
+
+```java
+String currency = money().defaultCurrency();          // XCore's primary, else Vault's
+double price = money().ceil(currency, raw);           // what a player pays, rounded up
+double payout = money().floor(currency, raw);         // what a player receives, rounded down
+money().withdraw(uuid, currency, price).thenAccept(paid -> {
+    if (!paid) return;                                // refused: nothing was taken
+    // hand the item over
+});
+money().deposit(uuid, currency, payout);
+money().format(currency, price);                      // "$1,234.50"
+money().room(uuid, currency);                         // what still fits under max-balance
+```
+
+A withdrawal completes with `true` only when the whole amount left the balance. Another plugin's economy is only ever called on the server thread, since most of them are not thread-safe; when the economy behind Vault is XCore's own, the balance is reached directly, off it.
+
 </details>
 
 <details>
@@ -960,9 +992,24 @@ public List<WebPage> getPages() {
 
 | Page kind | Builds |
 |---|---|
-| `WebPageSpec.table(endpoint)` | Rows, with optional search, filters, paging, row actions, a creation form and a page-wide button |
-| `WebPageSpec.stats(endpoint)` | Statistic tiles, an enabled/disabled list, a key/value card, a chart (a line for a long time series, columns otherwise, each with a table view) |
+| `WebPageSpec.table(endpoint)` | Rows, with optional search, filters, paging, row actions, a creation form and page-wide buttons |
+| `WebPageSpec.stats(endpoint)` | Statistic tiles, an enabled/disabled list, a key/value card, charts (a line for a long time series, columns otherwise, each with a table view), short tables under them, and filters that reload the page |
+| `WebPageSpec.grid(endpoint)` | One container at a time as an inventory: rows of nine slots, an icon in each, a click to see and act on what is there, a click on an empty slot to fill it (2.1) |
 | `WebPageSpec.config()` | The raw `config.yml` editor, served by XCore for every module |
+
+**Forms** (2.1). A field is a text box unless it says otherwise:
+
+```java
+WebPageSpec.field("price", "field-price", true).number().range(0, 1e9).step(0.01)
+WebPageSpec.field("enabled", "field-enabled", false).toggle()
+WebPageSpec.field("period", "field-period", false).select(WebPageSpec.option("daily", "value-daily"))
+WebPageSpec.field("shop", "field-shop", false).selectFrom("/api/myplugin/shops", "shops", "id", "label")
+WebPageSpec.field("currency", "field-currency", false).currency()     // the server's currencies
+WebPageSpec.field("item", "field-item", true).item()                 // a search over every item, with icons
+WebPageSpec.field("commands", "field-commands", false).multiline()
+```
+
+A row action can open a form instead of asking "are you sure?": `.fields(...)` on the action, each field filled in from the row (`.from("row_field")`, or the field of its own key). `.chart(labelField, valueField)` turns an action into "show me": the endpoint is read and drawn in a dialog. `.when("field", "value")` shows a button only on the rows it applies to. Page-wide buttons, as many as needed, come with `.buttons(WebPageSpec.button(...))`, can ask for values with `.fields(...)`, and `.download()` saves what the endpoint answers as a file. `filterFrom(...)` fills a filter from an endpoint, and works on a stats page too. A grid takes `containerActions(...)` for the container shown, and `.pickSlot()` on an action asks the reader to click a destination, sent as `to_page` and `to_slot`.
 
 Tile colours: `green`, `orange`, `purple`, `red`. Button styles: `danger`, `warning`, `success`, `secondary`. A label with no entry in `lang/web_<code>.yml` renders as the key. `new WebPage(name, path, icon)` without a descriptor falls back to the generic table renderer.
 
@@ -998,11 +1045,12 @@ Do not register `<base>/config/raw` yourself: XCore registers it for every modul
 |---|---|
 | `field-<key>` in `lang/web_<code>.yml` | Names a payload field. `player_uuid` and `playerUuid` resolve to the same label |
 | `value-<identifier>` | Names a value: `value-buy-now` becomes "Achat direct" |
-| `itemDetails` on a row | Renders the Minecraft item cell: sprite, tooltip, enchantments, durability |
+| `itemDetails` on a row | Renders the Minecraft item cell: icon, tooltip, enchantments, durability |
+| `material` on a row | Renders the item's icon and its name in the reader's language |
 | `translationKey` inside `itemDetails` | Names the item in the reader's language |
 | `.paged(n)` on a spec | Pages the table, server-side when the endpoint answers `total` and `page` |
 
-`/api/sprite/<material>.png` and `/api/mclang` are fetched server-side, cached and pinned to the server's Minecraft version, so the browser never calls a third party. `/api/mclang` answers in the language of the player whose link is in use. Player faces come the same way, from `/api/head/<name>.png`.
+`/api/sprite/<material>.png` and `/api/mclang` come from the server, never from a third party, and follow the server's Minecraft version. Since 2.1 an icon is drawn by the server from the item's model, as the inventory shows it, and kept in `plugins/XCore/cache/icons/<version>/`, so it is drawn once; when the asset mirror does not have a brand new version yet, the newest one it holds stands in. `/api/mclang` answers in the language of the player whose link is in use. Player faces come the same way, from `/api/head/<name>.png`.
 
 </details>
 
@@ -1025,7 +1073,9 @@ curl -H "Authorization: Bearer YOUR_SESSION_TOKEN" http://localhost:8085/api/mod
 | `GET /api/metrics` | Server name, uptime, player count and TPS, public with `metrics-public: true`. Versions, memory, storage and cache figures are added for an authenticated caller |
 | `GET /api/players` | The players list, searchable and paged. Needs `xcore.dashboard.players` |
 | `GET /api/head/<name>.png` | A player's face, fetched once by the server and cached. Public, limited per address, and never holding up the rest of the dashboard |
-| `GET /api/sprite/<material>.png` | An item's texture, served the same way. Public |
+| `GET /api/sprite/<material>.png` | An item's icon, drawn once by the server and kept on disk. Public. A request answered `404` with `Cache-Control: no-store` is an icon still being drawn |
+| `GET /api/items` | Every item of the server, with the key of its name in the game's language files, for a form that picks one (2.1) |
+| `GET /api/currencies` | The currencies a price can be set in, and the default one (2.1) |
 | `GET/POST /api/<module>/config/raw` | Read or replace a module's `config.yml`. The YAML is parsed before anything is written, and the plugin is reloaded. Reading needs `xcore.dashboard.config`, and secrets come as `<hidden>`; saving also needs `xcore.dashboard.config.save` and the module's save permission, and is logged with its author |
 | `/api/<name>/...` | Each plugin's own routes |
 
@@ -1177,6 +1227,8 @@ Entries are drawn once per page. `itemsBlink()` returns true for a list whose en
 
 A list too large to hold in memory, every account a server has ever seen for one, pages in the database instead: override `totalItems(viewer)` with the count and `loadPage(viewer, page, perPage)` with that one page. `items()` is then never called.
 
+A screen whose entries each have a place of their own, a shop laid out by hand, overrides `pageCount(viewer)` with the number of pages, `loadPage(...)` with the entries of the page asked for, and `slotOf(entry, index)` with the slot each one sits in (2.1).
+
 **Blinking buttons.**
 
 ```java
@@ -1233,7 +1285,7 @@ A plugin can publish an API other plugins compile against. It ships the API clas
 
 A consumer declares the publisher under `dependencies.server` in its `paper-plugin.yml`, with `join-classpath: true` so the classes are visible to it, or with `depend: [Name]` in a `plugin.yml`. An addon needs no declaration: XCore looks a missing class up across the other addons' loaders, and then the server's plugins, before giving up.
 
-[XAntiLag-API](https://github.com/Xyness/XAntiLag-API) is the reference.
+[XAntiLag-API](https://github.com/Xyness/XAntiLag-API) and [XShop-API](https://github.com/Xyness/XShop-API) are the references.
 
 </details>
 
@@ -1247,7 +1299,7 @@ cd XCore
 ./gradlew clean shadowJar
 ```
 
-The jar lands in `build/libs/XCore-2.0.1.jar`.
+The jar lands in `build/libs/XCore-2.1.jar`.
 
 <br>
 
@@ -1256,5 +1308,5 @@ The jar lands in `build/libs/XCore-2.0.1.jar`.
 Questions, bug reports and ideas go to the [Discord](https://discord.com/invite/6sRTGprM95). Every page of the documentation is on [celestis.dev](https://celestis.dev/plugins/xcore/wiki/getting-started). XCore is released under the [MIT license](LICENSE).
 
 <p align="center">
-  <sub>XCore is the framework of a small family: <a href="https://celestis.dev/plugins/xbans">XBans</a>, <a href="https://celestis.dev/plugins/xlogin">XLogin</a>, <a href="https://celestis.dev/plugins/xauctionhouse">XAuctionHouse</a> and <a href="https://celestis.dev/plugins/xantilag">XAntiLag</a>. Made by <a href="https://github.com/Xyness">Xyness</a>.</sub>
+  <sub>XCore is the framework of a small family: <a href="https://celestis.dev/plugins/xbans">XBans</a>, <a href="https://celestis.dev/plugins/xlogin">XLogin</a>, <a href="https://celestis.dev/plugins/xauctionhouse">XAuctionHouse</a>, <a href="https://celestis.dev/plugins/xantilag">XAntiLag</a> and <a href="https://celestis.dev/plugins/xshop">XShop</a>. Made by <a href="https://github.com/Xyness">Xyness</a>.</sub>
 </p>

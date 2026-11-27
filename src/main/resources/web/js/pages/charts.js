@@ -18,6 +18,10 @@ import { dataTable } from "../ui/table.js";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const HEIGHT = 220;
 const PAD = { top: 12, right: 8, bottom: 26, left: 44 };
+/** The advance of one character of an axis label: IBM Plex Mono at 10.5px (css/pages.css). */
+const TICK_CHAR = 6.3;
+/** The least room between two labels of the x axis. */
+const TICK_GAP = 12;
 
 function svg(tag, attributes = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -175,17 +179,31 @@ export function barChart(rows, chart) {
     }
 
     // The x axis says where the series starts, where it ends, and a few places between — never
-    // two labels so close they run into each other.
+    // two labels so close they run into each other. The labels are in the mono face, so their
+    // width is known from their length: a date with its year needs more room than an hour.
     const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(innerW / 90))));
+    const span = (text, x, anchor) => {
+      const width = text.length * TICK_CHAR;
+      const left = anchor === "start" ? x : anchor === "end" ? x - width : x - width / 2;
+      return [left, left + width];
+    };
+    const lastText = n > 1 ? labels.text(n - 1) : "";
+    const lastAnchor = asLine ? "end" : "middle";
+    const lastLeft = n > 1 ? span(lastText, xs[n - 1], lastAnchor)[0] : Infinity;
+    let edge = -Infinity;
     for (let index = 0; index < n; index += every) {
-      if (index > 0 && xs[n - 1] - xs[index] < 110) continue;
-      const label = svg("text", { x: xs[index], y: HEIGHT - 8, class: "chart-tick", "text-anchor": index === 0 && asLine ? "start" : "middle" });
-      label.textContent = labels.text(index);
+      const text = labels.text(index);
+      const anchor = index === 0 && asLine ? "start" : "middle";
+      const [left, right] = span(text, xs[index], anchor);
+      if (index > 0 && (left < edge + TICK_GAP || right > lastLeft - TICK_GAP)) continue;
+      const label = svg("text", { x: xs[index], y: HEIGHT - 8, class: "chart-tick", "text-anchor": anchor });
+      label.textContent = text;
       root.append(label);
+      edge = right;
     }
     if (n > 1) {
-      const label = svg("text", { x: xs[n - 1], y: HEIGHT - 8, class: "chart-tick", "text-anchor": asLine ? "end" : "middle" });
-      label.textContent = labels.text(n - 1);
+      const label = svg("text", { x: xs[n - 1], y: HEIGHT - 8, class: "chart-tick", "text-anchor": lastAnchor });
+      label.textContent = lastText;
       root.append(label);
     }
 

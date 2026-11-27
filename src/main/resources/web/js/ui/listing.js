@@ -11,12 +11,47 @@ import { t, num } from "../lib/i18n.js";
 import { dataTable, skeletonRows, emptyState, errorState, pager } from "./table.js";
 
 /**
+ * One drop-down of a toolbar: "no filter" first, then the choices. A filter whose choices the
+ * server answers with (filter.load) starts with none and asks for them when fill() is called —
+ * once, unless the answer never came, in which case the next call asks again.
+ *
+ * @param {{param: string, placeholder: string, options?: Array<{value: string, label: string}>, load?: () => Promise<Array>}} filter
+ * @param {(param: string, value: string) => void} onChange
+ */
+export function filterSelect(filter, onChange) {
+  const choice = (option) => h("option", { value: option.value, text: option.label });
+  const select = h(
+    "select",
+    { class: "select", "aria-label": filter.placeholder, data: { param: filter.param } },
+    h("option", { value: "", text: filter.placeholder }),
+    (filter.options || []).map(choice)
+  );
+  select.addEventListener("change", () => onChange(filter.param, select.value));
+  let asked = false;
+  const fill = () => {
+    if (asked || !filter.load) return;
+    asked = true;
+    filter.load().then(
+      (options) => {
+        const held = select.value;
+        select.append(...options.map(choice));
+        select.value = held;
+      },
+      () => {
+        asked = false;
+      }
+    );
+  };
+  return { el: select, fill };
+}
+
+/**
  * @param {object} options
  * @param {(state: {page: number, search: string, filters: object}) => Promise<{rows: object[], total: number}>} options.load
  * @param {Array} [options.actions]   Row actions for dataTable.
  * @param {Array} [options.columns]   Explicit columns for dataTable.
  * @param {string} [options.search]   Placeholder of the search box; no box without it.
- * @param {Array} [options.filters]   [{ param, placeholder, options: [{ value, label }] }]
+ * @param {Array} [options.filters]   [{ param, placeholder, options: [{ value, label }], load }]
  * @param {number} [options.pageSize] Rows per page; no pager without it.
  * @param {string} options.empty      What to say when there is nothing.
  * @param {string} options.error      What to say when loading failed.
@@ -26,6 +61,7 @@ import { dataTable, skeletonRows, emptyState, errorState, pager } from "./table.
 export function listing(options) {
   const state = { page: 1, search: "", filters: {} };
   const lenses = [];
+  const selects = [];
   let ticket = 0;
   let shown = false;
 
@@ -78,18 +114,13 @@ export function listing(options) {
       parts.push(h("label", { class: "search" }, icon("search"), input, clear));
     }
     for (const filter of options.filters || []) {
-      const select = h(
-        "select",
-        { class: "select", "aria-label": filter.placeholder, data: { param: filter.param } },
-        h("option", { value: "", text: filter.placeholder }),
-        filter.options.map((option) => h("option", { value: option.value, text: option.label }))
-      );
-      select.addEventListener("change", () => {
-        state.filters[filter.param] = select.value;
+      const select = filterSelect(filter, (param, value) => {
+        state.filters[param] = value;
         state.page = 1;
         load();
       });
-      parts.push(select);
+      selects.push(select);
+      parts.push(select.el);
     }
     parts.push(count);
     toolbar = h("div", { class: "toolbar glass", role: "search" }, parts);
@@ -106,6 +137,8 @@ export function listing(options) {
 
   async function load(retried = false) {
     const mine = ++ticket;
+    // The choices of a filter the server fills in are asked for with the first rows.
+    selects.forEach((select) => select.fill());
     results.setAttribute("aria-busy", "true");
     if (shown) results.setAttribute("data-busy", "");
     let answer;
@@ -166,6 +199,8 @@ export function listing(options) {
   return {
     el: h("div", { class: "listing-wrap" }, toolbar, results, pagerBox),
     reload: () => load(),
+    // What the reader is looking at, as a query: the search and the filters, without the page.
+    query: () => ({ search: state.search, ...state.filters }),
     focusSearch: () => input && input.focus(),
     destroy: () => lenses.forEach((undo) => undo()),
   };

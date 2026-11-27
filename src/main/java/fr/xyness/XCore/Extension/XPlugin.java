@@ -328,6 +328,13 @@ public abstract class XPlugin extends JavaPlugin {
                 logger.sendError("Error disabling " + name + ": " + t);
             }
         }
+        // The server drops this plugin's tasks once this returns: what one of them was to hand
+        // over is handed over now, by its fallback.
+        try {
+            if (scheduler != null) scheduler.runPendingFallbacks();
+        } catch (Throwable t) {
+            logger.sendError("Pending tasks of " + name + " could not hand over what they held: " + t);
+        }
 
         release();
 
@@ -604,6 +611,17 @@ public abstract class XPlugin extends JavaPlugin {
      */
     public final fr.xyness.XCore.Delivery.DeliveryService delivery() {
         return core.delivery();
+    }
+
+    /**
+     * Returns the money service: withdrawals, deposits and rounding in an XCore currency or in
+     * the economy another plugin registered with Vault, behind one set of methods.
+     *
+     * @return The {@link fr.xyness.XCore.Economy.Money} service.
+     * @since 2.1
+     */
+    public final fr.xyness.XCore.Economy.Money money() {
+        return core.money();
     }
 
     /**

@@ -1,19 +1,21 @@
 // A module's pages, built from what it described in Java.
 //
 // A module declares each page with a WebPageSpec and /api/modules ships the description: a page
-// of statistic tiles, a table, or the configuration editor, with whatever goes with it — row
-// actions, a creation form, a page-wide button, a search box, filters, paging, charts, a heat
-// map. Everything below renders that description; no endpoint, label or form of any particular
-// addon appears in this file.
+// of statistic tiles, a table, a grid of cells or the configuration editor, with whatever goes
+// with it — row actions that confirm, open a form or draw a chart, a creation form, page-wide
+// buttons, a search box, filters, paging, charts, lists, a heat map. Everything below renders
+// that description; no endpoint, label or form of any particular addon appears in this file.
 
-import { h, icon, swap, balanceTiles } from "../lib/dom.js";
-import { get, post, withQuery } from "../lib/api.js";
+import { h, icon, swap, balanceTiles, saveFile } from "../lib/dom.js";
+import { attachLens } from "../lib/glass.js";
+import { get, post, download, withQuery } from "../lib/api.js";
 import { requirements } from "../lib/access.js";
 import { t, num, fixed, bytes, fieldLabel } from "../lib/i18n.js";
-import { markOf, kindLabel, pageIcon, pageName, pageHref, pageTitle } from "../lib/modules.js";
-import { listing, rowsOf, pick } from "../ui/listing.js";
-import { cell, emptyState, errorState } from "../ui/table.js";
-import { openDialog, toast } from "../ui/overlay.js";
+import { markOf, iconFor, kindLabel, pageIcon, pageName, pageHref, pageTitle } from "../lib/modules.js";
+import { listing, filterSelect, rowsOf, pick } from "../ui/listing.js";
+import { cell, dataTable, emptyState, errorState, skeletonRows, isMaterialKey, materialLabel } from "../ui/table.js";
+import { loadOptions } from "../ui/fields.js";
+import { openDialog, openPane, toast } from "../ui/overlay.js";
 import { pageHead } from "./players.js";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +107,227 @@ async function send(endpoint, body) {
 
 const STYLE_TONE = { danger: "danger", success: "success", warning: "warning" };
 
+/**
+ * Whether a row keeps a button that only some rows have (Action#when): "stop" on what is running,
+ * "restore" on what was removed. Compared as text, as the page declared the values.
+ */
+function applies(action, row) {
+  const rule = action.when;
+  if (!rule || !rule.field) return true;
+  const held = row ? row[rule.field] : null;
+  return (rule.values || []).map(String).includes(held === null || held === undefined ? "" : String(held));
+}
+
+/**
+ * A form's inputs as openDialog takes them. Opened from a row, each starts on what the row
+ * holds — the first of the row fields it names (from), or the one of its own key — and otherwise
+ * on its declared value.
+ */
+function fieldsOf(fields, row = null) {
+  return (fields || []).map((field) => {
+    const held = row ? pick(row, field.from && field.from.length ? field.from : [field.key]) : null;
+    return {
+      key: field.key,
+      label: t(field.labelKey),
+      type: field.type || "text",
+      placeholder: field.placeholderKey ? t(field.placeholderKey) : "",
+      required: !!field.required,
+      help: field.helpKey ? t(field.helpKey) : "",
+      value: held !== null && held !== "" ? held : field.value ?? "",
+      min: field.min,
+      max: field.max,
+      step: field.step,
+      options: (field.options || []).map((option) => ({ value: String(option.value), label: t(option.labelKey) })),
+      optionsFrom: field.optionsFrom || null,
+    };
+  });
+}
+
+/**
+ * The columns a table page names (WebPageSpec#columns), as a table takes them; null for a page
+ * that names none, whose every field is a column. "item" is the item column.
+ */
+function namedColumns(spec) {
+  const named = Array.isArray(spec.columns) ? spec.columns.filter((key) => typeof key === "string" && key) : [];
+  return named.length ? named.map((key) => ({ key, label: key === "item" ? t("item") : fieldLabel(key) })) : null;
+}
+
+/** A page's filters as a toolbar takes them: the choices it knows, and how to ask for the others. */
+const filtersOf = (spec) =>
+  (spec.filters || []).map((filter) => ({
+    param: filter.param,
+    placeholder: t(filter.placeholderKey),
+    options: (filter.options || []).map((option) => ({ value: option.value, label: t(option.labelKey) })),
+    load: filter.optionsFrom && filter.optionsFrom.endpoint ? () => loadOptions(filter.optionsFrom) : null,
+  }));
+
+/**
+ * What a row is about, for the heading of what its button opens — "Unban SlimeGolem?", "Edit
+ * Stone": the first of the fields the action names that the row has. A material reads as the
+ * game names the item.
+ */
+function targetOf(action, row, fallback = "") {
+  for (const key of action.idFrom || []) {
+    const value = row ? row[key] : null;
+    if (value === null || value === undefined || value === "") continue;
+    return isMaterialKey(key) && typeof value === "string" ? materialLabel(value) : value;
+  }
+  return fallback;
+}
+
+/** A moment sent as text — "1764187200000" — is the number it reads as, so a chart can date it. */
+const asMoment = (value) => (typeof value === "string" && /^\d{10,13}$/.test(value) ? Number(value) : value);
+
+/** Draws the series a "show me" button asks for, in a pane of its own. */
+function showChart({ title, sub = "", url, chart, mark }) {
+  return openPane({
+    title,
+    sub,
+    wide: true,
+    mark,
+    build() {
+      const slot = h("div", { class: "chart-slot" }, h("span", { class: "skel skel-chart" }));
+      const load = async () => {
+        swap(slot, h("span", { class: "skel skel-chart" }));
+        try {
+          const [data, { barChart }] = await Promise.all([get(url), import("./charts.js")]);
+          const { rows } = rowsOf(data, {});
+          if (rows.length === 0) return swap(slot, emptyState(t("no-chart-data-available"), "chart-column"));
+          const series = rows.map((row) => ({ ...row, [chart.labelField]: asMoment(row[chart.labelField]) }));
+          swap(slot, barChart(series, { labelField: chart.labelField, valueField: chart.valueField, titleKey: title, maxPoints: 0 }));
+        } catch (error) {
+          swap(slot, errorState((error && error.message) || t("failed-to-load-data"), load));
+        }
+      };
+      load();
+      return h("div", { class: "pane-chart" }, slot);
+    },
+  });
+}
+
+/**
+ * Does what a row's button is for, wherever the row is drawn: a line of a table, a cell of a
+ * grid, the container a grid shows. A plain action asks "are you sure?"; one with fields opens
+ * them, filled in from the row, and sends them with its declared parameters — every field, an
+ * empty one as "", so the endpoint can tell "cleared" from "not asked"; a chart action reads its
+ * endpoint and draws the answer.
+ *
+ * @param {object} action The action, as the page declared it.
+ * @param {object} row    What it acts on.
+ * @param {object} [where]
+ * @param {object} [where.context] What the page adds to every request — a grid's container; a
+ *   parameter the action declares under the same name wins.
+ * @param {string} [where.target]  What the row is about, when the action names no field for it.
+ * @param {string} [where.mark]    The module's colour, for what the action draws.
+ * @returns {Promise<boolean>} Whether something was sent and accepted.
+ */
+async function runAction(action, row, { context = {}, target = "", mark = null } = {}) {
+  const label = t(action.labelKey);
+  const about = targetOf(action, row, target);
+  const declared = { ...context, ...bodyFor(action.body, row) };
+  const asks = Array.isArray(action.fields) && action.fields.length > 0;
+
+  let title;
+  let sub = "";
+  if (action.titleKey) {
+    title = t(action.titleKey, { action: label, target: about });
+    // A heading of its own that does not say which row ("Edit the product") is followed by it.
+    if (about !== "" && !/\{target\}|%target%/.test(t(action.titleKey))) sub = String(about);
+  } else if (action.kind === "chart" || asks) title = about !== "" ? t("action-target", { action: label, target: about }) : label;
+  // The question is the title — "Unban SlimeGolem?" — with nothing to repeat under it.
+  else title = about !== "" ? t("confirm-action-target", { action: label, target: about }) : t("confirm-action");
+
+  if (action.kind === "chart") {
+    await showChart({ title, sub, url: withQuery(action.endpoint, declared), chart: action.chart || {}, mark });
+    return false;
+  }
+
+  const done = await openDialog({
+    title,
+    text: sub,
+    fields: fieldsOf(action.fields, row),
+    confirmLabel: label,
+    tone: action.style === "danger" ? "danger" : "",
+    sendEmpty: true,
+    onConfirm: (values) => send(action.endpoint, { ...declared, ...values }),
+  });
+  if (done === null) return false;
+  toast(t("action-completed-successfully"), "success");
+  return true;
+}
+
+/**
+ * The buttons a page declares for itself as a whole (WebPageSpec.Button): each asks first — its
+ * sentence, its fields — then posts, or fetches a file to save when it is a download.
+ *
+ * @param {object} spec The page.
+ * @param {object} [page]
+ * @param {() => object} [page.query]   What the reader is looking at — the search, the filters —
+ *   which a download carries in its query string.
+ * @param {() => object} [page.context] What the page adds to every request: a grid's container. A
+ *   list of choices named like one of its parameters starts on it ("which shop": the one shown).
+ * @param {() => void} [page.done]      Called once a button changed something.
+ */
+function pageButtons(spec, { query = () => ({}), context = () => ({}), done = () => {} } = {}) {
+  /** A button's fields; a list of choices it declared no value for starts on what the page is showing. */
+  const fieldsFor = (button) => {
+    const shown = context();
+    return fieldsOf(button.fields).map((field) =>
+      field.type === "select" && field.value === "" && shown[field.key] !== undefined ? { ...field, value: shown[field.key] } : field
+    );
+  };
+
+  return (spec.buttons || []).map((button) => {
+    const label = t(button.labelKey);
+    const reads = button.kind === "download";
+    const asks = Array.isArray(button.fields) && button.fields.length > 0;
+    const glyph = iconFor(button.icon, reads ? "download" : button.style === "danger" ? "trash-2" : asks ? "sliders-horizontal" : "refresh-cw");
+    // What the button always sends besides its fields (Button#constant), which win over it.
+    const constants = bodyFor(button.body, {});
+    const node = h("button", { class: "btn btn-secondary glass glass-set", type: "button", data: { tone: STYLE_TONE[button.style] || null } }, icon(glyph), label);
+
+    /** Asked as the reader is — a link could not carry the session — then handed over to save. */
+    const fetchFile = async (values = {}) => {
+      try {
+        const file = await download(withQuery(button.endpoint, { ...query(), ...constants, ...values }));
+        saveFile(file.blob, file.name);
+      } catch (error) {
+        throw new Error((error && error.message) || t("download-failed"));
+      }
+    };
+
+    node.addEventListener("click", async () => {
+      // A download with nothing to ask starts at once, the button waiting on it.
+      if (reads && !asks && !button.confirmKey) {
+        node.disabled = true;
+        swap(node, h("span", { class: "spin", "aria-hidden": "true" }), label);
+        try {
+          await fetchFile();
+        } catch (error) {
+          toast(error.message, "error");
+        } finally {
+          node.disabled = false;
+          swap(node, icon(glyph), label);
+        }
+        return;
+      }
+      const sent = await openDialog({
+        title: label,
+        text: button.confirmKey ? t(button.confirmKey) : "",
+        fields: fieldsFor(button),
+        confirmLabel: label,
+        tone: button.style === "danger" ? "danger" : "",
+        sendEmpty: true,
+        onConfirm: (values) => (reads ? fetchFile(values) : send(button.endpoint, { ...context(), ...constants, ...values })),
+      });
+      if (sent === null || reads) return;
+      toast(t("action-completed-successfully"), "success");
+      done();
+    });
+    return node;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // A module's home
 // ---------------------------------------------------------------------------
@@ -177,6 +400,7 @@ export function specPage(mod, page) {
   const spec = page.spec;
   if (spec.type === "config") return configPage(mod, page);
   if (spec.type === "stats") return statsPage(mod, page);
+  if (spec.type === "grid") return gridPage(mod, page);
   return tablePage(mod, page);
 }
 
@@ -209,6 +433,31 @@ function configPage(mod, page) {
   };
 }
 
+/**
+ * A grid page: one container at a time, as the game shows an inventory. What draws it is loaded
+ * when one is opened, like the configuration editor: most servers have no such page.
+ */
+function gridPage(mod, page) {
+  const buttons = h("div", { class: "page-actions", hidden: true });
+  const holder = h("div", { class: "grid-holder" }, h("section", { class: "card card-flush", "aria-busy": "true" }, skeletonRows(5)));
+  const head = pageHead({ eyebrow: moduleEyebrow(mod), title: pageTitle(mod, page) });
+  head.append(buttons);
+  let view = null;
+  return {
+    el: h("div", { class: "page", vars: { mark: markOf(mod).mark } }, head, holder),
+    async mounted() {
+      const { gridView } = await import("./grid.js");
+      if (!holder.isConnected) return;
+      view = gridView(mod, page, buttons);
+      swap(holder, view.el);
+      view.load();
+    },
+    destroy() {
+      if (view) view.destroy();
+    },
+  };
+}
+
 function statsPage(mod, page) {
   const spec = page.spec;
   const tiles = h("div", { class: "tiles", "aria-busy": "true" }, tileSkeleton((spec.stats || []).length || 4));
@@ -220,10 +469,31 @@ function statsPage(mod, page) {
     t("refresh")
   );
 
+  // What the reader narrowed the page to — a shop, a period. The page's endpoint is read again
+  // with it in its query string, and so is every chart and list that has an endpoint of its own.
+  const chosen = {};
+  const lenses = [];
+  const selects = filtersOf(spec).map((filter) =>
+    filterSelect(filter, (param, value) => {
+      chosen[param] = value;
+      load(true);
+    })
+  );
+  let toolbar = null;
+  if (selects.length) {
+    toolbar = h("div", { class: "toolbar toolbar-filters glass", role: "group", "aria-label": t("filter") }, selects.map((select) => select.el));
+    lenses.push(attachLens(toolbar));
+  }
+
   const el = h(
     "div",
     { class: "page", vars: { mark: markOf(mod).mark } },
-    pageHead({ eyebrow: moduleEyebrow(mod), title: pageTitle(mod, page), actions: [refresh] }),
+    pageHead({
+      eyebrow: moduleEyebrow(mod),
+      title: pageTitle(mod, page),
+      actions: [...pageButtons(spec, { query: () => ({ ...chosen }), done: () => load(true) }), refresh],
+    }),
+    toolbar,
     tiles,
     below
   );
@@ -237,9 +507,21 @@ function statsPage(mod, page) {
   const heatCard = spec.heatmap
     ? h("section", { class: "card heat-card" }, h("div", { class: "card-head" }, h("h2", { class: "card-title", text: t(spec.heatmap.titleKey) })), h("div", { class: "chart-slot" }, h("span", { class: "skel skel-chart" })))
     : null;
+  // Short tables under the charts: the best sellers, the last few events.
+  const lists = (spec.lists || []).map((list) => ({
+    list,
+    slot: h("div", { class: "list-slot" }, skeletonRows(3)),
+  }));
+  const listCards = lists.length
+    ? h(
+        "div",
+        { class: "lists" },
+        lists.map(({ list, slot }) => h("section", { class: "card card-flush" }, h("div", { class: "card-head" }, h("h2", { class: "card-title", text: t(list.titleKey) })), slot))
+      )
+    : null;
 
   const grid = h("div", { class: "grid-2" }, togglesCard, detailsCard);
-  below.append(...charts.map((entry) => entry.card), heatCard || "", grid);
+  below.append(...charts.map((entry) => entry.card), heatCard || "", listCards || "", grid);
 
   const fillBody = (card, ...nodes) => {
     const head = card.querySelector(".card-head");
@@ -249,11 +531,30 @@ function statsPage(mod, page) {
   // A payload that lists worlds and names the one it describes can be asked for another
   // (?world=): the heat map offers the switch, and the whole page follows it.
   let world = "";
+  let ticket = 0;
 
   async function load(again = false) {
-    if (again) refresh.disabled = true;
+    const mine = ++ticket;
+    const query = { ...chosen };
+    // What a chart, a list or the heat map is drawn from: the page's answer, or its own endpoint's,
+    // asked once however many of them share it — two series of the same day-by-day figures.
+    const asked = new Map();
+    const sourceOf = (part, data) => {
+      if (!part.endpoint || part.endpoint === spec.endpoint) return data;
+      const url = withQuery(part.endpoint, query);
+      if (!asked.has(url)) asked.set(url, get(url).catch(() => null));
+      return asked.get(url);
+    };
+    selects.forEach((select) => select.fill());
+    if (again) {
+      refresh.disabled = true;
+      tiles.setAttribute("data-busy", "");
+      below.setAttribute("data-busy", "");
+    }
     try {
-      const data = (await get(withQuery(spec.endpoint, { world: world || null }))) || {};
+      const data = (await get(withQuery(spec.endpoint, { world: world || null, ...query }))) || {};
+      // A choice made since: the answer to it is on its way, and this one is already old.
+      if (mine !== ticket) return;
       const { nodes, shown } = statTiles(spec, data);
       swap(tiles, nodes.length ? nodes : emptyState(t(spec.emptyKey || "no-data"), "chart-column"));
       balanceTiles(tiles);
@@ -299,10 +600,20 @@ function statsPage(mod, page) {
       }
       grid.hidden = !(togglesCard || (detailsCard && !detailsCard.hidden));
 
+      // Each list on its own time: a slow one holds nothing else back.
+      for (const { list, slot } of lists) {
+        Promise.resolve(sourceOf(list, data)).then((source) => {
+          if (mine !== ticket) return;
+          const { rows } = rowsOf(source, { dataKeys: list.dataKey ? [list.dataKey] : null });
+          swap(slot, source && rows.length ? dataTable(rows, { caption: t(list.titleKey) }) : emptyState(t(list.emptyKey || "no-data-found"), "list"));
+        });
+      }
+
       if (charts.length || heatCard) {
         const { barChart, heatmap } = await import("./charts.js");
         for (const { chart, card } of charts) {
-          const source = chart.endpoint && chart.endpoint !== spec.endpoint ? await get(chart.endpoint).catch(() => null) : data;
+          const source = await sourceOf(chart, data);
+          if (mine !== ticket) return;
           const { rows } = rowsOf(source, { dataKeys: chart.dataKey ? [chart.dataKey] : null });
           const slot = card.querySelector(".chart-slot");
           if (!source || rows.length === 0) swap(slot, emptyState(t(chart.emptyKey || "no-chart-data-available"), "chart-column"));
@@ -310,7 +621,8 @@ function statsPage(mod, page) {
         }
         if (heatCard) {
           const conf = spec.heatmap;
-          const source = conf.endpoint && conf.endpoint !== spec.endpoint ? await get(conf.endpoint).catch(() => null) : data;
+          const source = await sourceOf(conf, data);
+          if (mine !== ticket) return;
           const { rows } = rowsOf(source, { dataKeys: conf.dataKey ? [conf.dataKey] : null });
           const slot = heatCard.querySelector(".chart-slot");
           const worlds = source && Array.isArray(source.worlds) && source.worlds.every((name) => typeof name === "string") ? source.worlds : null;
@@ -328,41 +640,38 @@ function statsPage(mod, page) {
         }
       }
     } catch (error) {
+      if (mine !== ticket) return;
       swap(tiles, h("div", { class: "card tiles-error" }, errorState(t(spec.errorKey || "failed-to-load-data"), () => load(true))));
       tiles.removeAttribute("aria-busy");
     } finally {
-      refresh.disabled = false;
+      if (mine === ticket) {
+        refresh.disabled = false;
+        tiles.removeAttribute("data-busy");
+        below.removeAttribute("data-busy");
+      }
     }
   }
 
-  return { el, mounted: () => load() };
+  return { el, mounted: () => load(), destroy: () => lenses.forEach((undo) => undo()) };
 }
 
 function tablePage(mod, page) {
   const spec = page.spec;
   const title = pageTitle(mod, page);
+  const mark = markOf(mod).mark;
   const actions = [];
 
-  const rowActions = (spec.actions || []).map((action) => {
-    const label = t(action.labelKey);
-    return {
-      label,
+  // "Choose where" only means something on a grid: a table leaves such a button out.
+  const rowActions = (spec.actions || [])
+    .filter((action) => action.kind !== "pick")
+    .map((action) => ({
+      label: t(action.labelKey),
       tone: STYLE_TONE[action.style] || null,
+      when: action.when ? (row) => applies(action, row) : null,
       run: async (row) => {
-        const target = pick(row, action.idFrom) ?? "";
-        // The question is the title — "Unban SlimeGolem?" — with nothing to repeat under it.
-        const done = await openDialog({
-          title: target !== "" ? t("confirm-action-target", { action: label, target }) : t("confirm-action"),
-          confirmLabel: label,
-          tone: action.style === "danger" ? "danger" : "",
-          onConfirm: () => send(action.endpoint, bodyFor(action.body, row)),
-        });
-        if (done === null) return;
-        toast(t("action-completed-successfully"), "success");
-        if (action.reload !== false) list.reload();
+        if ((await runAction(action, row, { mark })) && action.reload !== false) list.reload();
       },
-    };
-  });
+    }));
 
   if (spec.bulk) {
     const label = t(spec.bulk.labelKey);
@@ -392,15 +701,10 @@ function tablePage(mod, page) {
     );
   }
 
+  actions.push(...pageButtons(spec, { query: () => list.query(), done: () => list.reload() }));
+
   if (spec.form) {
     const label = t(spec.form.titleKey);
-    const fields = (spec.form.fields || []).map((field) => ({
-      key: field.key,
-      label: t(field.labelKey),
-      type: field.type || "text",
-      placeholder: field.placeholderKey ? t(field.placeholderKey) : "",
-      required: !!field.required,
-    }));
     actions.push(
       h(
         "button",
@@ -408,9 +712,10 @@ function tablePage(mod, page) {
           class: "btn glass-brass",
           type: "button",
           onclick: async () => {
+            // A form that creates leaves out what the reader left empty, as it always did.
             const values = await openDialog({
               title: label,
-              fields,
+              fields: fieldsOf(spec.form.fields),
               confirmLabel: label,
               tone: spec.form.style === "danger" ? "danger" : "",
               onConfirm: (body) => send(spec.form.endpoint, body),
@@ -428,13 +733,10 @@ function tablePage(mod, page) {
 
   const list = listing({
     search: spec.searchKey ? t(spec.searchKey) : spec.filters && spec.filters.length ? t("search") : null,
-    filters: (spec.filters || []).map((filter) => ({
-      param: filter.param,
-      placeholder: t(filter.placeholderKey),
-      options: (filter.options || []).map((option) => ({ value: option.value, label: t(option.labelKey) })),
-    })),
+    filters: filtersOf(spec),
     pageSize: spec.pageSize || 0,
     actions: rowActions,
+    columns: namedColumns(spec),
     empty: t(spec.emptyKey || "no-data-found"),
     error: t(spec.errorKey || "failed-to-load-data"),
     caption: title,
@@ -546,4 +848,4 @@ export function missingPage(mod = null) {
   return { el, title: t("page-not-found"), href: "" };
 }
 
-export { moduleEyebrow, bodyFor, send, readOnlyOf, withNode };
+export { moduleEyebrow, bodyFor, send, readOnlyOf, withNode, applies, fieldsOf, runAction, pageButtons, STYLE_TONE };
